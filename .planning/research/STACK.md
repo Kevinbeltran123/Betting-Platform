@@ -1,0 +1,287 @@
+# Technology Stack
+
+**Project:** Betting Intelligence Platform
+**Researched:** 2026-04-22
+**Overall confidence:** HIGH
+
+## Overview
+
+This stack is validated against the project's existing decisions with version updates, one critical external dependency change (Pinnacle odds sourcing), and targeted additions for production robustness. The core choices are sound -- Python gradient boosting ensemble + Polars + Supabase is the standard 2025/2026 sports betting ML stack. No radical changes needed, but several version pins and one API strategy pivot are required.
+
+---
+
+## Core Framework
+
+| Technology | Version | Purpose | Why | Confidence |
+|------------|---------|---------|-----|------------|
+| Python | 3.12 | Runtime | 3.12 is the sweet spot: all ML libraries support it, free-threading not needed. 3.11 works but 3.12 has measurable perf gains (10-15% faster CPython). 3.13+ has free-threading but CatBoost/XGBoost wheels lag behind. | HIGH |
+| uv | 0.11.x | Package/project manager | De facto standard replacing pip/poetry in 2025-2026. 100x faster resolution, lockfile support, Python version management built in. No alternative worth considering. | HIGH |
+| Pydantic | 2.13.x | Data validation & models | Already in use in Football_analysis. v2 is mature and stable. Use for all domain models, API response parsing, config validation. | HIGH |
+| pydantic-settings | 2.14.x | Configuration management | Loads from .env, env vars, YAML. Already proven in existing codebase. Replaces custom config loading. | HIGH |
+
+**Python version rationale:** Pin to 3.12, not 3.11. scikit-learn 1.8 supports 3.11-3.14, XGBoost 3.2 requires >=3.10, CatBoost 1.2.10 supports 3.12, LightGBM 4.6 supports 3.12. All green for 3.12. Avoid 3.13+ until CatBoost catches up.
+
+---
+
+## Data APIs
+
+### Primary: API-Football v3 (Pro Plan)
+
+| Attribute | Detail |
+|-----------|--------|
+| Version | v3 (current) |
+| Plan | Pro ($79/mo) -- required for corners history, lineups, injuries |
+| Rate limit | 300 req/min (Pro) |
+| Data | Fixtures, live scores, stats, lineups, player stats, corners, injuries, H2H, standings |
+| Confidence | HIGH -- already validated in existing project |
+
+**Corners data:** API-Football v3 provides match-level corner counts in fixture statistics. Time-window corner data (0-15, 15-30, etc.) requires the events endpoint filtered by event type "Corner" with minute data. This is available on Pro plan but requires per-match event fetching -- budget ~2 API calls per fixture for full corner timing data.
+
+### Sharp Odds: The Odds API v4 (REVISED STRATEGY)
+
+| Attribute | Detail |
+|-----------|--------|
+| Version | v4 |
+| Plan | Rookie ($20/mo, 500 requests) |
+| Primary use | CLV benchmark via Pinnacle closing lines |
+| Confidence | MEDIUM -- see critical note below |
+
+**CRITICAL: Pinnacle API Shutdown (July 2025)**
+
+Pinnacle closed its public API on July 23, 2025. However, The Odds API **still provides Pinnacle odds** scraped from their public website (bookmaker key: `pinnacle`, region: `eu`). The documentation notes: "Odds are from public website which may incur a delay."
+
+**Impact assessment:**
+- Pinnacle odds via The Odds API are website-scraped, not direct API feed
+- Expect 1-5 minute delay vs real-time (acceptable for CLV -- we only need closing lines)
+- For CLV measurement (post-kickoff snapshot), delay is irrelevant
+- The Odds API Rookie tier ($20/mo, 500 requests) is sufficient for CLV-only usage across 5 leagues
+
+**Fallback sharp lines (if Pinnacle data degrades):**
+- Betfair Exchange (available via The Odds API: `betfair_ex_eu`) -- second-sharpest market
+- OddsPapi (350+ bookmakers including Pinnacle, SingBet) -- alternative API if The Odds API Pinnacle coverage drops
+
+**Recommendation:** Keep The Odds API v4 as primary. Monitor Pinnacle data freshness monthly. If closing line delay exceeds 10 minutes or coverage drops, pivot to OddsPapi or use Betfair Exchange as CLV benchmark. Betfair Exchange is a valid sharp benchmark -- CLV against Betfair closing is nearly as meaningful as Pinnacle CLV.
+
+### Alternative APIs Evaluated (Not Recommended for Now)
+
+| API | Why Not |
+|-----|---------|
+| OddsPapi | Good backup but newer, less battle-tested. Per-request pricing can get expensive at scale. Keep as fallback. |
+| SharpAPI | Enterprise-focused, expensive ($99+/mo). Overkill for CLV-only usage. |
+| SportsGameOdds | Includes closing odds and historical data, but pricing unclear and API maturity uncertain. |
+| football-data.org | Free tier useful but no odds data, limited stats. Redundant with API-Football. |
+
+---
+
+## ML Pipeline
+
+### Ensemble Models
+
+| Library | Version | Purpose | Why | Confidence |
+|---------|---------|---------|-----|------------|
+| XGBoost | 3.2.0 | Gradient boosting (primary) | Latest stable. Breaking change from 2.x: removed `DeviceQuantileDMatrix`, `manylinux2014` dropped. CPU-only usage unaffected. Requires Python >=3.10. | HIGH |
+| CatBoost | 1.2.10 | Gradient boosting (categorical) | Feb 2026 release. Now supports Polars input directly (new in recent versions). Handles categorical features natively -- valuable for league/team encoding. | HIGH |
+| LightGBM | 4.6.0 | Gradient boosting (fast training) | Feb 2025 release, stable. Fastest training of the three. Good for rapid iteration and walk-forward backtesting. | HIGH |
+| scikit-learn | 1.8.0 | ML utilities, calibration, stacking | Dec 2025 release. **Key change:** `CalibratedClassifierCV(cv="prefit")` removed (you already handle this with `_IsotonicCalibrator`). New: `method="temperature"` for temperature scaling calibration -- worth evaluating vs isotonic. | HIGH |
+
+**Ensemble strategy:** XGBoost 35% + CatBoost 35% + LightGBM 30% with LogisticRegression stacking (proven in football-predictor). Port directly.
+
+**New in scikit-learn 1.8 worth noting:**
+- `method="temperature"` in `CalibratedClassifierCV` -- simpler than isotonic, less prone to overfitting with small samples (<200 per league). Evaluate alongside existing isotonic and Platt calibration.
+- Array API support (PyTorch tensors) -- not needed for this project but future-proofs.
+
+### Feature Engineering
+
+| Library | Version | Purpose | Why | Confidence |
+|---------|---------|---------|-----|------------|
+| Polars | 1.40.x | DataFrame operations | 10-50x faster than pandas for feature engineering. Lazy evaluation for complex pipelines. Already proven in existing codebase. | HIGH |
+| PyArrow | 19.x | Parquet I/O, Arrow memory | Required by Polars for Parquet read/write. Pin to match Polars' PyArrow dependency. | HIGH |
+| NumPy | 2.2.x | Numerical operations | Required by all ML libraries. v2.x is now standard. | HIGH |
+| SciPy | 1.15.x | Statistical functions | Poisson distributions, optimization for Dixon-Coles. Required by penaltyblog. | HIGH |
+
+### Statistical Models
+
+| Library | Version | Purpose | Why | Confidence |
+|---------|---------|---------|-----|------------|
+| penaltyblog | 1.9.0 | Dixon-Coles, Poisson, Bivariate Poisson | Feb 2026 release. Actively maintained (6 releases in 2025-2026). Cython-optimized. Includes Dixon-Coles, Bivariate Poisson, Conway-Maxwell Poisson, Bayesian variants. **Best option for football statistical models in Python -- no viable alternative.** | HIGH |
+
+**penaltyblog is the right choice.** Alternatives evaluated:
+- Rolling your own Dixon-Coles: You already have a bivariate Poisson implementation in football-predictor. penaltyblog's Cython-optimized version is faster and more robust. Use penaltyblog for production, keep custom implementation as reference.
+- `footballmodels` (GitHub): Abandoned, last commit 2022.
+- `fpl` / `socceraction`: Different domain (expected goals, not match outcome modeling).
+
+---
+
+## AI Integration
+
+| Technology | Version | Purpose | Why | Confidence |
+|------------|---------|---------|-----|------------|
+| Anthropic Python SDK | latest (0.50+) | Claude API access | Direct SDK for claude-sonnet-4-6. Structured output via tool_use for `confidence_modifier` extraction. | HIGH |
+| claude-sonnet-4-6 | - | Context augmentation + pick validation | Cost-effective for structured analysis tasks. ~$3/1M input tokens. Role B (confidence modifier) and Role C (pick validator) don't need Opus-level reasoning. | HIGH |
+
+**Model choice rationale:** Sonnet for both roles because:
+- Role B (confidence modifier): Structured numeric output from pre-match context. Deterministic extraction task.
+- Role C (pick validator): Pattern matching against known red flags. Doesn't require deep reasoning.
+- Cost: ~50 picks/day x 2 calls x ~2K tokens = ~200K tokens/day = ~$0.60/day. Negligible.
+
+---
+
+## Delivery
+
+| Technology | Version | Purpose | Why | Confidence |
+|------------|---------|---------|-----|------------|
+| python-telegram-bot | 22.7 | Telegram alerts | Jan 2026 release. Async-native (asyncio). Mature, well-documented. Handles message formatting, inline buttons, rate limiting. | HIGH |
+
+**No alternatives needed.** python-telegram-bot is the de facto standard. `aiogram` is the only real alternative (also async) but has a smaller community and less documentation.
+
+---
+
+## Scheduling
+
+| Technology | Version | Purpose | Why | Confidence |
+|------------|---------|---------|-----|------------|
+| APScheduler | 3.11.x | Job scheduling | **Use 3.x, NOT 4.x.** APScheduler 4.0 is still alpha (4.0.0a6 as of April 2025). Complete rewrite with breaking API changes (Job split into Task/Schedule/Job, async-first). Not production-ready. | HIGH |
+
+**APScheduler 3.x vs alternatives for single-VPS deployment:**
+
+| Option | Verdict | Rationale |
+|--------|---------|-----------|
+| APScheduler 3.x | **USE THIS** | In-process scheduler. No external dependencies (no Redis, no broker). Perfect for single-VPS. Supports cron triggers, interval triggers, timezone-aware scheduling. Battle-tested. |
+| Celery | AVOID | Requires Redis/RabbitMQ broker. Overkill for single-VPS with <100 scheduled jobs. Adds operational complexity (worker processes, broker monitoring). |
+| RQ (Redis Queue) | AVOID | Requires Redis. Simpler than Celery but still external dependency. Only needed if you need distributed task queues. |
+| Huey | AVOID | Lighter than Celery but still needs Redis/SQLite backend. No advantage over APScheduler for in-process scheduling. |
+| cron (system) | AVOID | No Python-level control, hard to manage dynamically scheduled jobs (fixtures at varying times). |
+| `asyncio` native scheduling | CONSIDER LATER | For simple periodic tasks, `asyncio.create_task` + sleep loop works. But APScheduler adds cron expressions, missed job handling, persistence. Worth the dependency. |
+
+**APScheduler 3.x configuration for this project:**
+- `BackgroundScheduler` (thread-based) or `AsyncIOScheduler` (if running in asyncio loop with telegram bot)
+- `CronTrigger` for daily fixture fetching (e.g., 06:00 UTC)
+- `DateTrigger` for per-fixture pre-kickoff runs (2h and 30min before)
+- `MemoryJobStore` is fine (no persistence needed -- jobs are regenerated daily from fixture list)
+
+---
+
+## Infrastructure & Storage
+
+| Technology | Version | Purpose | Why | Confidence |
+|------------|---------|---------|-----|------------|
+| Supabase PostgreSQL | - | Primary database | Already has schema for 6 tables. Migration 002 adds `sport` column. Free tier sufficient for this scale. | HIGH |
+| Parquet files (local) | - | Feature cache, training data | Polars + PyArrow for fast read/write. Avoids DB round-trips for ML pipeline. Store in `data/cache/`. | HIGH |
+
+---
+
+## HTTP & Networking
+
+| Technology | Version | Purpose | Why | Confidence |
+|------------|---------|---------|-----|------------|
+| httpx | 0.28.1 | Async HTTP client | Async-native, HTTP/2 support, connection pooling. Used for API-Football, The Odds API, Anthropic SDK (uses httpx internally). One client for everything. | HIGH |
+| tenacity | 9.x | Retry logic | Exponential backoff for API calls. Decorator-based, clean integration with httpx. | HIGH |
+
+**Addition: tenacity for retry logic.** API calls fail. Rate limits hit. tenacity provides `@retry(wait=wait_exponential(), stop=stop_after_attempt(3))` decorators. Essential for production reliability. Already used internally by many libraries.
+
+---
+
+## Development & Quality
+
+| Technology | Version | Purpose | Why | Confidence |
+|------------|---------|---------|-----|------------|
+| ruff | 0.11.x | Linting + formatting | Replaces flake8 + black + isort. 100x faster. De facto Python linting standard in 2025-2026. | HIGH |
+| pytest | 8.x | Testing | Standard. Use with `pytest-asyncio` for async test support. | HIGH |
+| pytest-asyncio | 0.25.x | Async test support | Required for testing httpx clients, telegram bot, APScheduler async. | HIGH |
+| mypy | 1.15.x | Type checking | Strict mode. Pydantic v2 has excellent mypy plugin support. | MEDIUM |
+
+---
+
+## What NOT to Use
+
+| Technology | Why Not |
+|------------|---------|
+| APScheduler 4.x | Alpha (4.0.0a6). Complete rewrite, breaking API, no migration path from 3.x yet. Wait for stable release. |
+| Celery / RQ | External broker dependency (Redis). Single-VPS deployment doesn't need distributed task queues. |
+| pandas | Polars is 10-50x faster for the same operations. pandas is legacy for new projects in 2026. |
+| FastAPI / web server | No web UI in v1. Telegram-only delivery. Adding a web server adds attack surface and operational complexity for zero value. |
+| TensorFlow / PyTorch | Gradient boosting outperforms neural nets on tabular sports data with <100K rows. GPU adds complexity for no gain. |
+| Docker (initially) | Single-VPS, single-process Python app. Docker adds indirection. Use when deploying to cloud or adding services. `uv` handles reproducible environments. |
+| Airflow / Prefect | Workflow orchestrators are overkill. APScheduler handles the 10-20 daily scheduled jobs fine. |
+| scikit-learn CalibratedClassifierCV(cv="prefit") | Removed in 1.8. Use direct IsotonicRegression or explore new `method="temperature"`. |
+| OddsPapi (as primary) | Newer API, less battle-tested. Keep as fallback if The Odds API Pinnacle coverage degrades. |
+| Python 3.13+ | CatBoost wheel support lags. 3.12 is the safe, performant choice. |
+
+---
+
+## Missing from Original Stack (Additions)
+
+| Library | Version | Purpose | Why Add |
+|---------|---------|---------|---------|
+| tenacity | 9.x | Retry/backoff for API calls | Production essential. API-Football and The Odds API both rate-limit aggressively. |
+| structlog | 25.x | Structured logging | JSON-structured logs for debugging picks pipeline. Better than stdlib logging for tracing pick-to-alert flow. |
+| ruff | 0.11.x | Linting + formatting | Code quality from day 1. Single tool replaces 3+ legacy tools. |
+| pytest + pytest-asyncio | 8.x / 0.25.x | Testing | Untested ML pipeline = unreliable picks. Test calibration, EV calculation, Kelly sizing. |
+
+**Optional but recommended:**
+
+| Library | Version | Purpose | When |
+|---------|---------|---------|------|
+| joblib | 1.4.x | Parallel model training | If walk-forward backtesting becomes slow (>5 min). Parallel fold execution. |
+| orjson | 3.10.x | Fast JSON parsing | If API response parsing becomes a bottleneck. 2-10x faster than stdlib json. |
+
+---
+
+## Installation
+
+```bash
+# Initialize project
+uv init betting-intelligence-platform
+cd betting-intelligence-platform
+
+# Core dependencies
+uv add python-telegram-bot==22.7 httpx==0.28.1 pydantic==2.13.3 pydantic-settings==2.14.0
+uv add polars==1.40.0 pyarrow==19.0.0 numpy==2.2.0 scipy==1.15.0
+uv add xgboost==3.2.0 catboost==1.2.10 lightgbm==4.6.0 scikit-learn==1.8.0
+uv add penaltyblog==1.9.0
+uv add apscheduler==3.11.0
+uv add anthropic tenacity structlog
+
+# Dev dependencies
+uv add --dev ruff pytest pytest-asyncio mypy
+```
+
+---
+
+## Open Questions
+
+1. **Temperature scaling vs isotonic calibration:** scikit-learn 1.8 adds `method="temperature"` to `CalibratedClassifierCV`. With <200 samples per league, temperature scaling (1 parameter) may outperform isotonic (many parameters) OOS. Needs empirical testing during ML phase.
+
+2. **The Odds API Pinnacle data freshness:** Post-shutdown, Pinnacle odds come from website scraping with unknown delay. Need to measure actual closing line delay during Phase 1 data pipeline setup. If >10 min, pivot to Betfair Exchange CLV.
+
+3. **APScheduler + asyncio integration:** If running python-telegram-bot's asyncio event loop alongside APScheduler, use `AsyncIOScheduler` (not `BackgroundScheduler`). Needs careful integration testing -- two async loops can conflict.
+
+4. **CatBoost Polars support:** CatBoost 1.2.10 added Polars input support. Verify this works end-to-end with the feature pipeline to avoid unnecessary Polars-to-NumPy conversions.
+
+---
+
+## Sources
+
+- [APScheduler PyPI](https://pypi.org/project/APScheduler/) -- version and release info
+- [APScheduler Migration Guide](https://apscheduler.readthedocs.io/en/master/migration.html) -- 3.x to 4.0 breaking changes
+- [APScheduler 4.0 Progress Tracking](https://github.com/agronholm/apscheduler/issues/465) -- alpha status
+- [penaltyblog PyPI](https://pypi.org/project/penaltyblog/) -- v1.9.0, Feb 2026
+- [penaltyblog GitHub](https://github.com/martineastwood/penaltyblog) -- feature list, models
+- [penaltyblog Model Comparison](https://pena.lt/y/2025/03/10/which-model-should-you-use-to-predict-football-matches/) -- Dixon-Coles vs alternatives
+- [Pinnacle API Shutdown](https://odds-api.io/blog/pinnacle-api-shutdown-alternatives) -- July 2025 closure
+- [The Odds API Bookmakers](https://the-odds-api.com/sports-odds-data/bookmaker-apis.html) -- Pinnacle still available via website scraping
+- [XGBoost 3.0 Release Notes](https://xgboost.readthedocs.io/en/latest/changes/v3.0.0.html) -- breaking changes
+- [XGBoost 3.2 PyPI](https://pypi.org/project/xgboost/) -- latest stable
+- [scikit-learn 1.8 Highlights](https://scikit-learn.org/stable/auto_examples/release_highlights/plot_release_highlights_1_8_0.html) -- temperature scaling, array API
+- [python-telegram-bot v22.7](https://pypi.org/project/python-telegram-bot/) -- latest release
+- [Polars 1.40 PyPI](https://pypi.org/project/polars/) -- latest stable
+- [CatBoost 1.2.10 Releases](https://github.com/catboost/catboost/releases) -- Polars support
+- [LightGBM 4.6 PyPI](https://pypi.org/project/lightgbm/) -- latest stable
+- [Pydantic v2.13](https://pypi.org/project/pydantic/) -- latest release
+- [pydantic-settings v2.14](https://pypi.org/project/pydantic-settings/) -- latest release
+- [uv](https://docs.astral.sh/uv/) -- package manager docs
+- [httpx](https://www.python-httpx.org/) -- async HTTP client
+- [OddsPapi](https://oddspapi.io/blog/the-odds-api-alternative-comparison/) -- alternative odds API
+- [Odds API Pricing Comparison 2026](https://oddspapi.io/blog/odds-api-pricing-2026-comparison/) -- market overview
+- [API-Football Pricing](https://www.api-football.com/pricing) -- Pro plan details
+- [API-Football v3 Docs](https://www.api-football.com/documentation-v3) -- endpoints reference
