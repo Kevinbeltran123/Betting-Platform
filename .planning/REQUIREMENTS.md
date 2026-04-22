@@ -49,11 +49,11 @@
 
 ### CORNERS — Timed Corners Module (Conditional on Gate)
 
-- [ ] **CORNERS-01**: Go/no-go gate executed before Phase 3 engineering: (a) manually verify exact Betano corner time-window markets available, (b) verify API-Football corner timing data exists for all 5 leagues across ≥3 seasons — if either fails, Phase 3 is descoped or redesigned
+- [ ] **CORNERS-01**: Go/no-go gate executed before Phase 3 engineering: (a) manually verify exact Betano corner time-window markets available, (b) verify API-Football corner timing data exists for all 5 leagues across >=3 seasons — if either fails, Phase 3 is descoped or redesigned
 - [ ] **CORNERS-02**: Historical corner timing data ingested from API-Football and stored in Parquet by time window (0-15, 15-30, 30-45, 45-60, 60-75, 75-90 min) for each fixture and league
 - [ ] **CORNERS-03**: Corner time-window distribution model per fixture using penaltyblog compound Poisson + custom features: team pressing intensity, match motivation level, H2H corner timing history, weather
 - [ ] **CORNERS-04**: Per-team corner timing profile: quantifies pressing style (high/medium/low) from API-Football stats (ball possession zone, shots from set pieces, corner frequency per 15min window)
-- [ ] **CORNERS-05**: EV check for corner window picks runs same pipeline as core markets — probability per window vs Betano implied probability → edge → Kelly stake → Claude validation → Telegram alert
+- [ ] **CORNERS-05**: EV check for corner window picks runs same pipeline as core markets — probability per window vs Betano implied probability -> edge -> Kelly stake -> Claude validation -> Telegram alert
 
 ### SCALE — Scalability Validation
 
@@ -77,27 +77,51 @@
 
 ## Out of Scope (v1)
 
-- **Auto-placing bets** — Legal risk + Betano ToS violation; human places all bets
-- **GPU training** — Not needed; gradient boosting on CPU < 60s per model
-- **Web UI / dashboard** — Telegram-only delivery; dashboard is v2
-- **Real-time in-play pipeline** — Pre-kickoff only (T-2h, T-30min); in-play is v2
-- **Multiple bookmaker integrations** — Betano only; Pinnacle used read-only for CLV reference
-- **Martingale / progressive staking on corners** — Replaced by EV-based flat Kelly staking per window
-- **Exact-score or first-goalscorer markets** — Insufficient sample size for calibrated edge detection
+- **Auto-placing bets** -- Legal risk + Betano ToS violation; human places all bets
+- **GPU training** -- Not needed; gradient boosting on CPU < 60s per model
+- **Web UI / dashboard** -- Telegram-only delivery; dashboard is v2
+- **Real-time in-play pipeline** -- Pre-kickoff only (T-2h, T-30min); in-play is v2
+- **Multiple bookmaker integrations** -- Betano only; Pinnacle used read-only for CLV reference
+- **Martingale / progressive staking on corners** -- Replaced by EV-based flat Kelly staking per window
+- **Exact-score or first-goalscorer markets** -- Insufficient sample size for calibrated edge detection
 
 ---
 
 ## Traceability
 
-| Requirement | Phase |
-|-------------|-------|
-| CORE-01 to CORE-05 | Phase 1 |
-| DATA-01 to DATA-05 | Phase 1 |
-| CLV-01 to CLV-04 | Phase 1 |
-| ML-01 to ML-05 | Phase 2 |
-| PICK-01 to PICK-05 | Phase 3 |
-| CLAUDE-01 | Phase 3 |
-| CLAUDE-02 to CLAUDE-03 | Phase 4 (shadow) → Phase 5 (promote) |
-| CORNERS-01 (gate) | Phase 3 pre-condition |
-| CORNERS-02 to CORNERS-05 | Phase 5 (conditional) |
-| SCALE-01 to SCALE-02 | Phase 6 |
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| CORE-01 | Phase 1 | Pending |
+| CORE-02 | Phase 1 | Pending |
+| CORE-03 | Phase 1 | Pending |
+| CORE-04 | Phase 1 | Pending |
+| CORE-05 | Phase 1 | Pending |
+| DATA-01 | Phase 1 | Pending |
+| DATA-02 | Phase 1 | Pending |
+| DATA-03 | Phase 1 | Pending |
+| DATA-04 | Phase 1 | Pending |
+| DATA-05 | Phase 1 | Pending |
+| CLV-01 | Phase 1 | Pending |
+| CLV-02 | Phase 1 | Pending |
+| CLV-03 | Phase 1 | Pending |
+| CLV-04 | Phase 1 | Pending |
+| ML-01 | Phase 2 | Pending |
+| ML-02 | Phase 2 | Pending |
+| ML-03 | Phase 2 | Pending |
+| ML-04 | Phase 2 | Pending |
+| ML-05 | Phase 2 | Pending |
+| PICK-01 | Phase 3 | Pending |
+| PICK-02 | Phase 3 | Pending |
+| PICK-03 | Phase 3 | Pending |
+| PICK-04 | Phase 3 | Pending |
+| PICK-05 | Phase 3 | Pending |
+| CLAUDE-01 | Phase 3 | Pending |
+| CORNERS-01 | Phase 3 | Pending |
+| CLAUDE-02 | Phase 5 | Pending |
+| CLAUDE-03 | Phase 5 | Pending |
+| CORNERS-02 | Phase 6 | Pending |
+| CORNERS-03 | Phase 6 | Pending |
+| CORNERS-04 | Phase 6 | Pending |
+| CORNERS-05 | Phase 6 | Pending |
+| SCALE-01 | Phase 7 | Pending |
+| SCALE-02 | Phase 7 | Pending |
