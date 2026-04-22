@@ -52,13 +52,14 @@ class TestPerformanceMetricRepository:
             league="premier_league",
             market="btts",
             period=AggregationPeriod.weekly,
-            period_start=datetime(2026, 4, 14),
+            period_start=datetime(2026, 4, 14).date(),
+            period_end=datetime(2026, 4, 20).date(),
             roi=0.05,
             yield_pct=0.04,
             avg_clv=0.03,
-            wins=3,
-            losses=2,
-            voids=0,
+            won=3,
+            lost=2,
+            void=0,
             total_picks=5,
         )
         d = metric.to_supabase_dict()
