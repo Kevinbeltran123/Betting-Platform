@@ -32,14 +32,16 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The Odds API client fetches Pinnacle closing odds for a completed match and records CLV percentage in the `clv_records` table
   4. An integration test confirms no future data leaks -- every feature is computable from data available at prediction time
   5. APScheduler triggers the data pipeline at T-2h and T-30min before a fixture kickoff on the configured schedule
-**Plans**: TBD
+**Plans**: 7 plans
 
 Plans:
-- [ ] 01-01: TBD
-- [ ] 01-02: TBD
-- [ ] 01-03: TBD
-- [ ] 01-04: TBD
-- [ ] 01-05: TBD
+- [ ] 01-01-PLAN.md — Project scaffold: pyproject.toml, Python 3.12, directory skeleton, migration 002 SQL
+- [ ] 01-02-PLAN.md — Wave 0 test stubs: all 11 test files for Nyquist compliance
+- [ ] 01-03-PLAN.md — Core layer port: types, errors, logging, settings, storage (models/repos/parquet)
+- [ ] 01-04-PLAN.md — SportPlugin ABC + football config: leagues, markets YAML, FootballPlugin stub
+- [ ] 01-05-PLAN.md — Football async client + feature engineering: ApiFootballClient, FeatureEngineer, plugin wiring
+- [ ] 01-06-PLAN.md — CLV infrastructure: OddsApiClient, ClvRecorder, rolling average utility
+- [ ] 01-07-PLAN.md — APScheduler orchestrator + Supabase migration 002 apply [BLOCKING]
 
 ### Phase 2: ML Core -- Football
 **Goal**: A calibrated ensemble model produces probability maps for football matches, validated by walk-forward backtesting with opening odds and slippage, with model versioning and shadow mode infrastructure
@@ -141,7 +143,7 @@ Note: Phase 6 is conditional on CORNERS-01 gate (verified in Phase 3). Phase 7 c
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation + Data Pipeline + CLV | 0/5 | Not started | - |
+| 1. Foundation + Data Pipeline + CLV | 0/7 | Planning complete | - |
 | 2. ML Core -- Football | 0/3 | Not started | - |
 | 3. Pick Engine + Delivery + Account Protection | 0/3 | Not started | - |
 | 4. Production Orchestration | 0/3 | Not started | - |
