@@ -12,7 +12,7 @@ This roadmap delivers a production betting intelligence platform in 7 phases, fo
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation + Data Pipeline + CLV** - Plugin architecture, async data client, Supabase schema, feature store, and CLV recording infrastructure
+- [x] **Phase 1: Foundation + Data Pipeline + CLV** - Plugin architecture, async data client, Supabase schema, feature store, and CLV recording infrastructure
 - [ ] **Phase 2: ML Core -- Football** - Ensemble training pipeline with walk-forward backtesting using opening odds + slippage from day 1
 - [ ] **Phase 3: Pick Engine + Delivery + Account Protection** - EV filter, Kelly sizing, Betano account longevity protections, Telegram alerts, and Claude validator (Role C)
 - [ ] **Phase 4: Production Orchestration** - APScheduler pipeline, systemd deployment, graceful degradation, health monitoring, and CLV trend alerting
@@ -35,13 +35,13 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 7 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Project scaffold: pyproject.toml, Python 3.12, directory skeleton, migration 002 SQL
-- [ ] 01-02-PLAN.md — Wave 0 test stubs: all 11 test files for Nyquist compliance
-- [ ] 01-03-PLAN.md — Core layer port: types, errors, logging, settings, storage (models/repos/parquet)
-- [ ] 01-04-PLAN.md — SportPlugin ABC + football config: leagues, markets YAML, FootballPlugin stub
-- [ ] 01-05-PLAN.md — Football async client + feature engineering: ApiFootballClient, FeatureEngineer, plugin wiring
-- [ ] 01-06-PLAN.md — CLV infrastructure: OddsApiClient, ClvRecorder, rolling average utility
-- [ ] 01-07-PLAN.md — APScheduler orchestrator + Supabase migration 002 apply [BLOCKING]
+- [x] 01-01-PLAN.md — Project scaffold: pyproject.toml, Python 3.12, directory skeleton, migration 002 SQL
+- [x] 01-02-PLAN.md — Wave 0 test stubs: all 11 test files for Nyquist compliance
+- [x] 01-03-PLAN.md — Core layer port: types, errors, logging, settings, storage (models/repos/parquet)
+- [x] 01-04-PLAN.md — SportPlugin ABC + football config: leagues, markets YAML, FootballPlugin stub
+- [x] 01-05-PLAN.md — Football async client + feature engineering: ApiFootballClient, FeatureEngineer, plugin wiring
+- [x] 01-06-PLAN.md — CLV infrastructure: OddsApiClient, ClvRecorder, rolling average utility
+- [x] 01-07-PLAN.md — APScheduler orchestrator + Supabase migration 002 apply [BLOCKING]
 
 ### Phase 2: ML Core -- Football
 **Goal**: A calibrated ensemble model produces probability maps for football matches, validated by walk-forward backtesting with opening odds and slippage, with model versioning and shadow mode infrastructure
@@ -143,7 +143,7 @@ Note: Phase 6 is conditional on CORNERS-01 gate (verified in Phase 3). Phase 7 c
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation + Data Pipeline + CLV | 0/7 | Planning complete | - |
+| 1. Foundation + Data Pipeline + CLV | 7/7 | Complete | 2026-04-22 |
 | 2. ML Core -- Football | 0/3 | Not started | - |
 | 3. Pick Engine + Delivery + Account Protection | 0/3 | Not started | - |
 | 4. Production Orchestration | 0/3 | Not started | - |
