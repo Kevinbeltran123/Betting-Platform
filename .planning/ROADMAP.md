@@ -13,7 +13,7 @@ This roadmap delivers a production betting intelligence platform in 7 phases, fo
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation + Data Pipeline + CLV** - Plugin architecture, async data client, Supabase schema, feature store, and CLV recording infrastructure
-- [ ] **Phase 2: ML Core -- Football** - Ensemble training pipeline with walk-forward backtesting using opening odds + slippage from day 1
+- [x] **Phase 2: ML Core -- Football** - Ensemble training pipeline with walk-forward backtesting using opening odds + slippage from day 1
 - [ ] **Phase 3: Pick Engine + Delivery + Account Protection** - EV filter, Kelly sizing, Betano account longevity protections, Telegram alerts, and Claude validator (Role C)
 - [ ] **Phase 4: Production Orchestration** - APScheduler pipeline, systemd deployment, graceful degradation, health monitoring, and CLV trend alerting
 - [ ] **Phase 5: Claude Confidence Modifier (Shadow)** - Role B confidence modifier shipped in shadow mode; promoted only after walk-forward CLV improvement confirmed
@@ -61,7 +61,7 @@ Plans:
 - [x] 02-04-PLAN.md — bip.train package skeleton: WalkForwardSplitter, StackedEnsemble with nested OOF (D-03b), base-model hyperparams, backtest CLV math (2026-04-23)
 - [x] 02-05-PLAN.md — Calibration module (Platt/Isotonic selection, sklearn 1.8 FrozenEstimator) (2026-04-23)
 - [x] 02-06-PLAN.md — Artifact layer: ModelMetadata, ModelRegistry, ModelLoader, TrainingPipeline, Typer CLI + migration 003 (is_shadow column) [BLOCKING checkpoint]
-- [ ] 02-07-PLAN.md — FootballPlugin.predict() wiring: registry-driven production + shadow paths, graceful cold-start fallback
+- [x] 02-07-PLAN.md — FootballPlugin.predict() wiring: registry-driven production + shadow paths, graceful cold-start fallback
 
 ### Phase 3: Pick Engine + Delivery + Account Protection
 **Goal**: Qualified picks with genuine edge are delivered via Telegram with account longevity protections active from the first alert, and Claude Role C validates every pick against red flags before sending
@@ -148,7 +148,7 @@ Note: Phase 6 is conditional on CORNERS-01 gate (verified in Phase 3). Phase 7 c
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation + Data Pipeline + CLV | 7/7 | Complete | 2026-04-22 |
-| 2. ML Core -- Football | 6/7 | In Progress | - |
+| 2. ML Core -- Football | 7/7 | Complete | 2026-04-23 |
 | 3. Pick Engine + Delivery + Account Protection | 0/3 | Not started | - |
 | 4. Production Orchestration | 0/3 | Not started | - |
 | 5. Claude Confidence Modifier (Shadow) | 0/2 | Not started | - |
