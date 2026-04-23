@@ -84,6 +84,22 @@ class FootballPlugin(SportPlugin):
         logger.info("fixtures_fetched", count=len(fixtures), date=date_str)
         return fixtures
 
+    @staticmethod
+    def _parse_matchday(item: dict) -> int:
+        """Parse API-Football 'Regular Season - 12' → 12. Returns 0 on failure.
+
+        Examples:
+            "Regular Season - 12"  -> 12
+            "Quarter-finals"       -> 0
+            None                   -> 0
+        """
+        try:
+            round_str = item.get("league", {}).get("round") or ""
+            tail = round_str.rsplit("-", 1)[-1].strip()
+            return int(tail)
+        except (ValueError, AttributeError):
+            return 0
+
     def _parse_fixture(self, item: dict, league_slug: str) -> FixtureData | None:
         """Parse one API-Football fixture response item into FixtureData.
 
@@ -118,8 +134,35 @@ class FootballPlugin(SportPlugin):
         computed_at = datetime.now(UTC)
 
         async with ApiFootballClient(api_key=self._settings.api_football_key) as client:
+            # Fetch same-day fixtures to resolve matchday from API 'round' field
+            league_cfg = next(
+                (lc for lc in self._registry.all_leagues() if lc.slug == fixture.league),
+                None,
+            )
+            try:
+                raw_fixtures = await client.get_fixtures(
+                    league_id=league_cfg.api_mappings.api_football_league_id,
+                    date=fixture.kickoff_utc.strftime("%Y-%m-%d"),
+                ) if league_cfg else {"response": []}
+            except Exception as exc:
+                logger.warning(
+                    "fixtures_refetch_failed",
+                    fixture_id=fixture.fixture_id,
+                    error=str(exc),
+                )
+                raw_fixtures = {"response": []}
+
             raw_stats = await client.get_statistics(fixture_id=fixture.fixture_id)
             raw_lineups = await client.get_lineups(fixture_id=fixture.fixture_id)
+
+        # Resolve matchday from API 'round' field (T-02-03-04: falls back to 1)
+        matchday = 0
+        for item in raw_fixtures.get("response", []):
+            if item.get("fixture", {}).get("id") == fixture.fixture_id:
+                matchday = self._parse_matchday(item)
+                break
+        if matchday == 0:
+            matchday = 1  # carry-over default when round unparseable
 
         fm = self._engineer.build_features_for_fixture(
             fixture=fixture,
@@ -129,9 +172,7 @@ class FootballPlugin(SportPlugin):
         )
 
         # Write to Parquet cache (DATA-02)
-        # Season derived from kickoff year; matchday placeholder (Phase 2 will use API)
         season = f"{fixture.kickoff_utc.year}-{fixture.kickoff_utc.year + 1}"
-        matchday = 1  # placeholder; real matchday from API in Phase 2
 
         parquet_row = self._engineer.to_parquet_row(fm, matchday=matchday, season=season)
         self._store.write_features(parquet_row)
