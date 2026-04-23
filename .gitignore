@@ -8,3 +8,4 @@ dist/
 *.egg-info/
 data/cache/
 .venv/
+catboost_info/
