@@ -84,3 +84,40 @@ def sample_prediction():
         probabilities={"yes": 0.65, "no": 0.35},
         model_version="v1.0",
     )
+
+
+# ------------------------------------------------------------------
+# Phase 2 fixtures — synthetic training data + model directory
+# ------------------------------------------------------------------
+
+@pytest.fixture
+def synthetic_training_data():
+    """50-row synthetic dataset with known temporal ordering.
+
+    Returns (X, y, dates) where:
+      X: (50, 5) float features from default_rng(42)
+      y: (50,) int labels in {0, 1, 2}
+      dates: (50,) datetime array, 7-day spacing starting 2024-01-01
+
+    Use for fast ML unit tests (calibration, walk-forward, stacking).
+    """
+    import numpy as np
+    from datetime import datetime, timedelta
+    rng = np.random.default_rng(42)
+    n = 50
+    X = rng.standard_normal((n, 5))
+    y = rng.integers(0, 3, size=n)
+    dates = np.array([datetime(2024, 1, 1) + timedelta(days=i * 7) for i in range(n)])
+    return X, y, dates
+
+
+@pytest.fixture
+def tmp_model_dir(tmp_path):
+    """Temporary models/ directory for registry and loader tests.
+
+    Layout:
+      tmp_path/models/football/   <- returned parent (tmp_path/models)
+    """
+    model_dir = tmp_path / "models" / "football"
+    model_dir.mkdir(parents=True)
+    return tmp_path / "models"
