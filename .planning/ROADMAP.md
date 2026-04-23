@@ -52,12 +52,16 @@ Plans:
   2. Calibration uses Platt scaling for leagues with <300 validation samples and isotonic regression for leagues with >500 samples, with documented logloss improvement per league
   3. A new model version is saved to `models/football/{league}/{version}/` with `metadata.json` containing training date, feature set hash, calibration method, and backtest CLV
   4. Shadow mode logs a new model's predictions to Supabase with `is_shadow=true` without affecting the production prediction pipeline
-**Plans**: TBD
+**Plans**: 7 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
-- [ ] 02-03: TBD
+- [ ] 02-01-PLAN.md — Wave 0 test stubs (13 new test files) + pyproject.toml ML dependency set + pytest slow marker
+- [ ] 02-02-PLAN.md — Historical data seed script (scripts/seed_historical.py) — checkpointed, rate-limited, Pro-plan aware (D-01)
+- [ ] 02-03-PLAN.md — FeatureEngineer expansion: rolling form, ELO (penaltyblog), H2H, motivation, rest days, odds signals + matchday parsing from API
+- [ ] 02-04-PLAN.md — bip.train package skeleton: WalkForwardSplitter, StackedEnsemble with nested OOF (D-03b), base-model hyperparams, backtest CLV math
+- [ ] 02-05-PLAN.md — Calibration module (Platt/Isotonic selection, sklearn 1.8 FrozenEstimator)
+- [ ] 02-06-PLAN.md — Artifact layer: ModelMetadata, ModelRegistry, ModelLoader, TrainingPipeline, Typer CLI + migration 003 (is_shadow column) [BLOCKING checkpoint]
+- [ ] 02-07-PLAN.md — FootballPlugin.predict() wiring: registry-driven production + shadow paths, graceful cold-start fallback
 
 ### Phase 3: Pick Engine + Delivery + Account Protection
 **Goal**: Qualified picks with genuine edge are delivered via Telegram with account longevity protections active from the first alert, and Claude Role C validates every pick against red flags before sending
@@ -144,7 +148,7 @@ Note: Phase 6 is conditional on CORNERS-01 gate (verified in Phase 3). Phase 7 c
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation + Data Pipeline + CLV | 7/7 | Complete | 2026-04-22 |
-| 2. ML Core -- Football | 0/3 | Not started | - |
+| 2. ML Core -- Football | 0/7 | Not started | - |
 | 3. Pick Engine + Delivery + Account Protection | 0/3 | Not started | - |
 | 4. Production Orchestration | 0/3 | Not started | - |
 | 5. Claude Confidence Modifier (Shadow) | 0/2 | Not started | - |
