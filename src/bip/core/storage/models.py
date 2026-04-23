@@ -24,6 +24,7 @@ class Prediction(BaseModel):
     probabilities: dict
     model_version: str
     is_lineup_adjusted: bool = False
+    is_shadow: bool = False  # ML-05: shadow-mode flag (migration 003 adds column)
 
     def to_supabase_dict(self) -> dict:
         """Convert to dict for Supabase insert."""

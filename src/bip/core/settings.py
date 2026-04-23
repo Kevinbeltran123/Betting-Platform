@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     supabase_url: str
     supabase_key: str
     parquet_base_path: str = "data/cache"
+    model_dir: str = "models"  # Phase 2: root for model artifacts (models/{sport}/{league}/{version}/)
     api_football_key: str
     odds_api_key: str
     telegram_bot_token: str = ""

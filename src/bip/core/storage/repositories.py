@@ -74,6 +74,23 @@ class PredictionRepository:
         except Exception as e:
             raise StorageError(f"Failed to select from predictions: {e}") from e
 
+    def get_production(
+        self, fixture_id: int, market: str | None = None
+    ) -> list[dict]:
+        """Get non-shadow predictions for a fixture (Phase 3 pick engine reads these) — ML-05."""
+        try:
+            query = (
+                self.client.table("predictions")
+                .select("*")
+                .eq("fixture_id", fixture_id)
+                .eq("is_shadow", False)
+            )
+            if market is not None:
+                query = query.eq("market", market)
+            return query.execute().data
+        except Exception as e:
+            raise StorageError(f"Failed to select from predictions: {e}") from e
+
 
 @dataclass
 class PickRepository:

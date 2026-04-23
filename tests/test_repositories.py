@@ -103,8 +103,30 @@ class TestPredictionRepositoryShadow:
 
     def test_insert_production_prediction_default_is_shadow_false(self, mock_client):
         """Prediction.is_shadow defaults False — ML-05 safety."""
-        assert False, "not yet implemented"
+        builder = setup_mock_chain(mock_client, data=[{"id": 1, "is_shadow": False}])
+        from bip.core.storage.repositories import PredictionRepository
+        from bip.core.storage.models import Prediction
+        repo = PredictionRepository(client=mock_client)
+        pred = Prediction(
+            fixture_id=12345,
+            league="premier_league",
+            sport="football",
+            market="1X2",
+            home_team="Arsenal",
+            away_team="Chelsea",
+            kickoff_utc=datetime(2026, 4, 22, 15, 0, 0),
+            probabilities={"1": 0.45, "X": 0.28, "2": 0.27},
+            model_version="v1",
+        )
+        repo.insert(pred)
+        call_data = builder.insert.call_args[0][0]
+        assert call_data["is_shadow"] is False
 
     def test_get_production_filters_is_shadow_false(self, mock_client):
         """PredictionRepository.get_production filters is_shadow=False — ML-05."""
-        assert False, "not yet implemented"
+        builder = setup_mock_chain(mock_client, data=[])
+        from bip.core.storage.repositories import PredictionRepository
+        repo = PredictionRepository(client=mock_client)
+        repo.get_production(fixture_id=12345, market="1X2")
+        builder.eq.assert_any_call("is_shadow", False)
+        builder.eq.assert_any_call("market", "1X2")
