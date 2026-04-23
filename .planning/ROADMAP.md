@@ -57,7 +57,7 @@ Plans:
 Plans:
 - [x] 02-01-PLAN.md — Wave 0 test stubs (13 new test files) + pyproject.toml ML dependency set + pytest slow marker (2026-04-23)
 - [x] 02-02-PLAN.md — Historical data seed script (scripts/seed_historical.py) — checkpointed, rate-limited, Pro-plan aware (D-01) (2026-04-23)
-- [ ] 02-03-PLAN.md — FeatureEngineer expansion: rolling form, ELO (penaltyblog), H2H, motivation, rest days, odds signals + matchday parsing from API
+- [x] 02-03-PLAN.md — FeatureEngineer expansion: rolling form, ELO (penaltyblog), H2H, motivation, rest days, odds signals + matchday parsing from API (2026-04-23)
 - [ ] 02-04-PLAN.md — bip.train package skeleton: WalkForwardSplitter, StackedEnsemble with nested OOF (D-03b), base-model hyperparams, backtest CLV math
 - [ ] 02-05-PLAN.md — Calibration module (Platt/Isotonic selection, sklearn 1.8 FrozenEstimator)
 - [ ] 02-06-PLAN.md — Artifact layer: ModelMetadata, ModelRegistry, ModelLoader, TrainingPipeline, Typer CLI + migration 003 (is_shadow column) [BLOCKING checkpoint]
@@ -148,7 +148,7 @@ Note: Phase 6 is conditional on CORNERS-01 gate (verified in Phase 3). Phase 7 c
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation + Data Pipeline + CLV | 7/7 | Complete | 2026-04-22 |
-| 2. ML Core -- Football | 2/7 | In Progress | - |
+| 2. ML Core -- Football | 3/7 | In Progress | - |
 | 3. Pick Engine + Delivery + Account Protection | 0/3 | Not started | - |
 | 4. Production Orchestration | 0/3 | Not started | - |
 | 5. Claude Confidence Modifier (Shadow) | 0/2 | Not started | - |
