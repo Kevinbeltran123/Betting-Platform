@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 2 context gathered
-last_updated: "2026-04-23T18:48:03.081Z"
+stopped_at: Phase 02.1 context gathered
+last_updated: "2026-04-24T16:51:23.589Z"
 last_activity: 2026-04-23 -- Phase 02 execution started
 progress:
-  total_phases: 7
-  completed_phases: 1
+  total_phases: 8
+  completed_phases: 2
   total_plans: 14
-  completed_plans: 7
-  percent: 50
+  completed_plans: 14
+  percent: 100
 ---
 
 # Project State
@@ -67,6 +67,10 @@ Recent decisions affecting current work:
 - [Roadmap]: CORNERS-01 gate executed in Phase 3; Phase 6 engineering conditional on gate passing
 - [Roadmap]: Walk-forward backtesting uses opening odds + slippage from day 1 (non-negotiable, not retrofittable)
 
+### Roadmap Evolution
+
+- Phase 2.1 inserted after Phase 2 (2026-04-24): Close Phase 2 verification gaps — CLV end-to-end test + logloss improvement documentation (URGENT). Driver: Phase 2 verification (commit 43b4a7a) reported 2/4 PARTIAL items blocking clean handoff to Phase 3.
+
 ### Pending Todos
 
 None yet.
@@ -88,5 +92,5 @@ Items acknowledged and carried forward from previous milestone close:
 ## Session Continuity
 
 Last session: --stopped-at
-Stopped at: Phase 2 context gathered
+Stopped at: Phase 02.1 context gathered
 Resume file: --resume-file
