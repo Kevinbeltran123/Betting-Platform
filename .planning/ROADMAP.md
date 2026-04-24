@@ -63,6 +63,28 @@ Plans:
 - [x] 02-06-PLAN.md — Artifact layer: ModelMetadata, ModelRegistry, ModelLoader, TrainingPipeline, Typer CLI + migration 003 (is_shadow column) [BLOCKING checkpoint]
 - [x] 02-07-PLAN.md — FootballPlugin.predict() wiring: registry-driven production + shadow paths, graceful cold-start fallback
 
+### Phase 02.1: Close Phase 2 verification gaps: CLV end-to-end test + logloss improvement documentation (INSERTED)
+
+**Goal:** Wire `apply_slippage` + `compute_clv` into `TrainingPipeline.run()`, extend `seed_historical.py` to fetch historical opening odds (Betano via API-Football) + match results, surface real per-fold CLV numbers in `metadata.json`, and persist calibrated-vs-uncalibrated logloss improvement — closing both PARTIAL gaps from the Phase 2 verification report.
+**Requirements**: ML-02, ML-03
+**Depends on:** Phase 2
+**Plans:** 13 plans
+
+Plans:
+- [ ] 02.1-00-PLAN.md — Wave 0 stubs: 5 pytest stubs + verify_migration_003.py skeleton
+- [ ] 02.1-01-PLAN.md — Migration 003 verification script (psycopg, information_schema queries, D-15)
+- [ ] 02.1-02-PLAN.md — backtest.py: apply_slippage + compute_clv unit tests (fill stubs)
+- [ ] 02.1-03-PLAN.md — backtest.py: EDGE_THRESHOLD_PCT + simulate_pick() (D-09, D-10)
+- [ ] 02.1-04-PLAN.md — ModelMetadata: logloss_uncalibrated / logloss_calibrated / logloss_improvement_pct fields (D-13)
+- [ ] 02.1-05-PLAN.md — ParquetStore: write_results / read_results / write_odds / read_odds with 3-level Hive partitioning (D-04)
+- [ ] 02.1-06-PLAN.md — ApiFootballClient.get_odds() dual-mode dispatch: per-fixture (live) + bulk-per-season (historical)
+- [ ] 02.1-07-PLAN.md — OddsApiClient.fetch_historical_closing() stub (plumbing only, returns None — D-01)
+- [ ] 02.1-08-PLAN.md — features.py: feature_schema_version=2 + parquet_store.py mixed-version warning (D-08)
+- [ ] 02.1-09-PLAN.md — seed_historical.py: results extraction + bulk odds fetch + 3-key checkpoint (D-05, D-06)
+- [ ] 02.1-10-PLAN.md — TrainingPipeline.run(): wire CLV + logloss (the core gap-closer) (D-05, D-09, D-13)
+- [ ] 02.1-11-PLAN.md — Synthetic E2E integration test: test_training_pipeline_e2e.py (D-17 synthetic gate)
+- [ ] 02.1-12-PLAN.md — Premier League smoke train: real end-to-end exit check (D-16 one-shot) [BLOCKING]
+
 ### Phase 3: Pick Engine + Delivery + Account Protection
 **Goal**: Qualified picks with genuine edge are delivered via Telegram with account longevity protections active from the first alert, and Claude Role C validates every pick against red flags before sending
 **Depends on**: Phase 2
@@ -149,6 +171,7 @@ Note: Phase 6 is conditional on CORNERS-01 gate (verified in Phase 3). Phase 7 c
 |-------|----------------|--------|-----------|
 | 1. Foundation + Data Pipeline + CLV | 7/7 | Complete | 2026-04-22 |
 | 2. ML Core -- Football | 7/7 | Complete | 2026-04-23 |
+| 02.1. Close Phase 2 Gaps (INSERTED) | 0/13 | In progress | - |
 | 3. Pick Engine + Delivery + Account Protection | 0/3 | Not started | - |
 | 4. Production Orchestration | 0/3 | Not started | - |
 | 5. Claude Confidence Modifier (Shadow) | 0/2 | Not started | - |
