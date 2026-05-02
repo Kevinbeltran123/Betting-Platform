@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Plan 02.1-03 complete (EDGE_THRESHOLD_PCT + simulate_pick + 6 tests)
-last_updated: "2026-05-02T04:15:30.349Z"
+stopped_at: Plan 02.1-04 complete (logloss fields + 6 tests)
+last_updated: "2026-05-02T04:20:18.796Z"
 last_activity: 2026-05-02
 progress:
   total_phases: 8
   completed_phases: 2
   total_plans: 27
-  completed_plans: 18
-  percent: 67
+  completed_plans: 19
+  percent: 70
 ---
 
 # Project State
@@ -26,12 +26,12 @@ See: .planning/PROJECT.md (updated 2026-04-22)
 ## Current Position
 
 Phase: 02.1 (close-phase-2-verification-gaps) — EXECUTING
-Plan: 4 of 13
+Plan: 5 of 13
 Next: Execute Phase 2 (7 plans, 6 waves)
 Status: Ready to execute
 Last activity: 2026-05-02
 
-Progress: [███████░░░] 67%
+Progress: [███████░░░] 70%
 
 ## Performance Metrics
 
@@ -56,6 +56,7 @@ Progress: [███████░░░] 67%
 | Phase 02.1 P00 | 4min | 1 tasks | 6 files |
 | Phase 02.1 P01 | 16min | 2 tasks | 3 files |
 | Phase 02.1 P03 | 7min | 1 tasks | 2 files |
+| Phase 02.1 P04 | 2min | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -72,6 +73,7 @@ Recent decisions affecting current work:
 - Phase 02.1 Wave 0 stubs use module-level pytest.mark.skip; verify_migration_003.py stub returns exit 1 even when SUPABASE_DB_PASSWORD set so accidental run cannot mark D-15 complete
 - Phase 02.1 D-15 (live migration 003) satisfied via Supabase MCP apply_migration; reconstructed migration 001 (base_schema) from Pydantic models because live project was empty (CLAUDE.md schema claim was inherited from upstream)
 - Phase 02.1 P03 — EDGE_THRESHOLD_PCT lives in bip.train.backtest (single source) so backtest CLV and Phase 3 pick engine import the same symbol; D-10 single-source-of-truth satisfied
+- Phase 02.1 P04 — ModelMetadata.logloss_(uncalibrated|calibrated|improvement_pct) added as float | None = None; nullable defaults preserve Phase 2 backcompat (Pitfall 7); negative improvement_pct allowed (Pitfall 6 — regression signal)
 
 ### Roadmap Evolution
 
@@ -97,8 +99,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-02T04:15:30.345Z
-Stopped at: Plan 02.1-03 complete (EDGE_THRESHOLD_PCT + simulate_pick + 6 tests)
+Last session: 2026-05-02T04:20:18.790Z
+Stopped at: Plan 02.1-04 complete (logloss fields + 6 tests)
 Resume file: None
 
 **Planned Phase:** 02.1 (Close Phase 2 verification gaps — CLV end-to-end test + logloss improvement documentation) — 13 plans — 2026-04-24T19:47:16.616Z
