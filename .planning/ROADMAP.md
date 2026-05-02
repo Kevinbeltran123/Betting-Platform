@@ -95,12 +95,21 @@ Plans:
   3. Claude Role C reads each pick against `learnings/football-learnings.md` and outputs CONFIRM/FLAG/REJECT -- REJECT blocks the alert, FLAG sends with a warning tag
   4. All picks (sent and filtered) are logged to Supabase `picks` table with status `pending` and updated to `won/lost/void` post-match
   5. CORNERS-01 go/no-go gate is executed: Betano time-window corner markets verified and API-Football corner timing data confirmed for 5 leagues across 3+ seasons -- result documented regardless of outcome
-**Plans**: TBD
+**Plans**: 12 plans
 
 Plans:
-- [ ] 03-01: TBD
-- [ ] 03-02: TBD
-- [ ] 03-03: TBD
+- [ ] 03-00-PLAN.md — Wave 0 stubs: 16 RED test files + .env.example + verify_migration_004.py skeleton
+- [ ] 03-01-PLAN.md — Migration 004 SQL (claude_* columns + status CHECK widening + idx_picks_sport_market_created) + apply via Supabase MCP + verify [BLOCKING]
+- [ ] 03-02-PLAN.md — Settings extension (TELEGRAM_CHANNEL_ID validator, ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_KELLY_FRACTION) + types extension (PickStatus filtered/rejected) + Pick model claude_* fields + 3 domain errors
+- [ ] 03-03-PLAN.md — account_longevity.py (quarter_kelly + round_half_unit + md5 jitter + deterministic_send_at + 60% market cap) + 4 new PickRepository methods (TDD)
+- [ ] 03-04-PLAN.md — Port football-learnings.md verbatim + learnings_loader.py with git SHA stamping + sha256 fallback
+- [ ] 03-05-PLAN.md — claude/validator.py (AsyncAnthropic + strict tool_use + cache_control ephemeral + D-07 hand-rolled retry) + anthropic SDK pin (TDD)
+- [ ] 03-06-PLAN.md — telegram/bot.py + sender.py + Jinja2 pick.html template (D-12 HTML, D-14 FLAG marker, D-15 bullet cap, T-3-XSS escape) + python-telegram-bot[rate-limiter] + jinja2 deps
+- [ ] 03-07-PLAN.md — picks/engine.py (PickEngine.evaluate orchestration: edge → kelly+jitter → market cap → claude → schedule send, all paths persist, idempotent on (fixture_id, market, prediction_id)) (TDD)
+- [ ] 03-08-PLAN.md — Orchestrator extension (pick_engine hook in _run_pipeline, _register_reconciliation DateTrigger, _reconcile_results all 16 status codes, _auto_recover Pitfall 6 re-queue lost sends)
+- [ ] 03-09-PLAN.md — CORNERS-01 D-17a manual probe checklist + findings template (Markdown, no YAML)
+- [ ] 03-10-PLAN.md — CORNERS-01 D-17b Polars coverage script + D-18 descope orchestrator (gsd-sdk roadmap.move-phase + STATE.md entry + git commit)
+- [ ] 03-11-PLAN.md — Manual end-to-end smoke runner + runbook (live Telegram + Anthropic + Supabase verification before /gsd-verify-work)
 
 ### Phase 4: Production Orchestration
 **Goal**: The full pipeline runs autonomously on a VPS with scheduled jobs, graceful degradation when external services fail, health monitoring, and CLV-based performance alerting
