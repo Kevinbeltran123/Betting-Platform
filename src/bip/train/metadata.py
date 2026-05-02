@@ -43,6 +43,15 @@ class ModelMetadata(BaseModel):
     slippage_pct: float = 0.015
     git_commit: str | None = None
 
+    # --- NEW in Phase 02.1 (D-13) ---
+    # Nullable defaults preserve Phase 2 test compatibility (research finding 5; Pitfall 7).
+    # logloss_improvement_pct: POSITIVE = calibration improved loss (Pitfall 6).
+    #   Negative values are valid — they signal a regression, which D-16 exit
+    #   criterion flags as a failed gate.
+    logloss_uncalibrated: float | None = None
+    logloss_calibrated: float | None = None
+    logloss_improvement_pct: float | None = None
+
     def to_dict(self) -> dict:
         data = self.model_dump()
         data["training_date"] = self.training_date.isoformat()
