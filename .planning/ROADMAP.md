@@ -79,8 +79,8 @@ Plans:
 - [x] 02.1-05-PLAN.md — ParquetStore: write_results / read_results / write_odds / read_odds with 3-level Hive partitioning (D-04) (2026-05-02)
 - [x] 02.1-06-PLAN.md — ApiFootballClient.get_odds() dual-mode dispatch: per-fixture (live) + bulk-per-season (historical) (2026-05-02)
 - [x] 02.1-07-PLAN.md — OddsApiClient.fetch_historical_closing() stub (plumbing only, returns None — D-01) (2026-05-02)
-- [ ] 02.1-08-PLAN.md — features.py: feature_schema_version=2 + parquet_store.py mixed-version warning (D-08)
-- [ ] 02.1-09-PLAN.md — seed_historical.py: results extraction + bulk odds fetch + 3-key checkpoint (D-05, D-06)
+- [x] 02.1-08-PLAN.md — features.py: feature_schema_version=2 + parquet_store.py mixed-version warning (D-08) (2026-05-02)
+- [x] 02.1-09-PLAN.md — seed_historical.py: results extraction + bulk odds fetch + 3-key checkpoint (D-05, D-06) (2026-05-02)
 - [ ] 02.1-10-PLAN.md — TrainingPipeline.run(): wire CLV + logloss (the core gap-closer) (D-05, D-09, D-13)
 - [ ] 02.1-11-PLAN.md — Synthetic E2E integration test: test_training_pipeline_e2e.py (D-17 synthetic gate)
 - [ ] 02.1-12-PLAN.md — Premier League smoke train: real end-to-end exit check (D-16 one-shot) [BLOCKING]
