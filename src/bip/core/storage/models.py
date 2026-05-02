@@ -4,15 +4,25 @@ These are the Python-side representations of the 6 Supabase tables.
 Each model provides validation and a to_supabase_dict() method for inserts.
 """
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from bip.core.types import AggregationPeriod, PickStatus
 
 
 class Prediction(BaseModel):
-    """Model output for a match/market combination."""
+    """Model output for a match/market combination.
+
+    WR-06: ``created_at`` is server-defaulted (`DEFAULT now()`) on the
+    Supabase ``predictions`` table. The model accepts the round-tripped
+    column through ``model_config = extra="ignore"`` so reading a row from
+    Supabase via ``Prediction.model_validate(row)`` does not raise on the
+    extra ``created_at`` field. The model itself never writes
+    ``created_at`` (the server fills it on INSERT).
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     fixture_id: int
     league: str
@@ -34,7 +44,14 @@ class Prediction(BaseModel):
 
 
 class Pick(BaseModel):
-    """A prediction that met the edge threshold — a recommended bet."""
+    """A prediction that met the edge threshold — a recommended bet.
+
+    WR-06: ``created_at`` is server-defaulted on ``picks``; ``extra="ignore"``
+    lets ``Pick.model_validate(row)`` round-trip without raising on the
+    extra column.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     prediction_id: int | None = None
     fixture_id: int
@@ -59,7 +76,18 @@ class Pick(BaseModel):
 
 
 class OddsSnapshot(BaseModel):
-    """Odds captured at a point in time for CLV tracking."""
+    """Odds captured at a point in time for CLV tracking.
+
+    WR-06: the SQL column is ``captured_at TIMESTAMPTZ NOT NULL DEFAULT
+    now()`` — relying on the server default would silently disagree with
+    the Python-side capture time by milliseconds-to-seconds and break
+    CLV's "captured at exactly T+105m" semantic. ``to_supabase_dict``
+    therefore always emits a concrete ``captured_at`` (defaulting to
+    "now" at dump-time when the caller did not supply one); the server
+    default is now defensive only.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     fixture_id: int
     sport: str = "football"
@@ -70,15 +98,26 @@ class OddsSnapshot(BaseModel):
     captured_at: datetime | None = None
 
     def to_supabase_dict(self) -> dict:
-        """Convert to dict for Supabase insert."""
+        """Convert to dict for Supabase insert.
+
+        Always emits ``captured_at`` so the server default cannot fire and
+        produce a timestamp that disagrees with the Python-side capture
+        time (WR-06).
+        """
         data = self.model_dump()
-        if self.captured_at:
-            data["captured_at"] = self.captured_at.isoformat()
+        captured = self.captured_at or datetime.now(UTC)
+        data["captured_at"] = captured.isoformat()
         return data
 
 
 class Result(BaseModel):
-    """Match outcome."""
+    """Match outcome.
+
+    WR-06: ``created_at`` is server-defaulted on ``results``; ``extra="ignore"``
+    permits round-tripping that column without a Pydantic field.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     fixture_id: int
     league: str
@@ -103,7 +142,13 @@ class Result(BaseModel):
 
 
 class ClvRecord(BaseModel):
-    """Per-bet CLV (Closing Line Value) calculation."""
+    """Per-bet CLV (Closing Line Value) calculation.
+
+    WR-06: ``created_at`` is server-defaulted on ``clv_records``;
+    ``extra="ignore"`` permits round-tripping that column.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     pick_id: int
     fixture_id: int
@@ -125,7 +170,13 @@ class ClvRecord(BaseModel):
 
 
 class PerformanceMetric(BaseModel):
-    """Aggregated performance metrics by league/market/period."""
+    """Aggregated performance metrics by league/market/period.
+
+    WR-06: ``created_at`` is server-defaulted on ``performance_metrics``;
+    ``extra="ignore"`` permits round-tripping that column.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     league: str
     sport: str = "football"
