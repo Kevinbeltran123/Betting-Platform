@@ -1,12 +1,18 @@
 ---
 phase: 02-ml-core-football
 verified: 2026-04-23T00:00:00Z
-status: gaps_found
-score: 2/4 success criteria fully verified (plus 2 PARTIAL)
+status: resolved_pending_empirical
+score: 2/4 originally + 2 PARTIAL → all 4 structurally resolved by Phase 02.1; empirical PASS pending Phase 3 prep smoke train
 overrides_applied: 0
+resolved_by:
+  - phase: 02.1
+    plans: [02.1-04, 02.1-05, 02.1-09, 02.1-10, 02.1-11]
+    note: "Code paths wired and synthetic E2E gate passes; real PL smoke train (Plan 02.1-12) deferred to Phase 3 prep on user-accepted risk"
 gaps:
   - truth: "Walk-forward backtest over 5 leagues produces per-fold CLV estimates using opening odds with 1-2% slippage applied"
-    status: partial
+    status: resolved
+    resolved_in: "02.1-10"
+    resolved_note: "TrainingPipeline.run() now invokes apply_slippage + compute_clv per test row, with fold_details[].clv_pct populated and walk_forward_mean_clv_pct aggregated across folds reaching ≥20 picks. Plan 02.1-11 synthetic E2E test asserts ModelMetadata fields populated. Plan 02.1-09 extended seed_historical to ingest results + bulk odds. Plan 02.1-12 (real PL smoke train) DEFERRED — empirical non-zero CLV confirmation pending Phase 3 prep."
     reason: "backtest.py ships correct opening-odds + slippage math (apply_slippage, compute_clv, SLIPPAGE_PCT=0.015) with passing unit tests, and StackedEnsemble + WalkForwardSplitter produce per-fold predictions. But TrainingPipeline.run() never invokes apply_slippage/compute_clv -- pipeline.py:99-104 hardcodes clv_pct=None per fold and pipeline.py:149 defaults walk_forward_mean_clv_pct=0.0. No fold has ever produced a real CLV number because (a) scripts/seed_historical.py does not fetch opening odds from The Odds API historical endpoint, (b) the Parquet feature schema has no opening_home/draw/away columns, and (c) the pipeline has no join step from feature rows to opening-odds rows. Additionally, the seed script does not fetch match results (home_goals/away_goals) which pipeline.py:60-64 REQUIRES to derive labels -- so TrainingPipeline.run() cannot even be invoked end-to-end today without manual Parquet augmentation. Criterion 1 says per-fold CLV estimates are produced -- they are not."
     artifacts:
       - path: "src/bip/train/pipeline.py"
@@ -22,7 +28,9 @@ gaps:
       - "End-to-end smoke test that trains one league on synthetic or real data and asserts a non-null per-fold CLV lands in metadata.json"
 
   - truth: "Calibration logloss improvement is documented per league"
-    status: partial
+    status: resolved
+    resolved_in: "02.1-04, 02.1-10"
+    resolved_note: "ModelMetadata extended with logloss_uncalibrated, logloss_calibrated, logloss_improvement_pct (Plan 02.1-04). TrainingPipeline.run() computes log_loss(y_val, raw_probs) and log_loss(y_val, cal_probs) and persists the delta to metadata.json (Plan 02.1-10). Per-league empirical numbers pending Phase 3 prep smoke train (Plan 02.1-12 DEFERRED)."
     reason: "select_calibrator implements the <300 Platt / >500 Isotonic rule correctly (with 300-500 fallback to Platt per RESEARCH Pitfall 7), and calibration.calibrate() uses the sklearn 1.8 FrozenEstimator pattern. A unit test (test_calibration_improves_logloss) verifies logloss does not regress on synthetic data. But NOTHING in the production pipeline records per-league logloss_before/logloss_after in metadata.json. ModelMetadata has no logloss_uncalibrated / logloss_calibrated / logloss_improvement fields. TrainingPipeline.run() fits a calibrator on the last test fold and writes it, but never computes uncalibrated-vs-calibrated logloss and never persists the delta. Criterion 2's wording 'documented logloss improvement per league' is unmet at the artifact level."
     artifacts:
       - path: "src/bip/train/metadata.py"
