@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 02.1 context gathered
-last_updated: "2026-04-24T19:47:16.622Z"
-last_activity: 2026-04-23 -- Phase 02 execution started
+stopped_at: Plan 02.1-00 complete
+last_updated: "2026-05-02T03:47:09.818Z"
+last_activity: 2026-05-02
 progress:
   total_phases: 8
   completed_phases: 2
   total_plans: 27
-  completed_plans: 14
-  percent: 52
+  completed_plans: 15
+  percent: 56
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-22)
 
 **Core value:** Find and deliver bets with genuine statistical edge (CLV > +3% against Pinnacle closing lines) -- if there's no edge, send nothing.
-**Current focus:** Phase 02
+**Current focus:** Phase 02.1 — close-phase-2-verification-gaps
 
 ## Current Position
 
-Phase: 02 — EXECUTING
-Plan: 1 of ?
+Phase: 02.1 (close-phase-2-verification-gaps) — EXECUTING
+Plan: 2 of 13
 Next: Execute Phase 2 (7 plans, 6 waves)
-Status: Executing Phase 02
-Last activity: 2026-04-23 -- Phase 02 execution started
+Status: Ready to execute
+Last activity: 2026-05-02
 
-Progress: [█░░░░░░░░░] 14%
+Progress: [██████░░░░] 56%
 
 ## Performance Metrics
 
@@ -53,6 +53,7 @@ Progress: [█░░░░░░░░░] 14%
 - Trend: -
 
 *Updated after each plan completion*
+| Phase 02.1 P00 | 4min | 1 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -66,6 +67,7 @@ Recent decisions affecting current work:
 - [Roadmap]: Claude Role C (validator) ships Phase 3; Role B (confidence modifier) ships Phase 5 in shadow mode
 - [Roadmap]: CORNERS-01 gate executed in Phase 3; Phase 6 engineering conditional on gate passing
 - [Roadmap]: Walk-forward backtesting uses opening odds + slippage from day 1 (non-negotiable, not retrofittable)
+- Phase 02.1 Wave 0 stubs use module-level pytest.mark.skip; verify_migration_003.py stub returns exit 1 even when SUPABASE_DB_PASSWORD set so accidental run cannot mark D-15 complete
 
 ### Roadmap Evolution
 
@@ -91,8 +93,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: --stopped-at
-Stopped at: Phase 02.1 context gathered
-Resume file: --resume-file
+Last session: 2026-05-02T03:47:09.814Z
+Stopped at: Plan 02.1-00 complete
+Resume file: None
 
 **Planned Phase:** 02.1 (Close Phase 2 verification gaps — CLV end-to-end test + logloss improvement documentation) — 13 plans — 2026-04-24T19:47:16.616Z

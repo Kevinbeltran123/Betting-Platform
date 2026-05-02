@@ -21,8 +21,10 @@
 ### ML — Machine Learning Core
 
 - [ ] **ML-01**: XGBoost 3.x + CatBoost 1.2 + LightGBM 4.x ensemble training pipeline with meta-learner (LogisticRegression stacking), outputs `ProbabilityMap` conforming to `SportPlugin` interface
-- [ ] **ML-02**: Walk-forward backtesting uses opening odds (not closing) + 1-2% slippage assumption from day 1 — retrofitting this later invalidates all earlier results
-- [ ] **ML-03**: Calibration strategy: Platt scaling for leagues with <300 validation samples, isotonic regression for >500 samples; `calibrate_by_league()` (not walk-forward variant — documented overfitting failure)
+- [x] **ML-02
+**: Walk-forward backtesting uses opening odds (not closing) + 1-2% slippage assumption from day 1 — retrofitting this later invalidates all earlier results
+- [x] **ML-03
+**: Calibration strategy: Platt scaling for leagues with <300 validation samples, isotonic regression for >500 samples; `calibrate_by_league()` (not walk-forward variant — documented overfitting failure)
 - [ ] **ML-04**: Model versioning on filesystem (`models/{sport}/{league}/{version}/`) with `metadata.json` (training date, feature set, calibration method, backtest CLV); new model promoted only if walk-forward CLV > current production model
 - [ ] **ML-05**: Shadow mode for model A/B testing — new model logs predictions without acting on them; shadow predictions stored in Supabase `predictions` table with `is_shadow=true`
 

@@ -71,7 +71,7 @@ Plans:
 **Plans:** 13 plans
 
 Plans:
-- [ ] 02.1-00-PLAN.md — Wave 0 stubs: 5 pytest stubs + verify_migration_003.py skeleton
+- [x] 02.1-00-PLAN.md — Wave 0 stubs: 5 pytest stubs + verify_migration_003.py skeleton (2026-05-02)
 - [ ] 02.1-01-PLAN.md — Migration 003 verification script (psycopg, information_schema queries, D-15)
 - [ ] 02.1-02-PLAN.md — backtest.py: apply_slippage + compute_clv unit tests (fill stubs)
 - [ ] 02.1-03-PLAN.md — backtest.py: EDGE_THRESHOLD_PCT + simulate_pick() (D-09, D-10)
