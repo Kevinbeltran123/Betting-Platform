@@ -73,7 +73,7 @@ Plans:
 Plans:
 - [x] 02.1-00-PLAN.md — Wave 0 stubs: 5 pytest stubs + verify_migration_003.py skeleton (2026-05-02)
 - [x] 02.1-01-PLAN.md — Migration 003 verification script (psycopg, information_schema queries, D-15) (2026-05-02)
-- [ ] 02.1-02-PLAN.md — backtest.py: apply_slippage + compute_clv unit tests (fill stubs)
+- [x] 02.1-02-PLAN.md — One-shot probe script for bulk /odds?league&season endpoint (verification deferred per user) (2026-05-01)
 - [ ] 02.1-03-PLAN.md — backtest.py: EDGE_THRESHOLD_PCT + simulate_pick() (D-09, D-10)
 - [ ] 02.1-04-PLAN.md — ModelMetadata: logloss_uncalibrated / logloss_calibrated / logloss_improvement_pct fields (D-13)
 - [ ] 02.1-05-PLAN.md — ParquetStore: write_results / read_results / write_odds / read_odds with 3-level Hive partitioning (D-04)
