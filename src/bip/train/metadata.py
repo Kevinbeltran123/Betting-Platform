@@ -34,7 +34,7 @@ class ModelMetadata(BaseModel):
     calibration_method: str            # "platt" | "isotonic"
     calibration_samples: int
     walk_forward_folds: int
-    walk_forward_mean_clv_pct: float   # promotion criterion
+    walk_forward_mean_clv_pct: float | None   # promotion criterion (None when no fold has >=20 picks; D-11)
     walk_forward_fold_details: list[dict] = Field(default_factory=list)
     base_model_params: dict[str, Any] = Field(default_factory=dict)
     base_model_packages: dict[str, str] = Field(default_factory=dict)

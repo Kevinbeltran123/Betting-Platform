@@ -36,9 +36,14 @@ def fit(
         version = f"v{len(history) + 1}"
     pipeline = TrainingPipeline(settings=settings)
     meta = pipeline.run(league=league, version=version)
+    clv_str = (
+        f"{meta.walk_forward_mean_clv_pct:.2f}%"
+        if meta.walk_forward_mean_clv_pct is not None
+        else "N/A (no fold reached 20 picks)"
+    )
     typer.echo(
         f"Trained {league}/{meta.version} — "
-        f"CLV {meta.walk_forward_mean_clv_pct:.2f}% "
+        f"CLV {clv_str} "
         f"over {meta.walk_forward_folds} folds"
     )
 
@@ -52,9 +57,14 @@ def backtest(
     settings = Settings()
     pipeline = TrainingPipeline(settings=settings)
     meta = pipeline.run(league=league, version=version)
+    clv_str = (
+        f"{meta.walk_forward_mean_clv_pct:.2f}%"
+        if meta.walk_forward_mean_clv_pct is not None
+        else "N/A (no fold reached 20 picks)"
+    )
     typer.echo(
         f"Backtested {league}/{meta.version} — "
-        f"CLV {meta.walk_forward_mean_clv_pct:.2f}%"
+        f"CLV {clv_str}"
     )
 
 
