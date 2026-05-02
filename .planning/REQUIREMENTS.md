@@ -108,8 +108,8 @@
 | CLV-03 | Phase 1 | Pending |
 | CLV-04 | Phase 1 | Pending |
 | ML-01 | Phase 2 | Pending |
-| ML-02 | Phase 2 | Pending |
-| ML-03 | Phase 2 | Pending |
+| ML-02 | Phase 2 | Complete |
+| ML-03 | Phase 2 | Complete |
 | ML-04 | Phase 2 | Pending |
 | ML-05 | Phase 2 | Pending |
 | PICK-01 | Phase 3 | Pending |

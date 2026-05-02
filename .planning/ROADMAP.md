@@ -68,7 +68,7 @@ Plans:
 **Goal:** Wire `apply_slippage` + `compute_clv` into `TrainingPipeline.run()`, extend `seed_historical.py` to fetch historical opening odds (Betano via API-Football) + match results, surface real per-fold CLV numbers in `metadata.json`, and persist calibrated-vs-uncalibrated logloss improvement — closing both PARTIAL gaps from the Phase 2 verification report.
 **Requirements**: ML-02, ML-03
 **Depends on:** Phase 2
-**Plans:** 13 plans
+**Plans:** 13/13 plans complete
 
 Plans:
 - [x] 02.1-00-PLAN.md — Wave 0 stubs: 5 pytest stubs + verify_migration_003.py skeleton (2026-05-02)
@@ -171,7 +171,7 @@ Note: Phase 6 is conditional on CORNERS-01 gate (verified in Phase 3). Phase 7 c
 |-------|----------------|--------|-----------|
 | 1. Foundation + Data Pipeline + CLV | 7/7 | Complete | 2026-04-22 |
 | 2. ML Core -- Football | 7/7 | Complete | 2026-04-23 |
-| 02.1. Close Phase 2 Gaps (INSERTED) | 11/13 | In progress | - |
+| 02.1. Close Phase 2 Gaps (INSERTED) | 13/13 | Complete    | 2026-05-02 |
 | 3. Pick Engine + Delivery + Account Protection | 0/3 | Not started | - |
 | 4. Production Orchestration | 0/3 | Not started | - |
 | 5. Claude Confidence Modifier (Shadow) | 0/2 | Not started | - |
