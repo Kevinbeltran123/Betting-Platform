@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import sys
+from urllib.parse import quote
 
 import psycopg
 import structlog
@@ -32,10 +33,17 @@ def derive_db_url(supabase_url: str, db_password: str) -> str:
     """Convert SUPABASE_URL (https://<ref>.supabase.co) → direct Postgres URL.
 
     Format: postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres
+
+    WR-02: Supabase auto-generated passwords commonly contain ``@``, ``#``,
+    ``!``, ``?``, ``/``, ``:`` and ``%`` — all of which require percent-
+    encoding inside the userinfo component of a URI. ``urllib.parse.quote``
+    with ``safe=''`` escapes every reserved character so a password with
+    ``@`` does not silently split userinfo prematurely (which would also
+    leak part of the password into the sanitized-host log line below).
     """
     subdomain = supabase_url.removeprefix("https://").removesuffix(".supabase.co")
     return (
-        f"postgresql://postgres:{db_password}"
+        f"postgresql://postgres:{quote(db_password, safe='')}"
         f"@db.{subdomain}.supabase.co:5432/postgres"
     )
 
@@ -48,8 +56,12 @@ def main() -> int:
         return 1
 
     db_url = derive_db_url(settings.supabase_url, db_password)
-    # T-02.1-02: never log db_url (contains password). Only log the sanitized host.
-    sanitized_host = db_url.split("@", 1)[-1]
+    # T-02.1-02 + WR-02: never log db_url (contains password). Use rsplit on
+    # the LAST ``@`` so the host portion is taken from the right of the final
+    # delimiter — splitting on the FIRST ``@`` could land inside a password
+    # that contains an ``@`` (now percent-encoded by derive_db_url, but the
+    # rsplit defends in depth against any future caller passing a raw URL).
+    sanitized_host = db_url.rsplit("@", 1)[-1]
 
     try:
         with psycopg.connect(db_url) as conn, conn.cursor() as cur:
