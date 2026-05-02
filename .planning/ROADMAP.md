@@ -72,7 +72,7 @@ Plans:
 
 Plans:
 - [x] 02.1-00-PLAN.md — Wave 0 stubs: 5 pytest stubs + verify_migration_003.py skeleton (2026-05-02)
-- [ ] 02.1-01-PLAN.md — Migration 003 verification script (psycopg, information_schema queries, D-15)
+- [x] 02.1-01-PLAN.md — Migration 003 verification script (psycopg, information_schema queries, D-15) (2026-05-02)
 - [ ] 02.1-02-PLAN.md — backtest.py: apply_slippage + compute_clv unit tests (fill stubs)
 - [ ] 02.1-03-PLAN.md — backtest.py: EDGE_THRESHOLD_PCT + simulate_pick() (D-09, D-10)
 - [ ] 02.1-04-PLAN.md — ModelMetadata: logloss_uncalibrated / logloss_calibrated / logloss_improvement_pct fields (D-13)
@@ -171,7 +171,7 @@ Note: Phase 6 is conditional on CORNERS-01 gate (verified in Phase 3). Phase 7 c
 |-------|----------------|--------|-----------|
 | 1. Foundation + Data Pipeline + CLV | 7/7 | Complete | 2026-04-22 |
 | 2. ML Core -- Football | 7/7 | Complete | 2026-04-23 |
-| 02.1. Close Phase 2 Gaps (INSERTED) | 0/13 | In progress | - |
+| 02.1. Close Phase 2 Gaps (INSERTED) | 2/13 | In progress | - |
 | 3. Pick Engine + Delivery + Account Protection | 0/3 | Not started | - |
 | 4. Production Orchestration | 0/3 | Not started | - |
 | 5. Claude Confidence Modifier (Shadow) | 0/2 | Not started | - |
