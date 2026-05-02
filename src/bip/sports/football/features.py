@@ -455,6 +455,17 @@ class FeatureEngineer:
             "set_pieces_home": 0.0,
             "set_pieces_away": 0.0,
         }
+        # WR-05: API-Football's statistics list often contains multiple
+        # entries whose type strings match the previous substring matchers
+        # ("Total Shots" + "Shots insidebox", "Corner Kicks" + a hypothetical
+        # "Corner Kicks Conceded"). The earlier ``in`` matcher accepted both
+        # and the LAST one won — order-dependent on API response shape.
+        # Switch to exact-name matching against an explicit whitelist so
+        # the lookup is deterministic and robust to new "*-like" stat
+        # names appearing in future API responses.
+        _SHOT_TOTAL = "total shots"
+        _POSSESSION = "ball possession"
+        _CORNERS = "corner kicks"
         for item in raw_stats.get("response", []) or []:
             team_name = (item.get("team") or {}).get("name", "")
             if team_name == home_team:
@@ -464,7 +475,7 @@ class FeatureEngineer:
             else:
                 continue
             for stat in item.get("statistics", []) or []:
-                name = (stat.get("type") or "").lower()
+                name = (stat.get("type") or "").strip().lower()
                 val = stat.get("value")
                 if val is None:
                     continue
@@ -472,11 +483,11 @@ class FeatureEngineer:
                     num = float(str(val).rstrip("%"))
                 except (TypeError, ValueError):
                     continue
-                if "shot" in name and "total" in name:
+                if name == _SHOT_TOTAL:
                     out[f"shots_{side}"] = num
-                elif "possession" in name:
+                elif name == _POSSESSION:
                     out[f"possession_{side}"] = num
-                elif "corner" in name:
+                elif name == _CORNERS:
                     out[f"set_pieces_{side}"] = num
         return out
 
