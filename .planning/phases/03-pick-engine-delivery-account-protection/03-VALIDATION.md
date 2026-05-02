@@ -39,7 +39,7 @@ created: 2026-05-02
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 03-01-XX | 01 | 1 | Migration 004 | T-3-DDL | Idempotent CHECK widening | manual+verify | `psql -f scripts/verify_migration_004.sql` | ❌ W0 | ⬜ pending |
+| 03-01-XX | 01 | 1 | Migration 004 | T-3-DDL | Idempotent CHECK widening | manual+verify | `uv run python scripts/verify_migration_004.py` | ❌ W0 | ⬜ pending |
 | 03-02-XX | 02 | 1 | PICK-01 | — | edge < 5% filtered | unit | `pytest tests/train/test_backtest.py::test_simulate_pick_edge_threshold -x` | ✅ (Phase 02.1) — REUSED | ⬜ pending |
 | 03-03-XX | 03 | 2 | PICK-02 | — | quarter_kelly math | unit | `pytest tests/picks/test_account_longevity.py::test_quarter_kelly -x` | ❌ W0 | ⬜ pending |
 | 03-03-XX | 03 | 2 | PICK-02 | — | round to 0.5 unit | unit | `pytest tests/picks/test_account_longevity.py::test_round_half_unit -x` | ❌ W0 | ⬜ pending |
@@ -58,6 +58,10 @@ created: 2026-05-02
 | 03-08-XX | 08 | 4 | PICK-05 (D-16) | — | FT→won/lost; PST/CANC/ABD→void; PEN→regulation+ET | unit | `pytest tests/scheduler/test_reconcile.py::test_status_to_settlement -x` | ❌ W0 | ⬜ pending |
 | 03-08-XX | 08 | 4 | PICK-05 (D-16) | — | reschedule on 2H/ET/SUSP | unit | `pytest tests/scheduler/test_reconcile.py::test_reschedule_on_in_play -x` | ❌ W0 | ⬜ pending |
 | 03-08-XX | 08 | 4 | PICK-05 (recover) | T-3-MEMSTORE | re-queue pending picks on startup | integration | `pytest tests/scheduler/test_orchestrator.py::test_recover_pending_sends -x` | ❌ W0 | ⬜ pending |
+| 03-08-XX | 08 | 4 | PICK-05 (D-01) | T-3-DUP-ALERT | T-30min skipped when T-2h pending | unit | `pytest tests/scheduler/test_orchestrator.py::test_t30_skipped_when_t2h_pending -x` | ❌ W0 | ⬜ pending |
+| 03-08-XX | 08 | 4 | PICK-05 (D-01) | T-3-DUP-ALERT | T-30min PROCEEDS when T-2h was REJECTed | unit | `pytest tests/scheduler/test_orchestrator.py::test_t30_proceeds_when_t2h_rejected -x` | ❌ W0 | ⬜ pending |
+| 03-08-XX | 08 | 4 | PICK-05 (D-01) | T-3-DUP-ALERT | T-30min PROCEEDS when T-2h was filtered (no edge) | unit | `pytest tests/scheduler/test_orchestrator.py::test_t30_proceeds_when_t2h_filtered -x` | ❌ W0 | ⬜ pending |
+| 03-08-XX | 08 | 4 | PICK-05 (RESEARCH Q3) | T-3-RECONCILE-ABANDONED | reconcile abandons after 4 retries → ERROR log, status stays pending | unit | `pytest tests/scheduler/test_reconcile.py::test_reconcile_abandoned_after_4_retries -x` | ❌ W0 | ⬜ pending |
 | 03-09-XX | 09 | 1 | CORNERS-01 (D-17a) | — | manual checklist file structure | structural | `pytest tests/scripts/test_corners_gate_artifacts.py::test_probe_md_structure -x` | ❌ W0 | ⬜ pending |
 | 03-10-XX | 10 | 1 | CORNERS-01 (D-17b) | — | ≥95%, ≥3 seasons, FT-only | unit | `pytest tests/scripts/test_corners_gate_coverage.py::test_threshold_logic -x` | ❌ W0 | ⬜ pending |
 | 03-10-XX | 10 | 1 | CORNERS-01 (D-18) | — | gate-fail → 3 artifacts (ROADMAP edit + STATE entry + commit) | integration | `pytest tests/scripts/test_corners_gate_descope.py::test_descope_three_artifacts -x` | ❌ W0 | ⬜ pending |
@@ -76,10 +80,10 @@ created: 2026-05-02
 - [ ] `tests/telegram/__init__.py`, `tests/telegram/test_bot.py` — covers init/no-polling/AIORateLimiter
 - [ ] `tests/telegram/test_sender.py` — covers PICK-04 (D-12, D-14, D-15)
 - [ ] `tests/scheduler/test_reconcile.py` — covers D-16 (status mapping, reschedule, settlement)
-- [ ] `tests/scheduler/test_orchestrator.py` — extends with `test_recover_pending_sends` (Pitfall 6)
+- [ ] `tests/scheduler/test_orchestrator.py` — extends with `test_recover_pending_sends` (Pitfall 6) + `test_t30_skipped_when_t2h_pending` (D-01 dup-alert guard)
 - [ ] `tests/scripts/__init__.py`, `tests/scripts/test_corners_gate_artifacts.py`, `tests/scripts/test_corners_gate_coverage.py`, `tests/scripts/test_corners_gate_descope.py` — covers CORNERS-01 (D-17, D-18)
 - [ ] `tests/conftest.py` — extend with `mock_anthropic_client` fixture (returns canned ClaudeVerdict), `mock_telegram_bot` fixture (records send_message calls)
-- [ ] `scripts/verify_migration_004.sql` — read-only `information_schema` + `pg_constraint` query mirroring 02.1's verify_migration_003.py pattern
+- [ ] `scripts/verify_migration_004.py` — read-only `information_schema` + `pg_constraint` query mirroring 02.1's verify_migration_003.py pattern
 
 ---
 
@@ -90,7 +94,7 @@ created: 2026-05-02
 | Telegram channel receives one alert per qualifying pick | PICK-04 | Real network egress to Telegram, real channel | Run `python scripts/smoke_send_pick.py --fixture <id>` against live channel; visually confirm one message with HTML-rendered headline + bullets + footer |
 | Anthropic Role C returns CONFIRM/FLAG/REJECT for representative pick | CLAUDE-01 | Real Anthropic API call, non-deterministic content | Run `python scripts/smoke_validate_pick.py --pick <id>`; confirm tool_use response parses to `ClaudeVerdict` and `verdict` ∈ {CONFIRM, FLAG, REJECT} |
 | CORNERS-01 Part (a) — Betano time-window market probe | CORNERS-01 (D-17a) | Bookmaker live UI, requires login | Kevin executes checklist in `scripts/corners_gate_probe.md`; writes findings to `scripts/corners_gate_findings.md` |
-| Migration 004 applied to live Supabase | Migration 004 | Production-grade DDL via Supabase MCP path | `supabase db push` (mirrors 02.1 D-15); verify via `psql -f scripts/verify_migration_004.sql` (4 columns + widened CHECK constraint) |
+| Migration 004 applied to live Supabase | Migration 004 | Production-grade DDL via Supabase MCP path | Apply via Supabase MCP `apply_migration` (mirrors 02.1 D-15); verify via `uv run python scripts/verify_migration_004.py` (4 columns + widened CHECK constraint + idx_picks_sport_market_created index + picks_unique_prediction unique constraint) |
 | `learnings.md` SHA stamp visible in `claude_reasoning` audit field | CLAUDE-01 (audit) | Requires actual DB row inspection | After smoke pick: `select claude_reasoning ->> 'learnings_sha' from picks where id = <id>` returns 40-char hex |
 
 ---

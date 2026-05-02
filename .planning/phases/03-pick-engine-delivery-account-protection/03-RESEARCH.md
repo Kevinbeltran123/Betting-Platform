@@ -995,27 +995,31 @@ See "Common Pitfalls" section above. Each pitfall maps to a Wave 0 test:
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED 2026-05-02)
 
-1. **Does `application.bot.send_message()` need to be wrapped in `bot._unfreeze()` or any context after Application.start()?**
+> All four open questions have been resolved during Phase 3 revision iteration 1.
+> Resolutions are committed inline below; downstream plans (03-01 Task 3, 03-08 Task 1+2)
+> reference these resolutions via `<read_first>` blocks.
+
+1. **Does `application.bot.send_message()` need to be wrapped in `bot._unfreeze()` or any context after Application.start()?** — **(RESOLVED)**
    - What we know: PTB v22+ Bot is "frozen" after build but unfrozen automatically after `initialize()`.
    - What's unclear: Whether multi-task concurrent `send_message` calls are safe.
-   - Recommendation: Treat as safe (concurrent send is the entire point of asyncio); add a serialization mutex only if AIORateLimiter logs persistent contention.
+   - **RESOLUTION:** Safe — no mutex needed. PTB internally uses an asyncio queue with built-in serialization; AIORateLimiter handles flood-control. The single-process Phase 3 design is unaffected. Add a serialization mutex ONLY if AIORateLimiter logs persistent contention in production (no current evidence).
 
-2. **Should the Polars CORNERS-01 script also probe API-Football directly for one fresh fixture as a "live data still has corners" check?**
+2. **Should the Polars CORNERS-01 script also probe API-Football directly for one fresh fixture as a "live data still has corners" check?** — **(RESOLVED)**
    - What we know: D-17b says "no additional API-Football calls — the data is already on disk from 02.1."
    - What's unclear: Whether 02.1 actually seeded corner timing (per A5 above, probably not).
-   - Recommendation: Honor D-17b literally — if the data isn't on disk, the gate fails. Adding a live API probe widens scope and risks false-positive (live API has corners but historical doesn't).
+   - **RESOLUTION:** NO live probe. D-17b is explicit — the coverage script reads ONLY existing 02.1 Parquet stores (`features/`, `results/`, `odds/`). Live probing would consume API-Football quota and is outside Plan 03-10 scope. If the data is not on disk, the gate fails — that is the intended outcome.
 
-3. **How to reconcile picks on a fixture whose API-Football response stays in `INT`/`SUSP` indefinitely (e.g., suspended for crowd trouble)?**
+3. **How to reconcile picks on a fixture whose API-Football response stays in `INT`/`SUSP` indefinitely (e.g., suspended for crowd trouble)?** — **(RESOLVED)**
    - What we know: D-16 doesn't address this; Pitfall 7 proposes 4 retries then leave pending.
    - What's unclear: Whether Kevin wants Telegram alert on stuck reconciliation (for manual settlement).
-   - Recommendation: Phase 3 emits a structlog ERROR after 4 retries; Phase 4 wires that error to a Telegram alert (CLV-03 alert path can be reused).
+   - **RESOLUTION:** After 4 reschedule attempts (~10 hours total wall clock), log `structlog.ERROR` with event `reconcile_abandoned`, leave pick `status=pending`, do **NOT** mark void (suspension can resume; FA decisions can settle weeks later). Phase 4 will add a Telegram alert path on the `reconcile_abandoned` event (deferred to CONTEXT Phase 4 spec). Plan 03-08 Task 2 enforces this 4-attempt cap; the explicit `reconcile_abandoned` log fields (`fixture_id`, `status`, `retries`) are the contract for the Phase 4 alert wiring.
 
-4. **Migration 004 verification: who runs `apply_migration` against live Supabase — the agent or Kevin?**
+4. **Migration 004 verification: who runs `apply_migration` against live Supabase — the agent or Kevin?** — **(RESOLVED)**
    - What we know: 02.1 D-15 used Supabase MCP `apply_migration` from inside the planning agent.
    - What's unclear: Whether Kevin has revoked / wants to retain that access for production migrations.
-   - Recommendation: Same path as 02.1 (MCP `apply_migration`) unless Kevin explicitly opts out. Exit criterion is the same `information_schema.columns` query.
+   - **RESOLUTION:** Agent applies via Supabase MCP `apply_migration` tool (mirrors 02.1 D-15 path). Plan 03-01 Task 3 is the canonical step. Kevin reviews the migration SQL diff (presented in the MCP call payload) before approving the call but does **NOT** execute `psql` / `supabase` CLI manually. Exit criterion is the same `information_schema.columns` query plus the new `pg_constraint` query for `picks_unique_prediction` (Warning #2 fix).
 
 ---
 
