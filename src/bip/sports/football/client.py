@@ -171,3 +171,53 @@ class ApiFootballClient:
         response = await self._client.get("/fixtures/headtohead", params=params)
         response.raise_for_status()
         return response.json()
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    async def get_odds(
+        self,
+        fixture_id: int | None = None,
+        league_id: int | None = None,
+        season: int | None = None,
+        bookmaker: str = "Betano",
+    ) -> dict:
+        """GET /odds — per-fixture or bulk-per-season dispatch.
+
+        Exactly one of (fixture_id) or (league_id + season) must be provided.
+        Per-fixture mode has a 7-day historical lookback (API-Football policy);
+        use league_id + season for historical backfill via bulk response.
+
+        The ``bookmaker`` param is accepted for caller clarity but is NOT sent
+        to the API — API-Football returns all bookmakers; caller filters
+        downstream.
+
+        Args:
+            fixture_id: API-Football fixture ID (live / recent-history mode).
+            league_id: API-Football league ID (bulk-season mode).
+            season: Season start year, e.g. 2024 for the 2024-2025 season.
+            bookmaker: Bookmaker name (informational; not sent in request).
+
+        Returns:
+            Parsed JSON response dict from API-Football.
+
+        Raises:
+            ValueError: If neither fixture_id nor (league_id + season) are provided.
+        """
+        if fixture_id is not None:
+            params: dict[str, int | str] = {"fixture": fixture_id}
+        elif league_id is not None and season is not None:
+            params = {"league": league_id, "season": season}
+        else:
+            raise ValueError(
+                "get_odds: pass either fixture_id or (league_id, season)"
+            )
+        # SECURITY: log params dict only (fixture/league/season IDs); api_key
+        # lives in x-apisports-key header set during __init__, never in logs.
+        logger.info("api_football_request", endpoint="/odds", params=params)
+        response = await self._client.get("/odds", params=params)
+        response.raise_for_status()
+        return response.json()
