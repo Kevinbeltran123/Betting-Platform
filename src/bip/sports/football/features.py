@@ -221,6 +221,7 @@ class FeatureEngineer:
             "season": [season],
             "matchday": [matchday],
             "computed_at": [fm.computed_at.isoformat()],
+            "feature_schema_version": [2],   # D-08: Phase 1 data is implicit v1 (absent column)
         }
         for key, val in fm.features.items():
             row[key] = [val]

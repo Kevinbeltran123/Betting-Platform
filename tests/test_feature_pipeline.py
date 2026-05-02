@@ -4,6 +4,26 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 
+class TestFeatureSchemaVersion:
+    """D-08: every feature row carries feature_schema_version=2."""
+
+    def test_to_parquet_row_includes_schema_version_v2(self):
+        """to_parquet_row() output must include feature_schema_version=2."""
+        from bip.sports.football.features import FeatureEngineer
+        from bip.sports import FeatureMatrix
+        fm = FeatureMatrix(
+            fixture_id=12345,
+            sport="football",
+            league="premier_league",
+            computed_at=datetime(2024, 8, 1, tzinfo=timezone.utc),
+            features={"home_xg": 1.5},
+        )
+        engineer = FeatureEngineer()
+        row = engineer.to_parquet_row(fm, matchday=10, season="2024-2025")
+        assert "feature_schema_version" in row.columns
+        assert row["feature_schema_version"][0] == 2
+
+
 class TestPointInTimeCorrectness:
     """DATA-05: No future data leakage in feature pipeline."""
 

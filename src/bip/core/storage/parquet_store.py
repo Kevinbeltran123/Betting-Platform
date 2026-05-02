@@ -17,8 +17,11 @@ import shutil
 from pathlib import Path
 
 import polars as pl
+import structlog
 
 from bip.core.errors import StorageError
+
+logger = structlog.get_logger(__name__)
 
 
 class ParquetStore:
@@ -67,10 +70,23 @@ class ParquetStore:
         season: str | None = None,
         matchday: str | None = None,
     ) -> pl.DataFrame:
-        """Read feature data, optionally filtering by partition keys."""
-        return self._read(
+        """Read feature data, optionally filtering by partition keys.
+
+        D-08: emits a structlog warning when feature_schema_version column is
+        absent on a non-empty result (Phase 1 Parquet files predate the column
+        and are treated as implicit v1).
+        """
+        df = self._read(
             "features", sport=sport, league=league, season=season, matchday=matchday,
         )
+        if not df.is_empty() and "feature_schema_version" not in df.columns:
+            logger.warning(
+                "feature_schema_version_missing",
+                note="Phase 1 data lacks feature_schema_version — treating as v1",
+                league=league,
+                sport=sport,
+            )
+        return df
 
     # ------------------------------------------------------------------
     # Public API — matches (legacy compatibility, unchanged)
