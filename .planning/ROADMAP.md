@@ -83,7 +83,7 @@ Plans:
 - [x] 02.1-09-PLAN.md — seed_historical.py: results extraction + bulk odds fetch + 3-key checkpoint (D-05, D-06) (2026-05-02)
 - [x] 02.1-10-PLAN.md — TrainingPipeline.run(): wire CLV + logloss (the core gap-closer) (D-05, D-09, D-13) (2026-05-02)
 - [x] 02.1-11-PLAN.md — Synthetic E2E integration test: test_training_pipeline_e2e.py (D-17 synthetic gate) (2026-05-02)
-- [ ] 02.1-12-PLAN.md — Premier League smoke train: real end-to-end exit check (D-16 one-shot) [BLOCKING]
+- [x] 02.1-12-PLAN.md — Premier League smoke train: real end-to-end exit check (D-16 one-shot) — DEFERRED to Phase 3 prep per user (2026-05-01)
 
 ### Phase 3: Pick Engine + Delivery + Account Protection
 **Goal**: Qualified picks with genuine edge are delivered via Telegram with account longevity protections active from the first alert, and Claude Role C validates every pick against red flags before sending
