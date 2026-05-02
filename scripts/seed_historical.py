@@ -172,15 +172,24 @@ def _parse_fixture(item: dict, league_slug: str) -> FixtureData | None:
         return None
 
 
-def _parse_matchday(item: dict) -> int:
-    """Parse 'Regular Season - 12' → 12. Returns 0 on any parse failure."""
+def _parse_matchday(item: dict) -> int | None:
+    """Parse 'Regular Season - 12' → 12. Returns None on parse failure.
+
+    WR-04: previously returned ``0`` for any non-numeric round (cup ties,
+    play-offs, group stages without a numeric tail). That collapsed every
+    unparseable round into a single ``matchday=0`` Hive partition, hiding
+    round structure from downstream consumers and amplifying CR-01's
+    overwrite pathology. ``None`` now signals "skip this fixture's
+    feature row" — the caller filters before writing so cup matches do
+    not silently land in matchday=0.
+    """
     try:
         round_str = item["league"]["round"]
         # Examples: 'Regular Season - 12', 'Quarter-finals'
         tail = round_str.rsplit("-", 1)[-1].strip()
         return int(tail)
     except (KeyError, ValueError, AttributeError):
-        return 0
+        return None
 
 
 # ----------------------------------------------------------------------
@@ -439,6 +448,21 @@ async def seed_one_league(
                 continue
 
             matchday = _parse_matchday(item)
+            if matchday is None:
+                # WR-04: skip cup/play-off rounds whose round string is
+                # non-numeric (e.g. "Quarter-finals"). Lumping every such
+                # fixture into matchday=0 hides round structure from the
+                # Hive partitioner and from any downstream feature that uses
+                # matchday as a contextual signal. Logged so a long-tail of
+                # skipped fixtures remains visible to the operator.
+                logger.info(
+                    "seed_skip_unparseable_round",
+                    fixture_id=fixture.fixture_id,
+                    round=(
+                        (item.get("league") or {}).get("round", "<missing>")
+                    ),
+                )
+                continue
 
             # Pull per-fixture stats + lineups. Errors skip the fixture.
             try:
