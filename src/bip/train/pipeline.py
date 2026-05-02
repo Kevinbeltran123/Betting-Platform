@@ -104,6 +104,21 @@ class TrainingPipeline:
         # feature-store schema failure).
         df_results = store.read_results(sport="football", league=league)
         df_odds = store.read_odds(sport="football", league=league)
+        # WR-01: empty stores produce zero-column DataFrames; pl.col("status")
+        # / pl.col("bookmaker") on those raises ColumnNotFoundError BEFORE the
+        # post-join len(df) == 0 guard can fire. Front-load a clear "run the
+        # seed script" message instead of leaking a Polars stack trace to the
+        # fresh-installer.
+        if df_results.is_empty() or "status" not in df_results.columns:
+            raise RuntimeError(
+                f"No results rows for league={league}. "
+                f"Run scripts/seed_historical.py first."
+            )
+        if df_odds.is_empty() or "bookmaker" not in df_odds.columns:
+            raise RuntimeError(
+                f"No odds rows for league={league}. "
+                f"Run scripts/seed_historical.py first."
+            )
         df = df.join(
             df_results.filter(pl.col("status") == "finished").select(
                 ["fixture_id", "home_goals", "away_goals", "status"]
