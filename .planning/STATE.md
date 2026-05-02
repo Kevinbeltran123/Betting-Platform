@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Plan 02.1-10 complete (CLV + logloss wiring; pipeline placeholder removed)
-last_updated: "2026-05-02T04:49:25.950Z"
+stopped_at: Plan 02.1-11 complete (synthetic e2e gate; 3 Rule 1 fixes in pipeline.py)
+last_updated: "2026-05-02T05:04:29.362Z"
 last_activity: 2026-05-02
 progress:
   total_phases: 8
   completed_phases: 2
   total_plans: 27
-  completed_plans: 25
-  percent: 93
+  completed_plans: 26
+  percent: 96
 ---
 
 # Project State
@@ -26,12 +26,12 @@ See: .planning/PROJECT.md (updated 2026-04-22)
 ## Current Position
 
 Phase: 02.1 (close-phase-2-verification-gaps) — EXECUTING
-Plan: 11 of 13
+Plan: 12 of 13
 Next: Execute Phase 2 (7 plans, 6 waves)
 Status: Ready to execute
 Last activity: 2026-05-02
 
-Progress: [█████████░] 93%
+Progress: [██████████] 96%
 
 ## Performance Metrics
 
@@ -63,6 +63,7 @@ Progress: [█████████░] 93%
 | Phase 02.1 P08 | 3min | 2 tasks | 3 files |
 | Phase 02.1 P09 | 4min | 2 tasks | 2 files |
 | Phase 02.1 P10 | 6min | 2 tasks | 3 files |
+| Phase 02.1 P11 | 12min | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -86,6 +87,7 @@ Recent decisions affecting current work:
 - Phase 02.1 P08 — feature_schema_version=2 stamped on every new feature row (D-08); ParquetStore.read_features warns on Phase 1 mixed reads (column absent → implicit v1). Hardcoded literal, not config; warning suppressed on empty DataFrames to prevent test false alarms.
 - Phase 02.1 P09 — seed_historical extended with results + bulk odds in single pass; 3-key checkpoint (features/results/odds) with Phase 2 backward-compat; ALLOWED_LEAGUE_SLUGS frozenset enforced before any I/O (T-02.1-04); _parse_odds_entry rejects partial Match Winner markets
 - Phase 02.1 P10 — TrainingPipeline.run() now joins features+results+odds on fixture_id and computes per-fold CLV via simulate_pick + per-fold logloss with labels=[0,1,2] (research finding 2 invariant). walk_forward_mean_clv_pct made nullable in ModelMetadata to honor D-11 (None when no fold reaches >=20 picks); CLI format strings updated. Phase 2 home_goals schema guard removed; replaced by zero-rows RuntimeError on the join. Closes Phase 2 verification ML-02 and ML-03 (PARTIAL → PASS pending smoke train numbers from 02.1-12).
+- Phase 02.1 P11 — synthetic e2e gate: TrainingPipeline.run() exercised in tmp_path; surfaced 3 Rule 1 bugs in plan 02.1-10 wiring (df_results suffix collision; _EnsembleProbaWrapper non-pickleable nested + missing sklearn 1.8 BaseEstimator + missing predict). All auto-fixed. 120 tests pass.
 
 ### Roadmap Evolution
 
@@ -111,8 +113,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-02T04:49:25.946Z
-Stopped at: Plan 02.1-10 complete (CLV + logloss wiring; pipeline placeholder removed)
+Last session: 2026-05-02T05:04:22.202Z
+Stopped at: Plan 02.1-11 complete (synthetic e2e gate; 3 Rule 1 fixes in pipeline.py)
 Resume file: None
 
 **Planned Phase:** 02.1 (Close Phase 2 verification gaps — CLV end-to-end test + logloss improvement documentation) — 13 plans — 2026-04-24T19:47:16.616Z
