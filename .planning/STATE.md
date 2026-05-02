@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Plan 02.1-07 complete (OddsApiClient.fetch_historical_closing stub)
-last_updated: "2026-05-02T04:31:51.261Z"
+stopped_at: Plan 02.1-08 complete (feature_schema_version=2 + mixed-read guard)
+last_updated: "2026-05-02T04:35:24.168Z"
 last_activity: 2026-05-02
 progress:
   total_phases: 8
   completed_phases: 2
   total_plans: 27
-  completed_plans: 22
-  percent: 81
+  completed_plans: 23
+  percent: 85
 ---
 
 # Project State
@@ -26,12 +26,12 @@ See: .planning/PROJECT.md (updated 2026-04-22)
 ## Current Position
 
 Phase: 02.1 (close-phase-2-verification-gaps) — EXECUTING
-Plan: 8 of 13
+Plan: 9 of 13
 Next: Execute Phase 2 (7 plans, 6 waves)
 Status: Ready to execute
 Last activity: 2026-05-02
 
-Progress: [████████░░] 81%
+Progress: [█████████░] 85%
 
 ## Performance Metrics
 
@@ -60,6 +60,7 @@ Progress: [████████░░] 81%
 | Phase 02.1 P05 | 2 | 1 tasks | 2 files |
 | Phase 02.1 P06 | 2min | 1 tasks | 2 files |
 | Phase 02.1 P07 | 1min | 1 tasks | 1 files |
+| Phase 02.1 P08 | 3min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -80,6 +81,7 @@ Recent decisions affecting current work:
 - Phase 02.1 P05 — ParquetStore extended with write/read_results + write/read_odds (3-level Hive: sport/league/season). _write helper refactored to accept partition_cols kwarg; features store unchanged at 4-level. Pitfall 1 + Pitfall 4 regression guards in test suite.
 - Phase 02.1 P06 — get_odds dispatch: fixture_id-only for live (Phase 3), league_id+season for historical bulk seeding (research finding 1: /odds?fixture has 7-day lookback). Single method, two modes, ValueError on neither.
 - Phase 02.1 P07 — fetch_historical_closing stub returns None + structlog warning (D-01); no @retry on stub (retry stack lands with real implementation post-02.1); Pinnacle /v4/historical implementation deferred until API-Football CLV numbers validate dual-source architecture
+- Phase 02.1 P08 — feature_schema_version=2 stamped on every new feature row (D-08); ParquetStore.read_features warns on Phase 1 mixed reads (column absent → implicit v1). Hardcoded literal, not config; warning suppressed on empty DataFrames to prevent test false alarms.
 
 ### Roadmap Evolution
 
@@ -105,8 +107,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-02T04:31:51.256Z
-Stopped at: Plan 02.1-07 complete (OddsApiClient.fetch_historical_closing stub)
+Last session: 2026-05-02T04:35:24.164Z
+Stopped at: Plan 02.1-08 complete (feature_schema_version=2 + mixed-read guard)
 Resume file: None
 
 **Planned Phase:** 02.1 (Close Phase 2 verification gaps — CLV end-to-end test + logloss improvement documentation) — 13 plans — 2026-04-24T19:47:16.616Z
