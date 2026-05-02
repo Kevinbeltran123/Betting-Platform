@@ -12,6 +12,7 @@ import numpy as np
 import polars as pl
 import sklearn
 import structlog
+from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.metrics import log_loss
 
 from bip.core.settings import Settings
@@ -41,6 +42,45 @@ def _label_from_goals(hg: int, ag: int) -> int:
     return 2
 
 
+class _EnsembleProbaWrapper(ClassifierMixin, BaseEstimator):
+    """sklearn 1.8-compatible wrapper around a fitted StackedEnsemble.
+
+    Required for CalibratedClassifierCV(estimator=FrozenEstimator(...)) under
+    sklearn 1.8: the underlying estimator must implement fit/predict and
+    expose __sklearn_tags__ (provided by BaseEstimator). Defined at module
+    scope so joblib.dump can serialize the calibrated classifier (local
+    nested classes are not addressable for joblib's serializer).
+    """
+
+    _estimator_type = "classifier"
+
+    def __init__(
+        self,
+        ens: StackedEnsemble,
+        X_fit: np.ndarray,
+        y_fit: np.ndarray,
+        dates_fit: np.ndarray,
+    ) -> None:
+        ens.fit_fold(X_fit, y_fit, X_fit[:1], dates_fit)
+        self._ens = ens
+        self.classes_ = np.array([0, 1, 2])
+
+    def predict_proba(self, X_in: np.ndarray) -> np.ndarray:
+        from bip.train.stacking import _align_proba
+        probs = np.mean(
+            [_align_proba(m, X_in) for m in self._ens._final_base],
+            axis=0,
+        )
+        return self._ens._meta.predict_proba(probs)
+
+    def predict(self, X_in: np.ndarray) -> np.ndarray:
+        proba = self.predict_proba(X_in)
+        return self.classes_[np.argmax(proba, axis=1)]
+
+    def fit(self, X_in, y_in):
+        return self
+
+
 @dataclass
 class TrainingPipeline:
     settings: Settings
@@ -65,7 +105,9 @@ class TrainingPipeline:
         df_results = store.read_results(sport="football", league=league)
         df_odds = store.read_odds(sport="football", league=league)
         df = df.join(
-            df_results.filter(pl.col("status") == "finished"),
+            df_results.filter(pl.col("status") == "finished").select(
+                ["fixture_id", "home_goals", "away_goals", "status"]
+            ),
             on="fixture_id",
             how="inner",
         )
@@ -181,29 +223,6 @@ class TrainingPipeline:
         # Calibration on the last fold's test window (ML-03)
         last_test_idx = all_test_idx[-1]
         calib_method = select_calibrator(len(last_test_idx))
-
-        class _EnsembleProbaWrapper:
-            def __init__(
-                self,
-                ens: StackedEnsemble,
-                X_fit: np.ndarray,
-                y_fit: np.ndarray,
-                dates_fit: np.ndarray,
-            ) -> None:
-                ens.fit_fold(X_fit, y_fit, X_fit[:1], dates_fit)
-                self._ens = ens
-                self.classes_ = np.array([0, 1, 2])
-
-            def predict_proba(self, X_in: np.ndarray) -> np.ndarray:
-                from bip.train.stacking import _align_proba
-                probs = np.mean(
-                    [_align_proba(m, X_in) for m in self._ens._final_base],
-                    axis=0,
-                )
-                return self._ens._meta.predict_proba(probs)
-
-            def fit(self, X_in, y_in):
-                return self
 
         wrapper = _EnsembleProbaWrapper(
             last_ensemble,
