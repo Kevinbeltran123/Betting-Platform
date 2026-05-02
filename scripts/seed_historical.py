@@ -356,7 +356,12 @@ async def seed_one_league(
                     },
                     schema_overrides={"fixture_id": pl.Int64},
                 )
-                store.write_results(result_row)
+                # CR-01: overwrite=False keeps append semantics. With the
+                # default overwrite=True every per-fixture write would
+                # shutil.rmtree the (sport, league, season) partition and
+                # silently destroy every previously-seeded fixture in the
+                # same partition.
+                store.write_results(result_row, overwrite=False)
                 state["completed_results_fixture_ids"].add(fixture.fixture_id)
                 logger.info(
                     "seed_results_written",
@@ -376,7 +381,9 @@ async def seed_one_league(
                         season,
                     )
                     if odds_row is not None:
-                        store.write_odds(odds_row)
+                        # CR-01: see write_results comment above — append
+                        # semantics are mandatory for per-fixture writes.
+                        store.write_odds(odds_row, overwrite=False)
                         state["completed_odds_fixture_ids"].add(fixture.fixture_id)
                     else:
                         logger.info(

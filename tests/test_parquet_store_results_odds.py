@@ -128,3 +128,106 @@ class TestFeaturesUnchanged:
         # At least one directory must be matchday=... (4-level preserved)
         matchday_dirs = list(features_dir.rglob("matchday=*"))
         assert len(matchday_dirs) >= 1
+
+
+class TestPerFixtureAppend:
+    """CR-01 regression: per-fixture writes with overwrite=False must append.
+
+    The default ``overwrite=True`` semantic is correct for batch writes (one
+    DataFrame containing the whole partition's rows in a single call) but
+    catastrophic for per-fixture writes — every call would shutil.rmtree the
+    partition before writing the new single-row DataFrame, silently wiping
+    every prior fixture in the partition.
+    """
+
+    @staticmethod
+    def _result_row(fixture_id: int, home: int, away: int) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "fixture_id": [fixture_id],
+                "sport": ["football"],
+                "league": ["premier_league"],
+                "season": ["2024-2025"],
+                "home_goals": [home],
+                "away_goals": [away],
+                "status": ["finished"],
+            },
+            schema_overrides={"fixture_id": pl.Int64},
+        )
+
+    @staticmethod
+    def _odds_row(
+        fixture_id: int, home: float, draw: float, away: float,
+    ) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "fixture_id": [fixture_id],
+                "sport": ["football"],
+                "league": ["premier_league"],
+                "season": ["2024-2025"],
+                "bookmaker": ["Betano"],
+                "opening_home": [home],
+                "opening_draw": [draw],
+                "opening_away": [away],
+                "closing_home": [home],
+                "closing_draw": [draw],
+                "closing_away": [away],
+                "pinnacle_close_home": [None],
+                "pinnacle_close_draw": [None],
+                "pinnacle_close_away": [None],
+            },
+            schema_overrides={
+                "fixture_id": pl.Int64,
+                "pinnacle_close_home": pl.Float64,
+                "pinnacle_close_draw": pl.Float64,
+                "pinnacle_close_away": pl.Float64,
+            },
+        )
+
+    def test_per_fixture_results_appends_not_overwrites(self, store):
+        """Two single-row writes preserve both rows when overwrite=False."""
+        store.write_results(self._result_row(2001, 2, 1), overwrite=False)
+        store.write_results(self._result_row(2002, 0, 0), overwrite=False)
+        out = store.read_results(sport="football", league="premier_league")
+        ids = sorted(out["fixture_id"].to_list())
+        assert ids == [2001, 2002], (
+            f"Expected both fixtures retained; got {ids}. "
+            "Per-fixture write with overwrite=False must not wipe the partition."
+        )
+
+    def test_per_fixture_odds_appends_not_overwrites(self, store):
+        store.write_odds(self._odds_row(3001, 2.0, 3.4, 3.2), overwrite=False)
+        store.write_odds(self._odds_row(3002, 1.8, 3.6, 4.2), overwrite=False)
+        out = store.read_odds(sport="football", league="premier_league")
+        ids = sorted(out["fixture_id"].to_list())
+        assert ids == [3001, 3002]
+
+    def test_default_overwrite_still_replaces_partition(self, store):
+        """Regression guard: default overwrite=True keeps batch-write semantics.
+
+        Existing tests rely on a single ``write_results(big_df)`` call replacing
+        the partition wholesale.
+        """
+        first_batch = pl.concat(
+            [self._result_row(4001, 1, 0), self._result_row(4002, 2, 2)],
+            how="diagonal",
+        )
+        second_batch = self._result_row(4003, 0, 1)  # different fixture
+        store.write_results(first_batch)              # default overwrite=True
+        store.write_results(second_batch)             # default overwrite=True
+        out = store.read_results(sport="football", league="premier_league")
+        # Default overwrite=True wipes the partition before each write, so only
+        # the most recent batch's row(s) survive.
+        assert sorted(out["fixture_id"].to_list()) == [4003]
+
+    def test_per_fixture_results_dedups_repeat_fixture_id(self, store):
+        """Re-writing the same fixture_id keeps only the latest row."""
+        store.write_results(self._result_row(5001, 0, 0), overwrite=False)
+        # Status updated from initial 'finished' (placeholder) to corrected goals
+        store.write_results(self._result_row(5001, 3, 1), overwrite=False)
+        out = store.read_results(sport="football", league="premier_league")
+        assert len(out) == 1
+        assert out["fixture_id"].to_list() == [5001]
+        # Latest write wins (keep="last")
+        assert out["home_goals"].to_list() == [3]
+        assert out["away_goals"].to_list() == [1]
