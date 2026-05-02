@@ -9,6 +9,19 @@ NOT invoked by the scheduler. Run manually:
     uv run python scripts/seed_historical.py
 
 Rate-limited to 300 req/min (API-Football Pro plan).
+
+WR-03 — Checkpoint compatibility:
+    Any pre-CR-01 seed run wrote an inconsistent checkpoint:
+    ``completed_results_fixture_ids`` and ``completed_odds_fixture_ids``
+    listed fixtures whose rows were silently wiped from the on-disk
+    Parquet store by the next per-fixture write. Resuming such a checkpoint
+    after the CR-01 fix would skip those fixtures forever, leaving a
+    permanent data hole. The checkpoint now carries a ``schema_version``
+    field; loading a file without the post-CR-01 version automatically
+    discards the results/odds keys (features key is preserved — that
+    write path was never affected by CR-01) and emits a structured-log
+    warning. To force a clean re-seed, delete ``data/seed_checkpoint.json``
+    before the run.
 """
 
 from __future__ import annotations
@@ -62,6 +75,14 @@ CHECKPOINT_KEYS = (
     "completed_odds_fixture_ids",
 )
 
+# WR-03: bump whenever the on-disk store invariant changes such that a
+# pre-existing checkpoint should not be trusted to mirror what is on disk.
+# v1 = post-CR-01 fix (per-fixture writes use overwrite=False and actually
+# persist). Any checkpoint missing this version (or carrying a lower one)
+# has its results/odds tracking sets discarded; the features set is kept
+# because the features write path was never affected by CR-01.
+CHECKPOINT_SCHEMA_VERSION = 1
+
 
 def _empty_state() -> dict[str, set[int]]:
     return {key: set() for key in CHECKPOINT_KEYS}
@@ -74,24 +95,47 @@ def load_checkpoint() -> dict[str, set[int]]:
     ``completed_odds_fixture_ids``. Returns all three as empty sets if the file
     does not exist. If the file exists but only carries the legacy single key
     (Phase 2 shape), the missing keys are populated with empty sets.
+
+    WR-03: a checkpoint written before CR-01 was fixed (i.e. without
+    ``schema_version`` >= 1) is treated as untrusted for results/odds
+    tracking — those two sets are reset to empty so the next run re-seeds
+    every fixture's results+odds row, while the features set is preserved
+    (the features write path was never affected by CR-01). Delete
+    ``data/seed_checkpoint.json`` to force a full clean reseed.
     """
     if not CHECKPOINT_PATH.exists():
         return _empty_state()
     data = json.loads(CHECKPOINT_PATH.read_text())
-    return {key: set(data.get(key, [])) for key in CHECKPOINT_KEYS}
+    state = {key: set(data.get(key, [])) for key in CHECKPOINT_KEYS}
+    on_disk_version = int(data.get("schema_version", 0))
+    if on_disk_version < CHECKPOINT_SCHEMA_VERSION:
+        logger.warning(
+            "seed_checkpoint_pre_cr01_reset",
+            on_disk_version=on_disk_version,
+            required_version=CHECKPOINT_SCHEMA_VERSION,
+            note=(
+                "Discarding results/odds tracking sets — pre-CR-01 store "
+                "rows were silently overwritten and cannot be trusted."
+            ),
+        )
+        state["completed_results_fixture_ids"] = set()
+        state["completed_odds_fixture_ids"] = set()
+    return state
 
 
 def save_checkpoint(state: dict[str, set[int]]) -> None:
     """Atomic write: JSON to .tmp, then Path.replace() onto target.
 
     Each known set in ``state`` is sorted before serialization for a stable
-    on-disk diff. Unknown keys are ignored.
+    on-disk diff. Unknown keys are ignored. WR-03: ``schema_version`` is
+    written so a downgrade path can detect a forward-compat file.
     """
     CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = CHECKPOINT_PATH.with_suffix(".json.tmp")
     payload: dict[str, object] = {
         key: sorted(state.get(key, set())) for key in CHECKPOINT_KEYS
     }
+    payload["schema_version"] = CHECKPOINT_SCHEMA_VERSION
     payload["updated_at"] = datetime.now(UTC).isoformat()
     tmp.write_text(json.dumps(payload))
     tmp.replace(CHECKPOINT_PATH)

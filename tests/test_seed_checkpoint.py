@@ -88,3 +88,59 @@ class TestSeedCheckpoint:
         assert reloaded["completed_fixture_ids"] == {101, 102}
         assert reloaded["completed_results_fixture_ids"] == set()
         assert reloaded["completed_odds_fixture_ids"] == set()
+
+    def test_pre_cr01_checkpoint_resets_results_and_odds(
+        self, tmp_path, monkeypatch,
+    ):
+        """WR-03: a pre-CR-01 checkpoint (no schema_version) auto-resets the
+        results/odds tracking sets so the seed re-writes those fixtures.
+
+        Features tracking is preserved because the features write path was
+        never affected by CR-01.
+        """
+        seed = _load_seed_module()
+        cp = tmp_path / "seed_checkpoint.json"
+        monkeypatch.setattr(seed, "CHECKPOINT_PATH", cp)
+
+        # Pre-CR-01 shape: 3-key dict but no schema_version field.
+        cp.write_text(
+            json.dumps(
+                {
+                    "completed_fixture_ids": [501, 502],
+                    "completed_results_fixture_ids": [501, 502],
+                    "completed_odds_fixture_ids": [501],
+                    # Note: schema_version intentionally absent.
+                }
+            )
+        )
+        reloaded = seed.load_checkpoint()
+        assert reloaded["completed_fixture_ids"] == {501, 502}, (
+            "features tracking must be preserved across the version bump"
+        )
+        assert reloaded["completed_results_fixture_ids"] == set(), (
+            "WR-03: pre-CR-01 results tracking is untrusted; must reset"
+        )
+        assert reloaded["completed_odds_fixture_ids"] == set(), (
+            "WR-03: pre-CR-01 odds tracking is untrusted; must reset"
+        )
+
+    def test_post_cr01_checkpoint_round_trips_with_version(
+        self, tmp_path, monkeypatch,
+    ):
+        """A checkpoint we wrote ourselves carries schema_version and survives
+        a save/load cycle without the WR-03 reset firing.
+        """
+        seed = _load_seed_module()
+        cp = tmp_path / "seed_checkpoint.json"
+        monkeypatch.setattr(seed, "CHECKPOINT_PATH", cp)
+
+        state = {
+            "completed_fixture_ids": {601},
+            "completed_results_fixture_ids": {601},
+            "completed_odds_fixture_ids": {601},
+        }
+        seed.save_checkpoint(state)
+        on_disk = json.loads(cp.read_text())
+        assert on_disk.get("schema_version") == seed.CHECKPOINT_SCHEMA_VERSION
+        reloaded = seed.load_checkpoint()
+        assert reloaded == state
