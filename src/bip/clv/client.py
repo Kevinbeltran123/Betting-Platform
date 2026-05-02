@@ -111,3 +111,25 @@ class OddsApiClient:
         Returns None for markets not supported by The Odds API (e.g., corners).
         """
         return MARKET_KEY_MAP.get(internal_key)
+
+    async def fetch_historical_closing(
+        self,
+        event_id: str,
+        sport: str = "soccer_epl",
+    ) -> dict | None:
+        """Fetch historical Pinnacle closing odds at a specific snapshot timestamp.
+
+        PLUMBING STUB — not exercised in Phase 02.1 (D-01). Real implementation
+        deferred to a follow-up task after API-Football CLV numbers are validated.
+        Endpoint target: /v4/historical/sports/{sport}/events/{event_id}/odds
+
+        Returns None so callers can handle the missing-Pinnacle path gracefully
+        without needing a try/except around every call site.
+        """
+        logger.warning(
+            "pinnacle_historical_not_implemented",
+            event_id=event_id,
+            sport=sport,
+            note="fetch_historical_closing is a stub — D-01 deferred",
+        )
+        return None
