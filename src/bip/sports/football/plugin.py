@@ -42,6 +42,9 @@ _LEAGUES_DIR = Path(__file__).parent / "config" / "leagues"
 # CLASSES = [0, 1, 2] from bip.train.stacking -> 1X2 outcome labels
 _CLASS_TO_OUTCOME = {0: "1", 1: "X", 2: "2"}
 
+# Map API-Football "Match Winner" value strings -> 1X2 selection keys
+_ODDS_VALUE_TO_KEY = {"Home": "1", "Draw": "X", "Away": "2"}
+
 
 class FootballPlugin(SportPlugin):
     """Football sport plugin -- full SportPlugin implementation."""
@@ -284,6 +287,52 @@ class FootballPlugin(SportPlugin):
             computed_at=computed_at,
         )
 
+    async def get_opening_odds(self, fixture_id: int) -> dict[str, float]:
+        """Fetch 1X2 opening odds from API-Football for the configured bookmaker.
+
+        G-CODE-01: implements SportPlugin.get_opening_odds. Returns
+        ``{"1": <home_odd>, "X": <draw_odd>, "2": <away_odd>}`` for the
+        primary "Match Winner" market on Betano. Returns ``{}`` when:
+          - API response is empty (``response: []``),
+          - Betano is not in the bookmakers list for this fixture,
+          - Betano has no "Match Winner" market for this fixture, or
+          - the "Match Winner" values are missing/incomplete.
+
+        Network/API failures bubble up (httpx exceptions, status errors)
+        because they require retry/back-off at the caller. Coverage gaps
+        return empty dict so the orchestrator can route around them.
+        """
+        bookmaker = "Betano"  # CLAUDE.md: Betano is the staking bookmaker
+        async with ApiFootballClient(api_key=self._settings.api_football_key) as client:
+            raw = await client.get_odds(fixture_id=fixture_id, bookmaker=bookmaker)
+        response = raw.get("response", []) or []
+        if not response:
+            logger.info("get_opening_odds_no_response", fixture_id=fixture_id)
+            return {}
+        # Walk: response[].bookmakers[?name==Betano].bets[?name=="Match Winner"].values
+        for fixture_block in response:
+            for bm in fixture_block.get("bookmakers", []) or []:
+                if bm.get("name") != bookmaker:
+                    continue
+                for bet in bm.get("bets", []) or []:
+                    if bet.get("name") != "Match Winner":
+                        continue
+                    odds: dict[str, float] = {}
+                    for v in bet.get("values", []) or []:
+                        key = _ODDS_VALUE_TO_KEY.get(v.get("value", ""))
+                        if key is None:
+                            continue
+                        try:
+                            odds[key] = float(v.get("odd"))
+                        except (TypeError, ValueError):
+                            continue
+                    if {"1", "X", "2"}.issubset(odds.keys()):
+                        return odds
+        logger.info(
+            "get_opening_odds_no_betano_match_winner", fixture_id=fixture_id
+        )
+        return {}
+
     def _write_prediction_rows(
         self,
         features: FeatureMatrix,
@@ -299,16 +348,16 @@ class FootballPlugin(SportPlugin):
         repo = self._prediction_repo
         if repo is None:
             return
-        # Production row
+        # Production row -- G-MAINT-08/11: real values from FeatureMatrix
         try:
             prod_pred = Prediction(
                 fixture_id=features.fixture_id,
                 league=features.league,
                 sport=features.sport,
                 market=market,
-                home_team="",  # caller/pipeline enriches; acceptable blank at predict-only scope
-                away_team="",
-                kickoff_utc=features.computed_at,
+                home_team=features.home_team,
+                away_team=features.away_team,
+                kickoff_utc=features.kickoff_utc,
                 probabilities=prod_map.probabilities,
                 model_version=prod_map.model_version,
                 is_shadow=False,
@@ -321,7 +370,7 @@ class FootballPlugin(SportPlugin):
                 error=str(exc),
             )
 
-        # Shadow row (when configured)
+        # Shadow row (when configured) -- G-MAINT-08/11: real values from FeatureMatrix
         if shadow_map is not None:
             try:
                 shadow_pred = Prediction(
@@ -329,9 +378,9 @@ class FootballPlugin(SportPlugin):
                     league=features.league,
                     sport=features.sport,
                     market=market,
-                    home_team="",
-                    away_team="",
-                    kickoff_utc=features.computed_at,
+                    home_team=features.home_team,
+                    away_team=features.away_team,
+                    kickoff_utc=features.kickoff_utc,
                     probabilities=shadow_map.probabilities,
                     model_version=shadow_map.model_version,
                     is_shadow=True,

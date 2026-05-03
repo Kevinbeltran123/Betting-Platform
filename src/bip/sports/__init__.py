@@ -25,6 +25,11 @@ class FeatureMatrix(BaseModel):
     league: str
     computed_at: datetime  # CRITICAL: point-in-time correctness (DATA-05)
     features: dict[str, float]
+    # G-MAINT-08/11: thread fixture-level metadata so downstream Prediction
+    # rows have real home/away/kickoff (no blanks; no computed_at masquerade).
+    kickoff_utc: datetime
+    home_team: str
+    away_team: str
 
 
 class ProbabilityMap(BaseModel):
@@ -67,4 +72,16 @@ class SportPlugin(abc.ABC):
     @abc.abstractmethod
     def get_available_markets(self) -> list[str]:
         """Return market keys this sport supports (loaded from YAML)."""
+        ...
+
+    @abc.abstractmethod
+    async def get_opening_odds(self, fixture_id: int) -> dict[str, float]:
+        """Return opening decimal odds for the fixture's primary 1X2 market.
+
+        Shape: {"1": <home_odd>, "X": <draw_odd>, "2": <away_odd>}.
+        Returns empty dict {} when the configured bookmaker has no coverage
+        (caller is responsible for handling empty-dict gracefully -- no
+        exceptions are raised for coverage gaps; only network/API failures
+        bubble up).
+        """
         ...
