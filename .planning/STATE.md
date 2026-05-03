@@ -89,6 +89,17 @@ Recent decisions affecting current work:
 - Phase 02.1 P10 — TrainingPipeline.run() now joins features+results+odds on fixture_id and computes per-fold CLV via simulate_pick + per-fold logloss with labels=[0,1,2] (research finding 2 invariant). walk_forward_mean_clv_pct made nullable in ModelMetadata to honor D-11 (None when no fold reaches >=20 picks); CLI format strings updated. Phase 2 home_goals schema guard removed; replaced by zero-rows RuntimeError on the join. Closes Phase 2 verification ML-02 and ML-03 (PARTIAL → PASS pending smoke train numbers from 02.1-12).
 - Phase 02.1 P11 — synthetic e2e gate: TrainingPipeline.run() exercised in tmp_path; surfaced 3 Rule 1 bugs in plan 02.1-10 wiring (df_results suffix collision; _EnsembleProbaWrapper non-pickleable nested + missing sklearn 1.8 BaseEstimator + missing predict). All auto-fixed. 120 tests pass.
 
+- Phase 3 closeout (2026-05-03) — quick task series 260503-iql/j74/jkf/k8k closed audit gaps from .planning/AUDIT-GAPS.md before first real pick. Decisions:
+  - **Wiring strategy: Strategy 2** — orchestrator constructs full `Prediction` Pydantic before invoking engine; `plugin.predict()` stays returning pure `ProbabilityMap`. Reasons: cleaner separation; Prediction is canonical persistence model; engine signature explicit.
+  - **CLV vig removal**: proportional vig removal applied via `bip.clv.odds_math.remove_vig` (Pitfall 7). `ClvRecord.pinnacle_closing_odds` keeps RAW odd (audit trail); `clv_percentage` uses fair odds (success metric). No schema migration.
+  - **Per-market thresholds**: `PickEngine.__init__` takes required `league_registry`; lookup `LeagueConfig.model_params.edge_threshold_{normalized_market}` per pick. `EDGE_THRESHOLD_PCT` in `bip.train.backtest` is now backtest-default only.
+  - **Closing-line snapshot timing**: moved from `kickoff+105m` (post-match) to `kickoff-1min` (true closing line per Pitfall 7). Result-reconciliation job remains at +105m — different concern.
+  - **Event mapping**: added `OddsApiClient.find_event_by_fixture(sport_key, home_team, away_team, kickoff_utc)` using `/v4/sports/{sport_key}/events`. `LeagueConfig.api_mappings.odds_api_sport_key` provides the per-league mapping (no hardcoding required).
+  - **Test integrity**: spec-based mocks enforced for `SportPlugin` and `PickRepository`; `tests/test_plugin_contract.py` validates ABC has all 6 abstract methods including `get_opening_odds`.
+  - **Out of scope** (Phase 4+): CLV-03 alerting wire (rolling avg function exists, scheduler job missing), CLV-04 daily aggregator, `_reconcile_clv` real implementation, production setup wiring (`__main__.py` instantiation of ClvRecorder/OddsApiClient).
+  - **Production caller of PickEngine** does NOT yet exist — only tests instantiate it. Production wiring is a Phase 4 deployment concern.
+  - **Empirical PL smoke train** (~1,520 API credits) remains user-deferred — converts ML-02/ML-03 from `structural PASS` to `empirical PASS`.
+
 ### Roadmap Evolution
 
 - Phase 2.1 inserted after Phase 2 (2026-04-24): Close Phase 2 verification gaps — CLV end-to-end test + logloss improvement documentation (URGENT). Driver: Phase 2 verification (commit 43b4a7a) reported 2/4 PARTIAL items blocking clean handoff to Phase 3.

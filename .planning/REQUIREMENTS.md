@@ -4,48 +4,46 @@
 
 ### CORE — Plugin Architecture
 
-- [ ] **CORE-01**: `SportPlugin` ABC defined in `sports/__init__.py` with all required methods: `get_fixtures()`, `build_features()`, `predict()`, `build_claude_context()`, `get_available_markets()`
-- [ ] **CORE-02**: `core/` layer contains zero sport-specific code — EV engine, Claude layer, Telegram bot, CLV tracker, pick engine, scheduler, Supabase client all sport-agnostic
-- [ ] **CORE-03**: Supabase migration 002 adds `sport VARCHAR(20) NOT NULL DEFAULT 'football'` to all 6 existing tables (predictions, picks, odds_snapshots, results, clv_records, performance_metrics)
-- [ ] **CORE-04**: Football plugin (`sports/football/`) implements full `SportPlugin` interface and passes interface contract tests
-- [ ] **CORE-05**: Markets defined as runtime YAML config (name, display, edge_threshold, kelly_max) — no hardcoded market enum in core
+- [x] **CORE-01**: `SportPlugin` ABC defined in `sports/__init__.py` with all required methods: `get_fixtures()`, `build_features()`, `predict()`, `build_claude_context()`, `get_available_markets()`, `get_opening_odds()` (G-CODE-01 closed in quick-260503-jkf)
+- [ ] **CORE-02**: `core/` layer contains zero sport-specific code — EV engine, Claude layer, Telegram bot, CLV tracker, pick engine, scheduler, Supabase client all sport-agnostic *(scheduler lives at `bip/scheduler/` not `bip/core/`; ev_engine + kelly folded into `core/picks/`. Layout drift documented in AUDIT-GAPS.md G-CODE-04..06; no SCALE-01 violation today since only football exists)*
+- [x] **CORE-03**: Supabase migration 002 adds `sport VARCHAR(20) NOT NULL DEFAULT 'football'` to all 6 existing tables (predictions, picks, odds_snapshots, results, clv_records, performance_metrics)
+- [x] **CORE-04**: Football plugin (`sports/football/`) implements full `SportPlugin` interface and passes interface contract tests
+- [x] **CORE-05**: Markets defined as runtime YAML config (name, display, edge_threshold, kelly_max) — no hardcoded market enum in core (per-market threshold lookup wired in quick-260503-j74)
 
 ### DATA — Data Pipeline
 
-- [ ] **DATA-01**: Async API-Football v3 client with tenacity retry/backoff for fixtures, stats, confirmed lineups, corners history, injuries, H2H — rate-limited to avoid Pro plan exhaustion
-- [ ] **DATA-02**: Feature engineering pipeline (Polars) with Parquet cache Hive-partitioned by `sport/league/season/matchday`; `computed_at` timestamps on all rows to enforce point-in-time correctness
-- [ ] **DATA-03**: League config YAML loader extended from existing Football_analysis configs — 5 leagues (PL, La Liga, Bundesliga, Serie A, Ligue 1) with API-Football IDs, edge thresholds per market
-- [ ] **DATA-04**: APScheduler 3.11.x `AsyncIOScheduler` pipeline runs at T-2h (data refresh + prediction) and T-30min (lineup-adjusted re-prediction) before each fixture kickoff
-- [ ] **DATA-05**: Integration test validates no future data leaks across the feature pipeline (all features computable from data available at prediction time)
+- [x] **DATA-01**: Async API-Football v3 client with tenacity retry/backoff for fixtures, stats, confirmed lineups, corners history, injuries, H2H — rate-limited to avoid Pro plan exhaustion
+- [x] **DATA-02**: Feature engineering pipeline (Polars) with Parquet cache Hive-partitioned by `sport/league/season/matchday`; `computed_at` timestamps on all rows to enforce point-in-time correctness
+- [x] **DATA-03**: League config YAML loader extended from existing Football_analysis configs — 5 leagues (PL, La Liga, Bundesliga, Serie A, Ligue 1) with API-Football IDs, edge thresholds per market
+- [x] **DATA-04**: APScheduler 3.11.x `AsyncIOScheduler` pipeline runs at T-2h (data refresh + prediction) and T-30min (lineup-adjusted re-prediction) before each fixture kickoff
+- [x] **DATA-05**: Integration test validates no future data leaks across the feature pipeline (all features computable from data available at prediction time)
 
 ### ML — Machine Learning Core
 
-- [ ] **ML-01**: XGBoost 3.x + CatBoost 1.2 + LightGBM 4.x ensemble training pipeline with meta-learner (LogisticRegression stacking), outputs `ProbabilityMap` conforming to `SportPlugin` interface
-- [x] **ML-02
-**: Walk-forward backtesting uses opening odds (not closing) + 1-2% slippage assumption from day 1 — retrofitting this later invalidates all earlier results
-- [x] **ML-03
-**: Calibration strategy: Platt scaling for leagues with <300 validation samples, isotonic regression for >500 samples; `calibrate_by_league()` (not walk-forward variant — documented overfitting failure)
-- [ ] **ML-04**: Model versioning on filesystem (`models/{sport}/{league}/{version}/`) with `metadata.json` (training date, feature set, calibration method, backtest CLV); new model promoted only if walk-forward CLV > current production model
-- [ ] **ML-05**: Shadow mode for model A/B testing — new model logs predictions without acting on them; shadow predictions stored in Supabase `predictions` table with `is_shadow=true`
+- [x] **ML-01**: XGBoost 3.x + CatBoost 1.2 + LightGBM 4.x ensemble training pipeline with meta-learner (LogisticRegression stacking), outputs `ProbabilityMap` conforming to `SportPlugin` interface
+- [x] **ML-02**: Walk-forward backtesting uses opening odds (not closing) + 1-2% slippage assumption from day 1 — retrofitting this later invalidates all earlier results *(structural PASS; empirical PL smoke train deferred per Phase 02.1 user-accepted risk)*
+- [x] **ML-03**: Calibration strategy: Platt scaling for leagues with <300 validation samples, isotonic regression for >500 samples; `calibrate_by_league()` (not walk-forward variant — documented overfitting failure) *(structural PASS; empirical per-league logloss numbers pending smoke train)*
+- [x] **ML-04**: Model versioning on filesystem (`models/{sport}/{league}/{version}/`) with `metadata.json` (training date, feature set, calibration method, backtest CLV); new model promoted only if walk-forward CLV > current production model *(promotion criterion is manual D-05 decision)*
+- [x] **ML-05**: Shadow mode for model A/B testing — new model logs predictions without acting on them; shadow predictions stored in Supabase `predictions` table with `is_shadow=true`
 
 ### CLV — Closing Line Value (Phase 1, non-deferrable)
 
-- [ ] **CLV-01**: The Odds API v4 client fetches Pinnacle closing odds post-match for all markets bet; measures actual delay vs kickoff to validate data freshness
-- [ ] **CLV-02**: CLV recorded in `clv_records` table (existing schema): `pick_id`, `odds_at_pick`, `pinnacle_closing_odds`, `clv_percentage` = `(odds_at_pick / closing_odds - 1) × 100`
-- [ ] **CLV-03**: CLV trend alert: if rolling 50-pick average CLV drops below +1%, Telegram sends warning to pause betting and audit
-- [ ] **CLV-04**: Performance metrics aggregated in `performance_metrics` table by sport, league, market, period: ROI, yield, avg CLV, win/loss/void counts
+- [x] **CLV-01**: The Odds API v4 client fetches Pinnacle closing odds at kickoff-1min for all markets bet; closing-line snapshot timing corrected per Pitfall 7 in quick-260503-k8k
+- [x] **CLV-02**: CLV recorded in `clv_records` table (existing schema): `pick_id`, `odds_at_pick`, `pinnacle_closing_odds`, `clv_percentage` = vig-removed math via `remove_vig` (Pitfall 7 mitigation in quick-260503-iql); raw closing odd preserved in `pinnacle_closing_odds` for audit
+- [ ] **CLV-03**: CLV trend alert: if rolling 50-pick average CLV drops below +1%, Telegram sends warning to pause betting and audit *(function exists; scheduler job wiring deferred to Phase 4)*
+- [ ] **CLV-04**: Performance metrics aggregated in `performance_metrics` table by sport, league, market, period: ROI, yield, avg CLV, win/loss/void counts *(table + repository exist; aggregator job deferred to Phase 4)*
 
 ### PICK — Pick Engine + Delivery
 
-- [ ] **PICK-01**: EV filter: minimum 5% edge required (`model_probability × odds - 1 ≥ 0.05`); picks below threshold are logged but not sent
-- [ ] **PICK-02**: Quarter-Kelly sizing: `kelly_fraction = (edge / (odds - 1)) × 0.25`; stake rounded to nearest 0.5 unit to avoid fingerprinting
-- [ ] **PICK-03**: Account longevity protections: market rotation (no more than 60% of picks from same market per week), minimum 30min variance in pick timing, stake amounts varied within Kelly bounds
-- [ ] **PICK-04**: Telegram alert format includes: fixture, market, selection, model probability, bookmaker odds, edge%, recommended stake, Claude validation status, key reasoning (≤3 bullet points)
-- [ ] **PICK-05**: All picks (sent and filtered) logged to `picks` table with status `pending`; updated to `won/lost/void` post-match via results pipeline
+- [x] **PICK-01**: EV filter: per-market edge threshold from `markets.yaml` / `LeagueConfig.model_params.edge_threshold_*` (1X2=0.08, BTTS/OU=0.05, AH=0.06, corners=0.07); picks below threshold are logged with status `filtered`. Per-market lookup wired in quick-260503-j74 (was hardcoded 5%, violated CORE-05).
+- [x] **PICK-02**: Quarter-Kelly sizing: `kelly_fraction = (edge / (odds - 1)) × 0.25`; stake rounded to nearest 0.5 unit; ±10% deterministic md5-based jitter to avoid fingerprinting
+- [x] **PICK-03**: Account longevity protections: 60% market rotation cap, deterministic send-time variance (D-11), quarter-Kelly clamping. Note: structurally dormant in 1X2-only Phase 3 — needs second market for rotation to bite
+- [x] **PICK-04**: Telegram alert format (HTML mode per D-12): fixture, market, selection, model probability, bookmaker odds, edge%, recommended stake, Claude validation status, key reasoning (≤3 bullet points capped per D-15)
+- [x] **PICK-05**: All picks (sent and filtered) logged to `picks` table with extended status enum (`pending|won|lost|void|push|filtered|rejected`); reconciliation updates won/lost/void/push post-match via results pipeline
 
 ### CLAUDE — AI Integration
 
-- [ ] **CLAUDE-01**: Role C (validator) reads pick and learnings.md red flags; outputs `CONFIRM / FLAG (reason) / REJECT` before Telegram send; `REJECT` blocks alert, `FLAG` sends with warning tag
+- [x] **CLAUDE-01**: Role C (validator) reads pick and learnings.md red flags; outputs `CONFIRM / FLAG (reason) / REJECT` via `tool_use` strict mode (cache_control ephemeral); `REJECT` blocks alert, `FLAG` sends with warning tag, API failure → `filtered/claude_api_unavailable` (D-07 conservative)
 - [ ] **CLAUDE-02**: Role B (confidence modifier) runs pre-prediction, reads fixture context from API-Football (injuries, motivation, news), outputs `confidence_modifier` float (-0.15 to +0.15) and structured reasoning; **shipped in shadow mode first** — logged but not applied to model until walk-forward CLV improvement is confirmed
 - [ ] **CLAUDE-03**: All Claude interactions logged to Supabase `predictions` table (`claude_context`, `claude_modifier`, `claude_validation`, `claude_reasoning`) for audit and backtesting analysis
 
@@ -93,32 +91,32 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CORE-01 | Phase 1 | Pending |
-| CORE-02 | Phase 1 | Pending |
-| CORE-03 | Phase 1 | Pending |
-| CORE-04 | Phase 1 | Pending |
-| CORE-05 | Phase 1 | Pending |
-| DATA-01 | Phase 1 | Pending |
-| DATA-02 | Phase 1 | Pending |
-| DATA-03 | Phase 1 | Pending |
-| DATA-04 | Phase 1 | Pending |
-| DATA-05 | Phase 1 | Pending |
-| CLV-01 | Phase 1 | Pending |
-| CLV-02 | Phase 1 | Pending |
-| CLV-03 | Phase 1 | Pending |
-| CLV-04 | Phase 1 | Pending |
-| ML-01 | Phase 2 | Pending |
-| ML-02 | Phase 2 | Complete |
-| ML-03 | Phase 2 | Complete |
-| ML-04 | Phase 2 | Pending |
-| ML-05 | Phase 2 | Pending |
-| PICK-01 | Phase 3 | Pending |
-| PICK-02 | Phase 3 | Pending |
-| PICK-03 | Phase 3 | Pending |
-| PICK-04 | Phase 3 | Pending |
-| PICK-05 | Phase 3 | Pending |
-| CLAUDE-01 | Phase 3 | Pending |
-| CORNERS-01 | Phase 3 | Pending |
+| CORE-01 | Phase 1 | Complete |
+| CORE-02 | Phase 1 | Partial (layout drift — see G-CODE-04..06) |
+| CORE-03 | Phase 1 | Complete |
+| CORE-04 | Phase 1 | Complete |
+| CORE-05 | Phase 1 | Complete (per-market wiring closed in 260503-j74) |
+| DATA-01 | Phase 1 | Complete |
+| DATA-02 | Phase 1 | Complete |
+| DATA-03 | Phase 1 | Complete |
+| DATA-04 | Phase 1 | Complete |
+| DATA-05 | Phase 1 | Complete |
+| CLV-01 | Phase 1 | Complete (kickoff-1m timing fixed in 260503-k8k) |
+| CLV-02 | Phase 1 | Complete (vig-removed math via 260503-iql) |
+| CLV-03 | Phase 1 | Pending (function exists; scheduler job → Phase 4) |
+| CLV-04 | Phase 1 | Pending (table + repo exist; aggregator job → Phase 4) |
+| ML-01 | Phase 2 | Complete |
+| ML-02 | Phase 2 | Complete (structural; empirical PL smoke train deferred) |
+| ML-03 | Phase 2 | Complete (structural; empirical per-league logloss deferred) |
+| ML-04 | Phase 2 | Complete |
+| ML-05 | Phase 2 | Complete |
+| PICK-01 | Phase 3 | Complete |
+| PICK-02 | Phase 3 | Complete |
+| PICK-03 | Phase 3 | Complete (1X2-only — rotation dormant until 2nd market) |
+| PICK-04 | Phase 3 | Complete |
+| PICK-05 | Phase 3 | Complete |
+| CLAUDE-01 | Phase 3 | Complete |
+| CORNERS-01 | Phase 3 | Pending (manual probe templates exist; user fills in) |
 | CLAUDE-02 | Phase 5 | Pending |
 | CLAUDE-03 | Phase 5 | Pending |
 | CORNERS-02 | Phase 6 | Pending |
