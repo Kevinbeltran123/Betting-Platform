@@ -67,11 +67,23 @@ class Pick(BaseModel):
     kelly_fraction: float | None = None
     suggested_stake: float | None = None
     status: PickStatus = PickStatus.pending
+    # D-08: Claude Role C validation fields (added by migration 004).
+    # Defaults None so Phase 1+2 picks (no Claude) still construct cleanly.
+    claude_validation: str | None = None         # CONFIRM | FLAG | REJECT | SKIPPED | None
+    claude_reasoning: str | None = None
+    claude_summary: str | None = None
+    claude_validated_at: datetime | None = None
 
     def to_supabase_dict(self) -> dict:
-        """Convert to dict for Supabase insert."""
+        """Convert to dict for Supabase insert.
+
+        D-08: claude_validated_at must be ISO-formatted (PATTERNS.md drift risk #17 —
+        forgetting this ships None for valid timestamps).
+        """
         data = self.model_dump()
         data["status"] = self.status.value
+        if self.claude_validated_at is not None:
+            data["claude_validated_at"] = self.claude_validated_at.isoformat()
         return data
 
 
