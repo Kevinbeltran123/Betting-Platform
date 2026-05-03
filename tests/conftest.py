@@ -39,6 +39,10 @@ def settings(monkeypatch):
     monkeypatch.setenv("SUPABASE_KEY", "test-supabase-key-12345")
     monkeypatch.setenv("API_FOOTBALL_KEY", "test-api-football-key")
     monkeypatch.setenv("ODDS_API_KEY", "test-odds-api-key")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-bot-token")
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "-1001234567890")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-4-6")
     from bip.core.settings import Settings
     return Settings()
 
@@ -121,3 +125,58 @@ def tmp_model_dir(tmp_path):
     model_dir = tmp_path / "models" / "football"
     model_dir.mkdir(parents=True)
     return tmp_path / "models"
+
+
+# ------------------------------------------------------------------
+# Phase 3 fixtures — Claude validator + Telegram delivery mocks
+# ------------------------------------------------------------------
+
+def _build_canned_message(verdict: str = "CONFIRM", reason_code: str = "ok",
+                           reasoning: str = "Test reasoning", summary: str = "Test summary"):
+    """Build a fake anthropic Message with content[0] as tool_use block."""
+    from unittest.mock import MagicMock
+
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.input = {
+        "verdict": verdict,
+        "reason_code": reason_code,
+        "reasoning": reasoning,
+        "summary": summary,
+    }
+    msg = MagicMock()
+    msg.content = [tool_block]
+    msg.usage.cache_read_input_tokens = 0
+    msg.usage.cache_creation_input_tokens = 3500
+    return msg
+
+
+@pytest.fixture
+def mock_anthropic_client():
+    """Returns a MagicMock with .messages.create as AsyncMock returning a canned tool_use Message.
+
+    Used by tests/claude/test_validator.py and tests/picks/test_engine.py to mock
+    the AsyncAnthropic client. Default return: CONFIRM verdict.
+
+    Override the return value per-test with:
+        mock_anthropic_client.messages.create.return_value = _build_canned_message(verdict="REJECT")
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_build_canned_message(verdict="CONFIRM"))
+    return client
+
+
+@pytest.fixture
+def mock_telegram_bot():
+    """Returns a MagicMock with .send_html as AsyncMock that records calls.
+
+    Assert in tests:
+        mock_telegram_bot.send_html.assert_awaited_once_with(<html_text>)
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    bot = MagicMock()
+    bot.send_html = AsyncMock()
+    return bot
