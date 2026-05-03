@@ -64,6 +64,9 @@ def _features(league: str, n: int = 3):
         league=league,
         computed_at=datetime(2026, 4, 22, 15, 0, 0, tzinfo=UTC),
         features={f"f{i}": 0.5 for i in range(n)},
+        kickoff_utc=datetime(2026, 5, 1, 15, 0, tzinfo=UTC),
+        home_team="Home FC",
+        away_team="Away FC",
     )
 
 

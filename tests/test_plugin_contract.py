@@ -8,7 +8,7 @@ class TestSportPluginABC:
     """CORE-01: SportPlugin ABC has all required abstract methods."""
 
     def test_sport_plugin_has_all_abstract_methods(self):
-        """SportPlugin must define get_fixtures, build_features, predict, build_claude_context, get_available_markets."""
+        """SportPlugin must define get_fixtures, build_features, predict, build_claude_context, get_available_markets, get_opening_odds (G-CODE-01)."""
         from bip.sports import SportPlugin
         abstract_methods = getattr(SportPlugin, "__abstractmethods__", set())
         required = {
@@ -17,6 +17,7 @@ class TestSportPluginABC:
             "predict",
             "build_claude_context",
             "get_available_markets",
+            "get_opening_odds",  # G-CODE-01: orchestrator pipeline contract
         }
         assert required == abstract_methods, (
             f"Missing abstract methods: {required - abstract_methods}"

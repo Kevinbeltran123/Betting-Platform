@@ -17,6 +17,9 @@ class TestFeatureSchemaVersion:
             league="premier_league",
             computed_at=datetime(2024, 8, 1, tzinfo=timezone.utc),
             features={"home_xg": 1.5},
+            kickoff_utc=datetime(2024, 8, 1, 15, 0, tzinfo=timezone.utc),
+            home_team="Home FC",
+            away_team="Away FC",
         )
         engineer = FeatureEngineer()
         row = engineer.to_parquet_row(fm, matchday=10, season="2024-2025")
@@ -37,6 +40,9 @@ class TestPointInTimeCorrectness:
             league="premier_league",
             computed_at=now - timedelta(seconds=1),
             features={"home_xg": 1.5, "away_xg": 0.9},
+            kickoff_utc=now + timedelta(hours=2),
+            home_team="Home FC",
+            away_team="Away FC",
         )
         assert fm.computed_at <= now
 
@@ -51,6 +57,9 @@ class TestPointInTimeCorrectness:
             league="premier_league",
             computed_at=prediction_time,
             features={"home_form_5": 0.6, "away_form_5": 0.4},
+            kickoff_utc=kickoff,
+            home_team="Home FC",
+            away_team="Away FC",
         )
         assert fm.computed_at <= prediction_time
 
@@ -81,6 +90,9 @@ class TestPointInTimeCorrectness:
             league=fixture.league,
             computed_at=prediction_time,  # enforced: set to prediction_time
             features={"home_xg_ma5": 1.6},
+            kickoff_utc=fixture.kickoff_utc,
+            home_team=fixture.home_team,
+            away_team=fixture.away_team,
         )
         assert simulated_features.computed_at <= prediction_time, (
             f"Feature leakage: computed_at={simulated_features.computed_at} "

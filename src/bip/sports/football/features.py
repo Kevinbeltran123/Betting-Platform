@@ -193,6 +193,9 @@ class FeatureEngineer:
             league=fixture.league,
             computed_at=computed_at,
             features=features,
+            kickoff_utc=fixture.kickoff_utc,
+            home_team=fixture.home_team,
+            away_team=fixture.away_team,
         )
 
     def to_parquet_row(

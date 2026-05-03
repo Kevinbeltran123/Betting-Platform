@@ -36,7 +36,7 @@ from bip.core.picks.account_longevity import (
     round_to_nearest_half_unit,
 )
 from bip.core.settings import Settings
-from bip.core.storage.models import Pick
+from bip.core.storage.models import Pick, Prediction
 from bip.core.storage.repositories import PickRepository
 from bip.core.telegram.sender import TelegramSender
 from bip.core.types import PickStatus
@@ -79,7 +79,7 @@ class PickEngine:
         self._settings = settings
         self._league_registry = league_registry
 
-    async def evaluate(self, prediction: Any, opening_odds: dict[str, Any]) -> Pick | None:
+    async def evaluate(self, prediction: Prediction, opening_odds: dict[str, Any]) -> Pick | None:
         fixture_id = prediction.fixture_id
         market = prediction.market
 
