@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 3 context gathered
-last_updated: "2026-05-03T20:30:00.000Z"
-last_activity: 2026-05-03 -- Completed quick task 260503-k8k: Wire ClvRecorder + OddsApiClient en orchestrator (kickoff-1m timing + find_event_by_fixture)
+last_updated: "2026-05-03T22:55:00.000Z"
+last_activity: 2026-05-03 -- Completed quick task 260503-oml: MarketKey enum + migrate callers (G-MAINT-05)
 progress:
   total_phases: 8
   completed_phases: 3
@@ -122,6 +122,7 @@ None yet.
 | 260503-j74 | Per-market edge thresholds desde YAML | 2026-05-03 | db0075d | [260503-j74-per-market-edge-thresholds-desde-yaml](./quick/260503-j74-per-market-edge-thresholds-desde-yaml/) |
 | 260503-jkf | Orchestrator/Plugin/Engine wiring (Strategy 2) | 2026-05-03 | e68df0e | [260503-jkf-orchestrator-plugin-engine-wiring-predic](./quick/260503-jkf-orchestrator-plugin-engine-wiring-predic/) |
 | 260503-k8k | Wire ClvRecorder + OddsApiClient en orchestrator (kickoff-1m + find_event_by_fixture) | 2026-05-03 | cc0db4d | [260503-k8k-wire-clvrecorder-oddsapiclient-en-orches](./quick/260503-k8k-wire-clvrecorder-oddsapiclient-en-orches/) |
+| 260503-oml | MarketKey enum + migrate callers (G-MAINT-05) | 2026-05-03 | fc0ced1 | [260503-oml-marketkey-enum-migrar-callers-g-maint-05](./quick/260503-oml-marketkey-enum-migrar-callers-g-maint-05/) |
 
 ## Deferred Items
 
