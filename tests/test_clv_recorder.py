@@ -79,3 +79,45 @@ class TestRollingAverage:
         clv_values = [2.0, 3.0, 4.0]
         avg = compute_rolling_clv_average(clv_values)
         assert avg == pytest.approx(3.0, abs=0.01)
+
+
+class TestRemoveVig:
+    """Proportional vig removal -- PITFALLS.md Pitfall 7."""
+
+    def test_remove_vig_proportional(self):
+        """3-way market: vig-removed implicit probabilities sum to 1.0; fair odds > raw odds."""
+        from bip.clv.odds_math import remove_vig
+        raw = {"1": 1.95, "X": 3.40, "2": 4.20}
+        fair = remove_vig(raw)
+        prob_sum = sum(1.0 / fair[k] for k in raw)
+        assert prob_sum == pytest.approx(1.0, abs=1e-6)
+        assert fair["1"] > 1.95
+        assert fair["X"] > 3.40
+        assert fair["2"] > 4.20
+
+    def test_remove_vig_two_way(self):
+        """Symmetric 2-way market at 1.91/1.91 -> fair 2.00/2.00 (Pinnacle ~2.5% vig)."""
+        from bip.clv.odds_math import remove_vig
+        fair = remove_vig({"over": 1.91, "under": 1.91})
+        assert fair["over"] == pytest.approx(2.0, abs=1e-6)
+        assert fair["under"] == pytest.approx(2.0, abs=1e-6)
+
+    def test_remove_vig_rejects_empty_dict(self):
+        """Empty dict -> ValueError mentioning 'empty'."""
+        from bip.clv.odds_math import remove_vig
+        with pytest.raises(ValueError, match="empty"):
+            remove_vig({})
+
+    def test_remove_vig_rejects_invalid_odds(self):
+        """Any odd <= 1.0 -> ValueError mentioning the offending key/value."""
+        from bip.clv.odds_math import remove_vig
+        with pytest.raises(ValueError, match="1"):
+            remove_vig({"1": 1.0, "X": 3.0, "2": 4.0})
+        with pytest.raises(ValueError, match="0.5|1"):
+            remove_vig({"1": 0.5, "X": 3.0})
+
+    def test_remove_vig_preserves_keys(self):
+        """Output dict has the same key set as the input."""
+        from bip.clv.odds_math import remove_vig
+        fair = remove_vig({"a": 2.0, "b": 2.1, "c": 2.2})
+        assert set(fair.keys()) == {"a", "b", "c"}
