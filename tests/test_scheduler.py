@@ -18,7 +18,7 @@ class TestPipelineOrchestrator:
         assert isinstance(orch.scheduler, AsyncIOScheduler)
 
     def test_registers_date_trigger_jobs(self):
-        """_daily_orchestrator must register 3 DateTrigger jobs per fixture: T-2h, T-30min, T+105min."""
+        """_daily_orchestrator must register 3 DateTrigger jobs per fixture: T-2h, T-30min, T-1min."""
         from bip.scheduler.orchestrator import PipelineOrchestrator
         from bip.sports import FixtureData
 
@@ -65,13 +65,19 @@ class TestPipelineOrchestrator:
         # At minimum daily orchestrator is CronTrigger
         assert len(cron_triggers) >= 1
 
-    def test_clv_snapshot_job_registered_at_kickoff_plus_105min(self):
-        """CLV DateTrigger must be at kickoff + 105 minutes — D-04a."""
-        # Verifies orchestrator registers 3rd DateTrigger (CLV snapshot)
-        # Full behavior tested in integration; this is structural check
+    def test_clv_snapshot_job_registered_at_kickoff_minus_1min(self):
+        """CLV DateTrigger must be at kickoff - 1 minute — quick-260503-k8k.
+
+        Pinnacle h2h freezes at kickoff; a snapshot one minute prior captures
+        the closing line we benchmark CLV against. This replaces the earlier
+        kickoff + 105m placeholder used while the recorder was unwired.
+        """
         from bip.scheduler.orchestrator import PipelineOrchestrator
         import inspect
-        src = inspect.getsource(PipelineOrchestrator._daily_orchestrator)
-        assert "105" in src, (
-            "PipelineOrchestrator._daily_orchestrator must register CLV job at kickoff + 105 min"
+        src = inspect.getsource(PipelineOrchestrator._register_fixture_jobs)
+        assert "t_minus_1m" in src, (
+            "PipelineOrchestrator._register_fixture_jobs must register CLV job at kickoff - 1 min"
+        )
+        assert "kickoff - timedelta(minutes=1)" in src, (
+            "CLV DateTrigger must use kickoff - timedelta(minutes=1)"
         )

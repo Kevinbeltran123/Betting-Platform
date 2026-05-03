@@ -43,6 +43,9 @@ class PipelineOrchestrator:
         pick_repo: Any | None = None,
         telegram_bot: Any | None = None,
         api_football_client: Any | None = None,
+        odds_api_client: Any | None = None,
+        clv_recorder: Any | None = None,
+        league_registry: Any | None = None,
     ) -> None:
         self.plugin = plugin
         self.settings = settings
@@ -52,6 +55,9 @@ class PipelineOrchestrator:
         self.pick_repo = pick_repo
         self.telegram_bot = telegram_bot
         self._api_client = api_football_client
+        self.odds_api_client = odds_api_client
+        self.clv_recorder = clv_recorder
+        self.league_registry = league_registry
 
     def start(self) -> None:
         self.scheduler.add_job(
@@ -158,7 +164,7 @@ class PipelineOrchestrator:
             logger.error("get_fixtures_failed", error=str(exc))
             raise SchedulerError(f"Daily orchestrator failed: {exc}") from exc
 
-        # Each fixture gets: T-2h, T-30min, T+105min (CLV snapshot), T+150min (reconcile) DateTrigger jobs
+        # Each fixture gets: T-2h, T-30min, T-1min (CLV snapshot), T+150min (reconcile) DateTrigger jobs
         for fixture in fixtures:
             self._register_fixture_jobs(fixture, now)
 
@@ -188,13 +194,15 @@ class PipelineOrchestrator:
                 replace_existing=True,
             )
 
-        t_plus_105m = kickoff + timedelta(minutes=105)
-        if t_plus_105m > now:
+        # CLV snapshot at kickoff - 1 minute (Pinnacle h2h freezes at kickoff;
+        # capturing 1 min before is the closing line we benchmark against).
+        t_minus_1m = kickoff - timedelta(minutes=1)
+        if t_minus_1m > now:
             self.scheduler.add_job(
                 self._record_clv,
-                trigger=DateTrigger(run_date=t_plus_105m),
+                trigger=DateTrigger(run_date=t_minus_1m),
                 args=[fixture],
-                id=f"clv_{fixture_id}_t_plus_105m",
+                id=f"clv_{fixture_id}_t_minus_1m",
                 replace_existing=True,
             )
 
@@ -283,11 +291,152 @@ class PipelineOrchestrator:
             logger.error("pipeline_failed", fixture_id=fixture_id, stage=stage, error=str(exc))
 
     async def _record_clv(self, fixture: object) -> None:
+        """Snapshot Pinnacle closing odds at kickoff - 1m and persist via ClvRecorder.
+
+        Wiring contract:
+          - clv_recorder + odds_api_client + pick_repo are all required.
+          - league_registry is optional (falls back to "soccer_epl" sport_key).
+          - One ClvRecord is written per pending 1X2 pick on the fixture.
+        """
         fixture_id = fixture.fixture_id  # type: ignore[attr-defined]
-        logger.info("clv_snapshot_triggered", fixture_id=fixture_id)
+
+        if (
+            self.clv_recorder is None
+            or self.odds_api_client is None
+            or self.pick_repo is None
+        ):
+            logger.info(
+                "clv_skip_unwired",
+                fixture_id=fixture_id,
+                missing=[
+                    name for name, obj in (
+                        ("clv_recorder", self.clv_recorder),
+                        ("odds_api_client", self.odds_api_client),
+                        ("pick_repo", self.pick_repo),
+                    )
+                    if obj is None
+                ],
+            )
+            return
+
+        try:
+            pending = self.pick_repo.get_pending_for_fixture(fixture_id)
+        except Exception as exc:
+            logger.error("clv_pending_query_failed", fixture_id=fixture_id, error=str(exc))
+            return
+
+        pending_1x2 = [p for p in pending if p.get("market") == "1X2"]
+        if not pending_1x2:
+            logger.info("clv_skip_no_pending", fixture_id=fixture_id)
+            return
+
+        league = getattr(fixture, "league", None)
+        sport_key = "soccer_epl"
+        if self.league_registry is not None and league:
+            try:
+                sport_key = self.league_registry.get(league).api_mappings.odds_api_sport_key
+            except Exception as exc:
+                logger.warning(
+                    "clv_sport_key_lookup_failed",
+                    fixture_id=fixture_id, league=league, error=str(exc),
+                    fallback=sport_key,
+                )
+
+        try:
+            event_id = await self.odds_api_client.find_event_by_fixture(
+                sport_key=sport_key,
+                home_team=fixture.home_team,  # type: ignore[attr-defined]
+                away_team=fixture.away_team,  # type: ignore[attr-defined]
+                kickoff_utc=fixture.kickoff_utc,  # type: ignore[attr-defined]
+            )
+        except Exception as exc:
+            logger.error("clv_find_event_failed", fixture_id=fixture_id, error=str(exc))
+            return
+
+        if event_id is None:
+            logger.info("clv_skip_no_event", fixture_id=fixture_id, sport_key=sport_key)
+            return
+
+        try:
+            bookmaker = await self.odds_api_client.fetch_pinnacle_closing_odds(
+                sport_key=sport_key, event_id=event_id, market_key="h2h"
+            )
+        except Exception as exc:
+            logger.error("clv_fetch_pinnacle_failed", fixture_id=fixture_id, error=str(exc))
+            return
+
+        if bookmaker is None:
+            logger.info("clv_skip_no_pinnacle", fixture_id=fixture_id, event_id=event_id)
+            return
+
+        # Project Pinnacle outcomes into {"1": ..., "X": ..., "2": ...}
+        markets = bookmaker.get("markets") or []
+        if not markets:
+            logger.info("clv_skip_no_markets", fixture_id=fixture_id, event_id=event_id)
+            return
+        outcomes = markets[0].get("outcomes") or []
+
+        home_lc = (fixture.home_team or "").strip().lower()  # type: ignore[attr-defined]
+        away_lc = (fixture.away_team or "").strip().lower()  # type: ignore[attr-defined]
+        closing: dict[str, float] = {}
+        for outcome in outcomes:
+            name_lc = (outcome.get("name") or "").strip().lower()
+            price = outcome.get("price")
+            if price is None:
+                continue
+            if name_lc == "draw":
+                closing["X"] = float(price)
+            elif home_lc and (home_lc in name_lc or name_lc in home_lc):
+                closing["1"] = float(price)
+            elif away_lc and (away_lc in name_lc or name_lc in away_lc):
+                closing["2"] = float(price)
+
+        if set(closing.keys()) != {"1", "X", "2"}:
+            logger.info(
+                "clv_skip_incomplete_market",
+                fixture_id=fixture_id,
+                event_id=event_id,
+                got=sorted(closing.keys()),
+            )
+            return
+
+        recorded = 0
+        for pick in pending_1x2:
+            try:
+                self.clv_recorder.record(
+                    pick_id=pick["id"],
+                    fixture_id=fixture_id,
+                    sport="football",
+                    market="onextwo",
+                    odds_at_pick=pick["odds_at_pick"],
+                    closing_odds_dict=closing,
+                    selection=pick["selection"],
+                )
+                recorded += 1
+            except Exception as exc:
+                logger.error(
+                    "clv_record_failed",
+                    fixture_id=fixture_id,
+                    pick_id=pick.get("id"),
+                    error=str(exc),
+                )
+
+        logger.info(
+            "clv_recorded_count",
+            fixture_id=fixture_id,
+            event_id=event_id,
+            count=recorded,
+        )
 
     async def _reconcile_clv(self) -> None:
-        logger.info("clv_reconciliation_started")
+        # Phase 4 deliverable -- rolling-50 CLV trend alerting + back-fill of
+        # snapshots for fixtures that missed the T-1m window. The cron entry
+        # remains so ops can confirm the schedule fires; the body is a no-op
+        # warning until that work lands.
+        logger.warning(
+            "clv_reconciliation_deferred",
+            note="Phase 4 deliverable -- rolling-50 trend + back-fill not yet implemented",
+        )
 
     async def _reconcile_results(self, fixture: object, retries: int = 0) -> None:
         """D-16: settle pending picks based on API-Football status.
