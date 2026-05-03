@@ -1,321 +1,178 @@
-# Aprendizajes de Apuestas de Fútbol — Football Betting Learnings
+# Errores aprendidos — Fútbol
 
-> **PLACEHOLDER — Verbatim port pending**
->
-> Este archivo es un placeholder estructurado. El contenido verbatim de producción debe ser
-> copiado desde:
->   `/Users/kevin_beltran/ProyectosPersonales/Sports_Betting/Claude_Sport_Betting/learnings/football-learnings.md`
->
-> Para el port verbatim ejecutar:
->   ```bash
->   cp /Users/kevin_beltran/ProyectosPersonales/Sports_Betting/Claude_Sport_Betting/learnings/football-learnings.md \
->      src/bip/core/claude/prompts/football-learnings.md
->   ```
->
-> D-05: El contenido en español se conserva verbatim — las correcciones escritas por Kevin
-> mantienen su voz y el contexto de reconocimiento de patrones.
+Cada vez que el usuario corrija un pick o identifique un error de análisis, documentar aquí con fecha, contexto y lección. Esta sección crece con la experiencia.
 
 ---
 
-## Contexto y Propósito
+## 2026-04-05 — Error #1: Aggregate Stat Seduction
 
-Este documento recoge los aprendizajes acumulados del análisis de partidos de fútbol para
-apuestas deportivas. El objetivo es identificar situaciones donde el análisis estadístico
-puede verse distorsionado por factores contextuales que los modelos ML no capturan
-directamente.
+**Contexto:** Analizando Cúcuta Deportivo vs América de Cali (Liga BetPlay), recomendé Over 2.5 goles @ 2.25 basándome principalmente en que Cúcuta tenía 1.80 GA/P en la temporada.
 
-El validador de Role C (Claude) utiliza este documento como sistema de referencia para
-CONFIRMAR, MARCAR (FLAG) o RECHAZAR picks antes de enviarlos por Telegram.
+**Qué hice mal:**
+- Tomé una stat agregada impactante (Cúcuta defensa entre las peores) y construí la narrativa sobre ella.
+- Ignoré que los últimos 5 partidos de Cúcuta fueron: 0-0, 1-0, 2-2, 2-2, 0-2 → promedio solo 2.2 goles/P.
+- Los últimos 5 de América: 2-0, 2-1, 0-0, 1-0, 1-1 → promedio solo 1.6 goles/P.
+- **Promedio combinado reciente: 1.90 goles/P, BAJO la línea 2.5**.
+- También ignoré que el line movement iba hacia Under (Over se alargó de +110 a +125 = money en Under).
 
----
+**Consecuencia:** Pick con EV real negativo (~-5.5%) presentado como EV positivo (~+8-17%). El usuario me corrigió señalando que la mayoría de partidos recientes terminaron Under.
 
-## Sección 1: Trampas Estadísticas en el Análisis de Partidos
+**Lección:**
+> Una stat agregada impresionante (como GA/P de temporada) puede ser engañosa sin contraste temporal. Equipos ajustan defensiva/ofensivamente durante temporada. **Siempre cruzar agregado con forma reciente real de los partidos.**
 
-### 1.1 La Seducción de las Estadísticas Agregadas
+**Regla añadida al Paso 7:** calcular `recent_avg_goals` combinado de últimos 5 partidos de cada equipo ANTES de apostar Over/Under. Si contradice la línea, necesitas evidencia extraordinaria para apostar en contra del promedio reciente.
 
-Uno de los errores más comunes en el análisis de partido es dejarse llevar por las
-estadísticas agregadas de la temporada cuando el contexto del partido específico las hace
-irrelevantes. Las cuotas de un equipo pueden parecer favorables basándose en su rendimiento
-general, pero varios factores pueden invalidar esa ventaja estadística.
-
-**Patrones de alerta (red flags):**
-
-- Equipo con alta puntuación en xG de temporada pero con 3+ partidos consecutivos sin
-  marcar antes del partido analizado
-- Diferencia significativa entre xG esperado y goles reales en las últimas 5 jornadas
-- Equipo favorito jugando fuera de casa en liga de alto pressing contra su estilo de juego
-- Historial de rendimiento en partidos de alto riesgo vs. partidos de menor importancia
-
-**Cuotas afectadas:** Principalmente mercados 1X2, pero también Over/Under de goles.
-
-### 1.2 El Efecto del H2H Desactualizado
-
-El historial head-to-head (H2H) entre dos equipos puede ser engañoso cuando los datos son
-demasiado antiguos o cuando las circunstancias han cambiado significativamente. Un H2H
-favorable de hace 3+ temporadas no captura los cambios en plantilla, entrenador o sistema
-táctico.
-
-**Cuándo ignorar el H2H:**
-
-1. El entrenador de alguno de los equipos ha cambiado en los últimos 18 meses
-2. La plantilla ha tenido renovación superior al 50% de titulares habituales
-3. El H2H se basa en menos de 3 partidos en los últimos 3 años
-4. Los partidos de H2H se jugaron en condiciones muy distintas (ligas diferentes, competiciones
-   europeas vs. liga nacional)
-
-### 1.3 Motivación y Gestión de Partido
-
-La motivación relativa de cada equipo en el partido es uno de los factores más difíciles de
-cuantificar estadísticamente pero más importantes en el resultado final. Un equipo ya
-clasificado puede realizar rotaciones masivas mientras que el rival juega con máxima
-concentración por necesidad.
-
-**Situaciones de alto riesgo por motivación:**
-
-- Equipo local ya campeón o descendido matemáticamente antes de la última jornada
-- Equipo visitante necesitando un resultado específico para clasificarse a Europa
-- Partido de Copa inmediatamente antes o después (gestión de esfuerzo)
-- Derbi regional con implicaciones de orgullo más allá de los puntos en juego
-- Equipo con partido de Champions/Europa League el jueves siguiente a un partido de liga el lunes
-
-### 1.4 Lesiones y Alineaciones Confirmadas
-
-El análisis pre-partido debe siempre verificar las alineaciones confirmadas cuando estén
-disponibles (típicamente 1h antes del partido). La ausencia de jugadores clave puede
-invalidar completamente el análisis estadístico previo.
-
-**Umbrales de preocupación:**
-
-- Baja del portero titular: revalorar pick independientemente del análisis estadístico
-- Ausencia de 2+ centrales titulares: mercados de Over/Under y ambos marcan se ven afectados
-- Delantero referencia baja 48h antes: pick en mercados de goles del equipo afectado
-- Centrocampista organizador ausente: afecta al estilo de juego y la posesión esperada
+**Señal de alerta temprana:** Si al construir el caso del pick solo tengo UNA stat fuerte a favor y todo lo demás es neutral o en contra, probablemente estoy pescando edge donde no hay.
 
 ---
 
-## Sección 2: Patrones de Valor en Cuotas de Mercado
+## Patrón general de errores en picks Over/Under
 
-### 2.1 Identificación de Cuotas con Valor (Value Bets)
+Cuando un pick Over falle por este patrón, revisar si:
+1. El promedio reciente combinado soportaba la hipótesis
+2. El line movement iba a favor o en contra
+3. Usé stat agregada de temporada sin verificar forma reciente
+4. El H2H reciente (si existe y es actual) soportaba la hipótesis
 
-El valor en una apuesta existe cuando la probabilidad implícita en las cuotas es menor que
-la probabilidad real estimada por el modelo. Sin embargo, identificar valor verdadero
-requiere distinguir entre sesgo del mercado y señales reales del modelo.
-
-**Indicadores de valor genuino:**
-
-- CLV positivo consistente en las últimas 20+ apuestas del mismo tipo de mercado
-- Divergencia entre Pinnacle (mercado más eficiente) y bookmakers de menor margen
-- Cuota no ha convergido hacia el valor esperado del modelo en las últimas 2h pre-partido
-- Volumen de apuestas en Betfair Exchange confirma la dirección del modelo (smart money)
-
-### 2.2 Sesgos del Mercado de Apuestas
-
-Los mercados de apuestas tienen sesgos sistemáticos que generan oportunidades recurrentes:
-
-**Sesgo de equipo local:** Los mercados sobrevaloran sistemáticamente al equipo local en
-ligas con alta asistencia y ambiente intenso (como la Premier League y la Bundesliga).
-El efecto es más pronunciado cuando el equipo local lleva varias jornadas sin ganar en casa.
-
-**Sesgo de cuota baja:** Las cuotas inferiores a 1.5 para un equipo favorito tienden a
-sobreestimar la ventaja cuando el partido es un enfrentamiento directo entre dos equipos
-en la zona media de la tabla.
-
-**Sesgo de racha:** Los mercados sobreajustan las cuotas de un equipo que lleva 3+ partidos
-ganando consecutivamente, especialmente si fueron victorias holgadas. La regresión a la
-media estadística sugiere cautela.
-
-### 2.3 Movimiento de Cuotas como Señal
-
-El movimiento de cuotas desde la apertura hasta el cierre puede indicar información nueva
-que el modelo no ha procesado:
-
-- Movimiento > 10% hacia una dirección: probable información privilegiada sobre alineaciones
-- Cuota que se aleja del modelo al cierre: el mercado puede tener información sobre
-  lesiones o motivación no pública aún
-- Pinching (cuota que converge desde ambos lados): mercado eficiente, señal débil del modelo
+Si 2+ de estas señales iban en contra, el pick no debió ocurrir.
 
 ---
 
-## Sección 3: Errores de Análisis Frecuentes
+## 2026-04-05 — Aprendizaje #2: Bajas defensivas múltiples = ajuste agresivo de goles rival
 
-### 3.1 Error de Contexto Europeo
+**Contexto:** Mismo partido Cúcuta vs América de Cali. Tras corregir el error #1, aposté BTTS No @ 1.80 (EV +8%) y gané. Descarté Under 2.5 @ 1.63 (EV +1.06%, bajo umbral) y Doble Oportunidad X2 @ 1.21 (EV negativo). El proceso funcionó: +1.00u neto y evitamos pérdida en X2.
 
-Equipos que participan en competiciones europeas (Champions League, Europa League,
-Conference League) frecuentemente muestran rendimiento degradado en liga los días
-inmediatamente posteriores a partidos europeos exigentes.
+**Qué observé:**
+- América viajaba sin 2 centrales titulares (Nicolás Hernández rodilla + Jan Lucumí ligamentos).
+- Identifiqué esto como riesgo en el contra-argumento y bajé el stake de BTTS No a 1.25u en vez de 2u.
+- Pero NO ajusté numéricamente mi estimación de goles de Cúcuta por esas bajas. Mantuve la prob. de BTTS No en 60%.
+- Resultado: Cúcuta metió 2 goles (por encima de su avg reciente de 1.4/P), América 0. BTTS No ganó, pero la estimación de goles de Cúcuta fue conservadora.
 
-**Patrón específico:** Partido de ida o vuelta en Europa el jueves → partido de liga el
-domingo → rendimiento del equipo europeo puede estar 15-20% por debajo del esperado.
+**Lección:**
+> Cuando un equipo tiene **2+ bajas en la misma línea** (especialmente defensa central), el ajuste no debe ser solo cualitativo ("lo anoto como riesgo"). Debe ser cuantitativo: subir la estimación de goles del rival en +0.3 a +0.5 goles/P respecto a su promedio reciente. Dos centrales fuera desorganizan toda la estructura defensiva, no es lo mismo que perder un lateral + un mediocampista.
 
-**Corrección:** Aumentar la incertidumbre del modelo en ±2-3% para picks de este equipo
-en el partido de liga posterior al europeo.
+**Regla operativa:**
+- 1 baja defensiva titular → ajuste +0.1-0.2 goles/P al rival
+- 2 bajas en misma línea (ej: pareja de centrales) → ajuste +0.3-0.5 goles/P al rival
+- Aplicar este ajuste ANTES de calcular probabilidades de Over/Under y BTTS
 
-### 3.2 Error de Forma Corta vs. Forma Larga
-
-El análisis debe equilibrar la forma reciente (últimas 5-6 jornadas) con el rendimiento
-de temporada completa. Los modelos que sobrepesan la forma reciente pueden ser engañados por
-rachas atípicas.
-
-**Forma corta engañosa (alerta):**
-- 3 victorias consecutivas contra rivales de zona de descenso → no proyectar al rival actual
-- Racha de derrotas incluye partidos ante los 3 primeros de la tabla → normalizar
-- Empates consecutivos pueden reflejar cambio táctico defensivo, no pérdida de nivel
-
-### 3.3 El Problema de Inferencia de Mercados de Córners
-
-Los mercados de córners son especialmente susceptibles a sesgos de análisis porque los
-modelos estadísticos de córners tienen menor precisión que los modelos de goles. Factores
-adicionales de cautela:
-
-- Estilos tácticos muy defensivos generan pocos córners independientemente del dominio
-- Partidos de alta importancia táctica tienden a tener menos córners totales
-- El marcador en curso afecta significativamente a la frecuencia de córners (equipos
-  perdiendo buscan córners; equipos ganando protegen la posesión)
+**Validación del proceso:**
+- EV calculator descartó correctamente Under 2.5 (edge real insuficiente con cuota del usuario)
+- EV calculator descartó correctamente X2 (EV negativo → habría sido pérdida de 1u)
+- BTTS No capturó el edge real: América sin gol visitante + Cúcuta anotando contra defensa rota
 
 ---
 
-## Sección 4: Guía de Decisión para el Validador Role C
+## 2026-04-06 — Error #3: Parlay completo fallido (3/3 patas perdidas)
 
-### 4.1 Criterios para CONFIRM
+**Contexto:** Parlay de 3 patas para el lunes 6 de abril:
+1. Gol en 1H Napoli vs Milan @ 1.40 — PERDIDA
+2. Villarreal ML @ 2.25 (Girona vs Villarreal) — PERDIDA
+3. Benfica gana 1H @ ~1.75 (Casa Pia vs Benfica) — PERDIDA
 
-El validador debe emitir CONFIRM cuando:
+### Error A: Motivación mal leída (Napoli vs Milan)
 
-1. El análisis estadístico del modelo es consistente con el contexto del partido
-2. No hay factores de motivación que distorsionen significativamente el resultado esperado
-3. Las alineaciones confirmadas no incluyen bajas críticas para el mercado analizado
-4. El movimiento de cuotas es favorable o neutro (no contradice al modelo)
-5. El H2H relevante (últimos 3 años, mismo contexto) apoya la dirección del pick
-6. No hay señales de equipo con partido europeo próximo que genere gestión de esfuerzo
+**Qué hice:** Asumí que "2do vs 3ro, 1 punto de diferencia" = partido abierto y agresivo. Construí todo sobre el stat de 13/13 partidos de Napoli con gol antes del HT en casa.
 
-### 4.2 Criterios para FLAG (Marcar con Advertencia)
+**Qué pasó en realidad:** Inter lideraba por 9 puntos (72 vs 63/62). El Scudetto estaba decidido. Napoli y Milan peleaban entre sí por el 2do puesto, donde **un empate no perjudicaba a ninguno** — ambos mantenían posiciones relativas. Perder era el único resultado catastrófico → incentivo a NO arriesgar, especialmente en primera parte.
 
-El validador debe emitir FLAG cuando:
+**Lección:** Confundí "partido grande" con "partido abierto". Los partidos grandes entre equipos donde el empate sirve a ambos son precisamente los más cautelosos. El 13/13 era contra rivales donde Napoli NECESITABA ganar.
 
-1. Hay un factor contextual que añade incertidumbre pero no invalida el pick
-2. Las cuotas tienen movimiento mixto (convergencia desde ambos lados)
-3. El pick es técnicamente válido pero en un mercado con mayor varianza de la habitual
-4. Hay información de motivación que puede afectar al equipo favorecido sin ser determinante
-5. El H2H tiene datos limitados (1-2 partidos) en el período relevante
+### Error B: Confirmation bias + stats descontextualizadas (Girona vs Villarreal)
 
-**Formato de FLAG:** El reason_code debe identificar el factor específico de alerta.
-Ejemplos válidos: `motivacion_rotaciones`, `h2h_datos_escasos`, `europeo_jueves_previo`,
-`movimiento_cuota_adverso`, `lesion_jugador_clave`.
+**Qué hice:** Me enamoré de la cuota (2.25 "parece value") y busqué datos que confirmaran: H2H desde 2012, el 5-0 de agosto, away win rate de 43%. Descarté que Girona peleaba descenso de local.
 
-### 4.3 Criterios para REJECT
+**Qué pasó en realidad:** Un equipo a 5-6 puntos del descenso jugando en casa en abril no es el mismo de septiembre. La desesperación + afición local = multiplicador que las stats de temporada no capturan. H2H de más de 2-3 temporadas es ruido puro.
 
-El validador debe emitir REJECT cuando:
+**Lección:** 
+- Stats históricas H2H lejanas (>2-3 temporadas) no tienen poder predictivo.
+- Equipos peleando descenso de local en las últimas 10 jornadas son significativamente más peligrosos que lo que indican sus stats agregadas de temporada.
+- Cuando la cuota te parece "value" y buscas datos que lo confirmen, ya estás en confirmation bias.
 
-1. La alineación confirmada incluye baja del jugador principal para el mercado analizado
-   (portero para picks de goles concedidos, delantero para picks de goles marcados)
-2. El equipo tiene motivación claramente invertida (necesita perder para beneficiarse en
-   la clasificación, ya campeón con rotaciones masivas confirmadas)
-3. El movimiento de cuota es > 15% en dirección contraria al pick con alta convicción de
-   mercado (smart money contradice al modelo)
-4. Se ha identificado información no pública relevante posterior al cierre del análisis
-5. El contexto del partido (derby, partido de revancha cargado emocionalmente) hace que
-   los modelos estadísticos sean poco fiables históricament
+### Error C: Pata débil incluida en parlay (Benfica 1H)
 
----
+**Qué hice:** Marqué Benfica 1H con 3.5/5 de confianza, señalé 8 empates en 27 partidos (30% draw rate), y AÚN ASÍ la incluí en el parlay para subir la cuota combinada.
 
-## Sección 5: Aprendizajes Específicos por Liga
+**Lección:** En parlays, la cadena se rompe por el eslabón más débil. Solo incluir patas con confianza ≥ 4/5.
 
-### 5.1 Premier League (Inglaterra)
+### Error D: EV como validación circular
 
-- Alta intensidad física favorece a equipos de pressing en casa durante temporada completa
-- Rendimiento post-internacional FIFA degradado es más pronunciado que en otras ligas
-  (vuelos largos, diferencia horaria para jugadores sudamericanos y africanos)
-- El mercado de cuotas de Premier League es altamente eficiente; el valor genuino es raro
-  y suele aparecer en mercados secundarios (handicap asiático, total de córners)
+**Qué hice:** Calculé probabilidades basadas en análisis de contexto superficial → obtuve EV positivo → usé el EV positivo como justificación del pick.
 
-### 5.2 La Liga (España)
+**Lección:** EV positivo no valida nada si la probabilidad de entrada es incorrecta. El EV calculator es output, no validación. Garbage in, garbage out.
 
-- Dominio táctico no siempre se traduce en rendimiento en puntos (análisis xG puede
-  sobreestimar equipos técnicamente dominantes pero con problemas de finalización)
-- Los clásicos regionales (Sevilla derby, Madrid derby, etc.) presentan alta variabilidad
-  independiente de la forma de temporada
-- El descanso de mitad de temporada (enero) genera pick de valor en mercados de Over/Under
-  cuando equipos retoman la actividad tras vacaciones desiguales
+### Checklist de motivación (OBLIGATORIO antes de estimar probabilidades)
 
-### 5.3 Bundesliga (Alemania)
+1. ¿Qué necesita el equipo A de ESTE partido específico? (3 pts obligatorios / 1 punto basta / nada)
+2. ¿Qué necesita el equipo B?
+3. **¿El empate le sirve a alguno de los dos? ¿A ambos?**
+4. ¿Perder tiene consecuencias distintas a empatar para cada uno?
+5. Si el empate sirve a ambos → **esperar primera parte cautelosa, descartar mercados de gol temprano**
+6. ¿Hay factor desesperación (descenso, eliminación)? ¿Es de local? → **no apostar en contra**
 
-- Liga con mayor precisión de modelos estadísticos (datos de tracking disponibles y
-  consistentes)
-- Bayerisches Dominanz: el Bayern München tiene una ventaja estadística estructural en
-  liga que los modelos pueden subestimar en los partidos fuera de casa ante rivales directos
-- El descenso de asistencia en diciembre-enero (clima) afecta ligeramente al rendimiento local
+### Reglas nuevas derivadas
 
-### 5.4 Serie A (Italia)
-
-- Táctica defensiva estructural en gran parte de los equipos reduce los Over/Under de goles
-  a mercados de menor valor esperado que en otras ligas
-- La tabla final suele ser más ajustada por puntos entre puestos 6-15; picks en partidos
-  de mitad de tabla tienen mayor varianza
-- Lesiones de centrales son especialmente críticas dado el estilo táctico predominante
-
-### 5.5 Ligue 1 (Francia)
-
-- PSG domina estructuralmente; el valor genuino aparece en los partidos sin PSG donde
-  equipos de mediana tabla se enfrentan con motivaciones similares
-- Alta variabilidad en rendimiento de porteros; el mercado puede no ajustar suficientemente
-  rápido a cambios de portero confirmados
-- Los derbis del sur (Marsella, Mónaco, Niza) presentan alta intensidad emocional con
-  impacto en la consistencia estadística del modelo
+- **Stats impresionantes (streaks, rachas) requieren stress-test contextual.** ¿Se mantiene la racha en partidos con contexto comparable al actual?
+- **H2H > 3 temporadas = ruido.** Ignorar.
+- **Parlay: solo patas ≥ 4/5 confianza.**
+- **"Cuota parece alta" no es análisis.** Si empiezas por la cuota y buscas justificación, estás al revés.
+- **Equipo en zona de peligro + local + últimas 10 jornadas = red flag para apostar en contra.**
 
 ---
 
-## Sección 6: Protocolo de Análisis Pre-Partido
+## 2026-04-09 — Aprendizaje #4: El parlay de DC primera mitad era correcto — confiar en la tesis contextual
 
-### 6.1 Checklist Obligatorio Antes de Emitir Veredicto
+**Contexto:** Sesión de análisis de cuartos de final ida Europa League y Conference League. El usuario armó un parlay de 5 patas de Doble Oportunidad primera mitad (local no pierde el HT) para: Bologna, Freiburg, Porto, Mainz, AEK.
 
-Antes de emitir cualquier veredicto (CONFIRM/FLAG/REJECT), el validador debe verificar:
+**Resultados de los AH+1 primera mitad (según el usuario, todos acertaron):**
+- Freiburg: ganaba al HT (Grifo min 10) → ✅
+- Porto: 1-1 al HT → ✅
+- Mainz: ganaba al HT → ✅
+- Bologna/AEK: pendiente de confirmar exacto
 
-**Datos del partido:**
-- [ ] Fixture ID y liga verificados
-- [ ] Hora UTC del partido confirmada
-- [ ] Competición identificada (liga, copa, europeo)
+**Qué hice bien:**
+- Identifiqué correctamente que Porto sin delanteros era la pata más débil para ML (Porto empató 1-1 final)
+- Identifiqué correctamente que Freiburg y Mainz ganarían (ambos ganaron)
+- El usuario me corrigió sobre Villa no marcando en 1H y Bologna en racha — tenía razón contextual
 
-**Contexto del equipo local:**
-- [ ] Posición en tabla y objetivo de temporada
-- [ ] Forma últimas 5 jornadas (victorias/empates/derrotas, goles marcados y recibidos)
-- [ ] Lesiones confirmadas y suspensiones
-- [ ] Partido europeo en el entorno de 72h (antes o después)
+**Qué hice mal:**
+1. **Sobreanalicé y generé parálisis.** El usuario tuvo que corregirme múltiples veces para que confiara en el contexto: "idas de cuartos = primeros tiempos sin goleadas". Esta tesis simple era correcta y yo la complicaba con búsqueda de stats granulares.
+2. **Confundí mercados.** Leí mal el Hándicap Europeo +1 como Asiático +1 y luego el VA+2 como AH+2. Esto generó recálculos innecesarios y confusión.
+3. **Subestimé a Rayo Vallecano y sobreestimé a AEK.** Rayo ganó 3-0 a AEK. Mis argumentos de que Rayo era débil (13° La Liga, 0-0 vs Samsunspor en casa) no capturaron que en eliminatorias europeas de local la motivación es diferente a la liga.
+4. **Sobreestimé la fortaleza defensiva de Bologna.** Dije "Bologna no gana el HT en 19 de 20 partidos de local" y "Villa no marca en 1H". Villa metió 2 goles (Watkins doblete). La stat de primeros tiempos de Bologna era de Serie A, no de Europa — contextos diferentes.
+5. **El pick de Villa <1.5 goles era incorrecto.** Villa metió 2. Bologna 5 clean sheets en casa en EL no era suficiente — Villa es un equipo de otro nivel vs los rivales previos de Bologna.
 
-**Contexto del equipo visitante:**
-- [ ] Posición en tabla y objetivo de temporada
-- [ ] Forma últimas 5 jornadas
-- [ ] Lesiones confirmadas y suspensiones
-- [ ] Partido europeo en el entorno de 72h (antes o después)
+**Lecciones:**
 
-**Análisis de mercado:**
-- [ ] Cuota de apertura vs. cuota actual (movimiento)
-- [ ] Probabilidad implícita actual vs. probabilidad del modelo
-- [ ] Comparativa con cuota de Pinnacle como referencia de mercado eficiente
+### Lección 4A: DC primera mitad en eliminatorias es un mercado sólido
+Los picks de "local no pierde el primer tiempo" en idas de eliminatorias europeas son estructuralmente fuertes. De los 5 analizados, la mayoría acertó. La tesis contextual era correcta — no necesitaba tanta validación estadística.
 
-**Decisión:**
-- [ ] Edge confirmado (>5% respecto a probabilidad implícita de Pinnacle)
-- [ ] Ningún red flag de las secciones anteriores invalida el análisis
-- [ ] Veredicto emitido con reason_code específico
+### Lección 4B: No confundir mercados — verificar SIEMPRE el tipo exacto
+HC europeo ≠ HC asiático ≠ VA+2 ≠ DC. Cada uno tiene reglas de liquidación diferentes. PREGUNTAR al usuario antes de analizar si no es 100% claro.
 
----
+### Lección 4C: Equipos de elite de visitante en eliminatorias pueden romper patrones
+Villa (3° PL) metiendo 2 goles en Bologna rompe el patrón de "visitantes no marcan en idas". Los equipos verdaderamente de elite (top 3-4 de las grandes ligas) pueden imponer su nivel incluso de visita. No agrupar a Villa con Forest o Celta.
 
-## Notas Finales
+### Lección 4D: Motivación local en Europa ≠ motivación local en liga
+Rayo "mediocre" en liga (13°) pero aplastó 3-0 a AEK en Conference League. La motivación europea de local para equipos que rara vez juegan Europa es un multiplicador enorme que las stats de liga no capturan.
 
-Este documento es un instrumento vivo. Los aprendizajes se refinan con cada temporada
-y cada pick analizado. La versión en producción de este archivo está versionada con git
-SHA para trazabilidad de auditoría: cada veredicto del validador registra qué versión de
-este documento estaba activa en el momento del análisis.
-
-**Mantenimiento:** Actualizar al inicio de cada nueva temporada con los patrones
-identificados en el análisis post-temporada. Revisar los reason_codes de REJECT y FLAG
-más frecuentes para identificar áreas de mejora del modelo ML.
-
-**Idioma:** Este documento se mantiene en español deliberadamente. Las correcciones y
-matices del análisis de Kevin están en español; traducirlos al inglés perdería precisión
-en el significado y la voz del análisis. El validador Role C razona en español pero emite
-su veredicto estructurado en inglés (D-06).
+### Lección 4E: Simplicidad > complejidad cuando el contexto es claro
+El usuario identificó la tesis correcta desde el inicio: "en idas de cuartos no hay goleadas en primera mitad". Yo compliqué innecesariamente buscando stats de primer tiempo partido por partido. Cuando el contexto estructural del torneo da una señal clara, no sobrecargarlo con data granular.
 
 ---
 
-*Versión: placeholder-v0 — awaiting verbatim port from Claude_Sport_Betting/learnings/*
-*SHA: calculado en tiempo de carga por learnings_loader.py (git SHA o sha256 fallback)*
-*Última actualización: 2026-05-03*
+## 2026-04-09 — Aprendizaje #5: Porto sin delanteros = empate, no derrota
+
+**Contexto:** Porto vs Forest terminó 1-1. Porto perdió a Samu Aghehowa y Luuk de Jong (delanteros titulares). Identifiqué correctamente que Porto ML era riesgoso por las bajas ofensivas y recomendé Porto o X (DC) en vez de ML.
+
+**Validación:** El DC habría acertado (1-1), el ML habría fallado. El análisis de bajas ofensivas funcionó perfectamente.
+
+**Regla confirmada:** Cuando un equipo pierde a sus delanteros titulares, degradar de ML a DC. El equipo puede mantener su solidez defensiva en casa pero carece de poder de gol para ganar.
+
+---
+
+## 2026-04-09 — Aprendizaje #6: Victoria Anticipada (+2) es ML disfrazado, no hándicap
+
+**Contexto:** El usuario me mostró el mercado VA+2 y yo lo interpreté inicialmente como Asian Handicap +2 (probabilidad ~95%). En realidad es "cobro anticipado si el equipo toma ventaja de 2 goles" = esencialmente ML con un bonus. El usuario me corrigió.
+
+**Regla:** Siempre verificar la definición exacta del mercado en la casa de apuestas. VA+2 (Victoria Anticipada) ≠ AH +2 (Asian Handicap). La cuota lo delata: si un AH +2 paga >2.00, probablemente NO es hándicap.
