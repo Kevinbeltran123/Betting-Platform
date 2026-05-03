@@ -143,6 +143,89 @@ class PickRepository:
         except Exception as e:
             raise StorageError(f"Failed to update picks: {e}") from e
 
+    def get_window_picks(self, sport: str, hours: int = 168) -> list[dict]:
+        """Return SENT picks (not filtered/rejected) for sport in the trailing `hours` window.
+
+        D-09: backs the rolling 168h market-cap query. Uses idx_picks_sport_market_created
+        (migration 004) for sub-50ms response. Filters status NOT IN ('filtered', 'rejected')
+        — the cap counts what was actually SENT, not attempts.
+        """
+        from datetime import UTC, datetime, timedelta
+        cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+        try:
+            response = (
+                self.client.table("picks")
+                .select("market, status, created_at")
+                .eq("sport", sport)
+                .gte("created_at", cutoff)
+                .neq("status", "filtered")
+                .neq("status", "rejected")
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            raise StorageError(f"Failed to read picks window for sport={sport}: {e}") from e
+
+    def get_pending_for_fixture(self, fixture_id: int) -> list[dict]:
+        """Return all picks with status='pending' for a fixture.
+
+        D-16: result reconciliation reads these and updates won/lost/void/push.
+        """
+        try:
+            response = (
+                self.client.table("picks")
+                .select("*")
+                .eq("fixture_id", fixture_id)
+                .eq("status", "pending")
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            raise StorageError(f"Failed to read pending picks for fixture={fixture_id}: {e}") from e
+
+    def update_status_by_fixture(self, fixture_id: int, new_status: str) -> int:
+        """Bulk-update all pending picks for a fixture to `new_status`. Returns row count.
+
+        D-16: used for void path (PST/CANC/ABD).
+        """
+        try:
+            response = (
+                self.client.table("picks")
+                .update({"status": new_status})
+                .eq("fixture_id", fixture_id)
+                .eq("status", "pending")
+                .execute()
+            )
+            return len(response.data or [])
+        except Exception as e:
+            raise StorageError(
+                f"Failed to update picks for fixture={fixture_id} → {new_status}: {e}"
+            ) from e
+
+    def query_pending_sends(self, sport: str, max_age_minutes: int = 30) -> list[dict]:
+        """Return pending picks claude-validated within `max_age_minutes` (Pitfall 6 recovery).
+
+        Pitfall 6: MemoryJobStore loses DateTrigger send jobs on restart. On startup,
+        the orchestrator queries this method and re-queues immediate sends for picks
+        that were validated but never made it to Telegram before the restart.
+        Filter: status='pending' AND claude_validation IS NOT NULL AND created_at > now()-Xmin.
+        """
+        from datetime import UTC, datetime, timedelta
+        cutoff = (datetime.now(UTC) - timedelta(minutes=max_age_minutes)).isoformat()
+        try:
+            response = (
+                self.client.table("picks")
+                .select("*")
+                .eq("sport", sport)
+                .eq("status", "pending")
+                .not_.is_("claude_validation", "null")
+                .gte("created_at", cutoff)
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            raise StorageError(f"Failed to query pending sends for sport={sport}: {e}") from e
+
 
 @dataclass
 class OddsSnapshotRepository:
