@@ -17,16 +17,9 @@ from tenacity import (
 )
 
 from bip.core.errors import ApiError
+from bip.core.types import MarketKey
 
 logger = structlog.get_logger(__name__)
-
-# Market key mapping: internal key -> The Odds API market key (RESEARCH.md Pattern 5)
-MARKET_KEY_MAP: dict[str, str] = {
-    "onextwo": "h2h",
-    "btts": "btts",
-    "ou": "totals",
-    "ah": "alternate_spreads",
-}
 
 
 def _is_retryable_http_error(exc: BaseException) -> bool:
@@ -110,9 +103,16 @@ class OddsApiClient:
     def map_market_key(self, internal_key: str) -> str | None:
         """Convert internal market key to Odds API market key.
 
-        Returns None for markets not supported by The Odds API (e.g., corners).
+        Returns None for markets not supported by The Odds API
+        (e.g., corners) or for any unrecognized key. Delegates the
+        canonical normalization to ``MarketKey.from_str`` (G-MAINT-05).
         """
-        return MARKET_KEY_MAP.get(internal_key)
+        try:
+            key = MarketKey.from_str(internal_key)
+        except ValueError:
+            return None
+        odds_key = key.to_odds_api()
+        return odds_key or None  # CORNERS -> "" -> None
 
     @retry(
         retry=retry_if_exception(_is_retryable_http_error),

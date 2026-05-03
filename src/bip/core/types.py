@@ -46,19 +46,19 @@ class MarketKey(StrEnum):
     """Canonical market identifier (G-MAINT-05).
 
     String-valued for backwards compatibility with existing YAML keys, DB
-    columns, and Pydantic `str` fields (Prediction.market, Pick.market).
+    columns, and Pydantic ``str`` fields (Prediction.market, Pick.market).
 
-    The canonical form is the lowercase YAML `key:` field from
+    The canonical form is the lowercase YAML ``key:`` field from
     ``src/bip/sports/football/config/markets.yaml``. External aliases
-    (legacy ``"1X2"``, The Odds API ``"h2h"``/``"totals"``/etc.) are mapped
+    (legacy 1X2, The Odds API h2h/totals/alternate_spreads/etc.) are mapped
     at boundaries via :meth:`from_str` and :meth:`to_odds_api`.
 
-    Alias matrix:
-      ONEXTWO   <- "1x2", "1X2", "onextwo", "h2h"
-      BTTS      <- "btts"
-      OU        <- "ou", "totals", "over_under"
-      AH        <- "ah", "alternate_spreads", "asian_handicap"
-      CORNERS   <- "corners"
+    Alias matrix (see :meth:`from_str` for the full lookup table):
+      ONEXTWO   <- 1x2 / onextwo / h2h
+      BTTS      <- btts
+      OU        <- ou / totals / over_under
+      AH        <- ah / alternate_spreads / asian_handicap
+      CORNERS   <- corners
     """
 
     ONEXTWO = "onextwo"

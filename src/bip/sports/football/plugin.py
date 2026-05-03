@@ -21,6 +21,7 @@ import structlog
 from bip.core.settings import Settings
 from bip.core.storage.models import Prediction
 from bip.core.storage.parquet_store import ParquetStore
+from bip.core.types import MarketKey
 from bip.sports import (
     ClaudeContext,
     FeatureMatrix,
@@ -180,7 +181,7 @@ class FootballPlugin(SportPlugin):
     # Phase 2 -- ML ensemble prediction (ML-01 + ML-05)
     # ----------------------------------------------------------
 
-    async def predict(self, features: FeatureMatrix, market: str) -> ProbabilityMap:
+    async def predict(self, features: FeatureMatrix, market: str | MarketKey) -> ProbabilityMap:
         """Run ML ensemble and return calibrated probabilities.
 
         ML-01: loads production model from registry, predicts, returns

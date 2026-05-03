@@ -329,7 +329,10 @@ class TestPipelineABCCompliance:
         assert prediction.league == "premier_league"
         assert prediction.sport == "football"
         assert prediction.kickoff_utc == kickoff
-        assert prediction.market == "1X2"
+        # G-MAINT-05: orchestrator now persists the canonical "onextwo" key
+        # via MarketKey.ONEXTWO; legacy "1X2" rows still recognized at the
+        # filter boundary via MarketKey.from_str.
+        assert prediction.market == "onextwo"
         assert prediction.model_version == "ensemble-v3"
         assert prediction.probabilities == {"1": 0.5, "X": 0.3, "2": 0.2}
         assert prediction.is_lineup_adjusted is True

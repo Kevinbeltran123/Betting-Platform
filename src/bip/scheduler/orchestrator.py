@@ -18,6 +18,7 @@ from apscheduler.triggers.date import DateTrigger
 from bip.core.errors import SchedulerError
 from bip.core.settings import Settings
 from bip.core.storage.models import PickStatus, Prediction
+from bip.core.types import MarketKey
 from bip.sports import FixtureData, SportPlugin
 
 logger = structlog.get_logger(__name__)
@@ -239,13 +240,23 @@ class PipelineOrchestrator:
                 return
 
             if stage == "t_minus_30m" and self.pick_repo is not None:
-                # D-01 dup-alert guard -- repo method is SYNC, returns list[dict]
+                # D-01 dup-alert guard -- repo method is SYNC, returns list[dict].
+                # G-MAINT-05: normalize raw market via MarketKey so legacy "1X2"
+                # rows AND canonical "onextwo" rows are both recognized.
                 existing = self.pick_repo.get_pending_for_fixture(fixture_id)
-                blocking = [
-                    p for p in existing
-                    if p.get("market") == "1X2"
-                    and p.get("status") == PickStatus.pending.value
-                ]
+                blocking = []
+                for p in existing:
+                    raw = p.get("market")
+                    if raw is None:
+                        continue
+                    try:
+                        if (
+                            MarketKey.from_str(raw) == MarketKey.ONEXTWO
+                            and p.get("status") == PickStatus.pending.value
+                        ):
+                            blocking.append(p)
+                    except ValueError:
+                        continue
                 if blocking:
                     logger.info(
                         "t30_skipped_pending_already",
@@ -254,7 +265,7 @@ class PipelineOrchestrator:
                     )
                     return
 
-            prob_map = await self.plugin.predict(features, market="1X2")
+            prob_map = await self.plugin.predict(features, market=MarketKey.ONEXTWO)
             if prob_map is None:
                 logger.info(
                     "pipeline_skip_evaluate_no_prediction",
@@ -269,7 +280,7 @@ class PipelineOrchestrator:
                 fixture_id=fixture_id,
                 league=features.league,
                 sport="football",
-                market="1X2",
+                market=MarketKey.ONEXTWO,
                 home_team=fixture.home_team,
                 away_team=fixture.away_team,
                 kickoff_utc=fixture.kickoff_utc,
@@ -325,7 +336,18 @@ class PipelineOrchestrator:
             logger.error("clv_pending_query_failed", fixture_id=fixture_id, error=str(exc))
             return
 
-        pending_1x2 = [p for p in pending if p.get("market") == "1X2"]
+        # G-MAINT-05: normalize raw market via MarketKey to recognize legacy
+        # "1X2" rows AND canonical "onextwo" rows.
+        pending_1x2 = []
+        for p in pending:
+            raw = p.get("market")
+            if raw is None:
+                continue
+            try:
+                if MarketKey.from_str(raw) == MarketKey.ONEXTWO:
+                    pending_1x2.append(p)
+            except ValueError:
+                continue
         if not pending_1x2:
             logger.info("clv_skip_no_pending", fixture_id=fixture_id)
             return
@@ -359,7 +381,9 @@ class PipelineOrchestrator:
 
         try:
             bookmaker = await self.odds_api_client.fetch_pinnacle_closing_odds(
-                sport_key=sport_key, event_id=event_id, market_key="h2h"
+                sport_key=sport_key,
+                event_id=event_id,
+                market_key=MarketKey.ONEXTWO.to_odds_api(),
             )
         except Exception as exc:
             logger.error("clv_fetch_pinnacle_failed", fixture_id=fixture_id, error=str(exc))
@@ -407,7 +431,7 @@ class PipelineOrchestrator:
                     pick_id=pick["id"],
                     fixture_id=fixture_id,
                     sport="football",
-                    market="onextwo",
+                    market=MarketKey.ONEXTWO,
                     odds_at_pick=pick["odds_at_pick"],
                     closing_odds_dict=closing,
                     selection=pick["selection"],
@@ -513,7 +537,13 @@ class PipelineOrchestrator:
         pending = self.pick_repo.get_pending_for_fixture(fixture_id)
         settled = 0
         for pick in pending:
-            if pick.get("market") != "1X2":
+            raw = pick.get("market")
+            if raw is None:
+                continue
+            try:
+                if MarketKey.from_str(raw) != MarketKey.ONEXTWO:
+                    continue
+            except ValueError:
                 continue
             if push_market:
                 new_status = "push"

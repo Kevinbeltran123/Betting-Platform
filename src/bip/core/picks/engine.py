@@ -39,25 +39,13 @@ from bip.core.settings import Settings
 from bip.core.storage.models import Pick, Prediction
 from bip.core.storage.repositories import PickRepository
 from bip.core.telegram.sender import TelegramSender
-from bip.core.types import PickStatus
+from bip.core.types import MarketKey, PickStatus
 from bip.sports.football.config.league_registry import LeagueRegistry
 from bip.train.backtest import EDGE_THRESHOLD_PCT, simulate_pick
 
 logger = structlog.get_logger(__name__)
 
 _SELECTION_KEYS = ("1", "X", "2")
-
-# Defensive normalization for the magic-string mess (G-MAINT-05 deferred).
-# Maps incoming market strings to the LeagueConfig.model_params attribute suffix.
-_NORMALIZE_MARKET = {
-    "1X2": "1x2",
-    "onextwo": "1x2",
-    "h2h": "1x2",
-    "BTTS": "btts",
-    "OU": "ou",
-    "AH": "ah",
-    "CORNERS": "corners",
-}
 
 
 class PickEngine:
@@ -93,16 +81,17 @@ class PickEngine:
             ) from exc
 
         # G-MAINT-01 / CORE-05: per-market threshold from league YAML.
-        market_normalized = _NORMALIZE_MARKET.get(market, market.lower())
+        # G-MAINT-05: market normalization delegated to MarketKey enum.
         try:
+            market_key = MarketKey.from_str(market)
             league_cfg = self._league_registry.get(prediction.league)
             threshold = getattr(
                 league_cfg.model_params,
-                f"edge_threshold_{market_normalized}",
+                market_key.to_threshold_attr(),
                 EDGE_THRESHOLD_PCT,
             )
-        except KeyError:
-            # Unknown league — fall back to backtest default.
+        except (KeyError, ValueError):
+            # Unknown league OR unknown market alias -- fall back to backtest default.
             threshold = EDGE_THRESHOLD_PCT
 
         idx = simulate_pick(probs, odds, threshold=threshold)
