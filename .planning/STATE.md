@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 3 context gathered
-last_updated: "2026-05-03T19:10:00.000Z"
-last_activity: 2026-05-03 -- Completed quick task 260503-j74: Per-market edge thresholds desde YAML
+last_updated: "2026-05-03T19:50:00.000Z"
+last_activity: 2026-05-03 -- Completed quick task 260503-jkf: Orchestrator/Plugin/Engine wiring (Strategy 2 — Prediction in orchestrator)
 progress:
   total_phases: 8
   completed_phases: 3
@@ -109,6 +109,7 @@ None yet.
 |---|-------------|------|--------|-----------|
 | 260503-iql | Vig removal en CLV recorder | 2026-05-03 | 783b05c | [260503-iql-vig-removal-en-clv-recorder](./quick/260503-iql-vig-removal-en-clv-recorder/) |
 | 260503-j74 | Per-market edge thresholds desde YAML | 2026-05-03 | db0075d | [260503-j74-per-market-edge-thresholds-desde-yaml](./quick/260503-j74-per-market-edge-thresholds-desde-yaml/) |
+| 260503-jkf | Orchestrator/Plugin/Engine wiring (Strategy 2) | 2026-05-03 | e68df0e | [260503-jkf-orchestrator-plugin-engine-wiring-predic](./quick/260503-jkf-orchestrator-plugin-engine-wiring-predic/) |
 
 ## Deferred Items
 
