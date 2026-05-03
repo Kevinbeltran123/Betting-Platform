@@ -362,3 +362,182 @@ class TestPipelineABCCompliance:
         pick_repo.get_pending_for_fixture.assert_called_once_with(fixture.fixture_id)
         pick_engine.evaluate.assert_not_called()
         plugin.predict.assert_not_called()
+
+
+# ---------------------------------------------------------------------
+# Task 2 helpers — record_clv wiring
+# ---------------------------------------------------------------------
+
+PINNACLE_BOOKMAKER_PAYLOAD = {
+    "key": "pinnacle",
+    "title": "Pinnacle",
+    "markets": [
+        {
+            "key": "h2h",
+            "outcomes": [
+                {"name": "Arsenal", "price": 2.10},
+                {"name": "Draw", "price": 3.40},
+                {"name": "Chelsea", "price": 3.80},
+            ],
+        }
+    ],
+}
+
+
+def _league_registry_for(slug: str = "premier_league", sport_key: str = "soccer_epl"):
+    """Minimal stub: registry.get(slug).api_mappings.odds_api_sport_key."""
+    config = MagicMock()
+    config.api_mappings.odds_api_sport_key = sport_key
+    registry = MagicMock()
+    registry.get = MagicMock(return_value=config)
+    return registry
+
+
+class TestRecordClv:
+    """Wire ClvRecorder + OddsApiClient into PipelineOrchestrator._record_clv."""
+
+    @pytest.mark.asyncio
+    async def test_record_clv_happy_path(self):
+        """Pending pick + matched event + Pinnacle quote → ClvRecorder.record() called."""
+        from bip.scheduler.orchestrator import PipelineOrchestrator
+
+        plugin = MagicMock()
+        odds_api_client = MagicMock()
+        odds_api_client.find_event_by_fixture = AsyncMock(return_value="event-uuid-123")
+        odds_api_client.fetch_pinnacle_closing_odds = AsyncMock(
+            return_value=PINNACLE_BOOKMAKER_PAYLOAD
+        )
+
+        clv_recorder = MagicMock()
+        clv_recorder.record = MagicMock()
+
+        pick_repo = Mock(spec=PickRepository)
+        pick_repo.get_pending_for_fixture = Mock(
+            return_value=[
+                {
+                    "id": 42,
+                    "market": "1X2",
+                    "selection": "1",
+                    "odds_at_pick": 2.05,
+                    "status": "pending",
+                }
+            ]
+        )
+
+        orch = PipelineOrchestrator(
+            plugin=plugin,
+            pick_repo=pick_repo,
+            odds_api_client=odds_api_client,
+            clv_recorder=clv_recorder,
+            league_registry=_league_registry_for("premier_league"),
+        )
+
+        fixture = _make_fixture(
+            fixture_id=999,
+            home_team="Arsenal",
+            away_team="Chelsea",
+            league="premier_league",
+        )
+
+        await orch._record_clv(fixture)
+
+        odds_api_client.find_event_by_fixture.assert_awaited_once()
+        odds_api_client.fetch_pinnacle_closing_odds.assert_awaited_once_with(
+            sport_key="soccer_epl", event_id="event-uuid-123", market_key="h2h"
+        )
+        clv_recorder.record.assert_called_once()
+        kwargs = clv_recorder.record.call_args.kwargs
+        assert kwargs["pick_id"] == 42
+        assert kwargs["fixture_id"] == 999
+        assert kwargs["selection"] == "1"
+        assert kwargs["odds_at_pick"] == 2.05
+        assert set(kwargs["closing_odds_dict"].keys()) == {"1", "X", "2"}
+        assert kwargs["closing_odds_dict"]["1"] == 2.10
+        assert kwargs["closing_odds_dict"]["X"] == 3.40
+        assert kwargs["closing_odds_dict"]["2"] == 3.80
+
+    @pytest.mark.asyncio
+    async def test_record_clv_skips_when_no_pending_picks(self, capsys):
+        from bip.scheduler.orchestrator import PipelineOrchestrator
+
+        plugin = MagicMock()
+        odds_api_client = MagicMock()
+        odds_api_client.find_event_by_fixture = AsyncMock()
+        odds_api_client.fetch_pinnacle_closing_odds = AsyncMock()
+        clv_recorder = MagicMock()
+
+        pick_repo = Mock(spec=PickRepository)
+        pick_repo.get_pending_for_fixture = Mock(return_value=[])
+
+        orch = PipelineOrchestrator(
+            plugin=plugin,
+            pick_repo=pick_repo,
+            odds_api_client=odds_api_client,
+            clv_recorder=clv_recorder,
+            league_registry=_league_registry_for(),
+        )
+        fixture = _make_fixture()
+
+        await orch._record_clv(fixture)
+
+        clv_recorder.record.assert_not_called()
+        odds_api_client.find_event_by_fixture.assert_not_called()
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "clv_skip_no_pending" in combined
+
+    @pytest.mark.asyncio
+    async def test_record_clv_skips_when_pinnacle_event_not_found(self, capsys):
+        from bip.scheduler.orchestrator import PipelineOrchestrator
+
+        plugin = MagicMock()
+        odds_api_client = MagicMock()
+        odds_api_client.find_event_by_fixture = AsyncMock(return_value=None)
+        odds_api_client.fetch_pinnacle_closing_odds = AsyncMock()
+        clv_recorder = MagicMock()
+
+        pick_repo = Mock(spec=PickRepository)
+        pick_repo.get_pending_for_fixture = Mock(
+            return_value=[
+                {
+                    "id": 42,
+                    "market": "1X2",
+                    "selection": "1",
+                    "odds_at_pick": 2.05,
+                    "status": "pending",
+                }
+            ]
+        )
+
+        orch = PipelineOrchestrator(
+            plugin=plugin,
+            pick_repo=pick_repo,
+            odds_api_client=odds_api_client,
+            clv_recorder=clv_recorder,
+            league_registry=_league_registry_for(),
+        )
+        fixture = _make_fixture()
+
+        await orch._record_clv(fixture)
+
+        clv_recorder.record.assert_not_called()
+        odds_api_client.fetch_pinnacle_closing_odds.assert_not_called()
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "clv_skip_no_event" in combined
+
+    @pytest.mark.asyncio
+    async def test_record_clv_skips_when_unwired(self, capsys):
+        """No clv_recorder / odds_api_client wired → log + return; no crash."""
+        from bip.scheduler.orchestrator import PipelineOrchestrator
+
+        plugin = MagicMock()
+        orch = PipelineOrchestrator(plugin=plugin)
+        fixture = _make_fixture()
+
+        # Should not raise — early returns on missing dependencies
+        await orch._record_clv(fixture)
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "clv_skip_unwired" in combined
