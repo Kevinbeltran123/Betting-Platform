@@ -3,7 +3,9 @@
 Single async entry point: evaluate(prediction, opening_odds) -> Pick | None.
 
 Filter chain (D-02 + D-09 + D-10 + D-11 + D-07 + D-14):
-  1. simulate_pick edge filter (imported from bip.train.backtest — D-02 no duplication)
+  1. simulate_pick edge filter — per-market threshold from LeagueRegistry
+     (G-MAINT-01 / CORE-05). simulate_pick still imported from bip.train.backtest
+     (D-02 no duplication); EDGE_THRESHOLD_PCT remains the fallback default.
   2. quarter_kelly + deterministic_jitter (D-10)
   3. exceeds_60pct_cap (D-09 — drop on bind)
   4. ClaudeValidator.validate — None -> filtered/claude_api_unavailable (D-07);
@@ -38,11 +40,24 @@ from bip.core.storage.models import Pick
 from bip.core.storage.repositories import PickRepository
 from bip.core.telegram.sender import TelegramSender
 from bip.core.types import PickStatus
+from bip.sports.football.config.league_registry import LeagueRegistry
 from bip.train.backtest import EDGE_THRESHOLD_PCT, simulate_pick
 
 logger = structlog.get_logger(__name__)
 
 _SELECTION_KEYS = ("1", "X", "2")
+
+# Defensive normalization for the magic-string mess (G-MAINT-05 deferred).
+# Maps incoming market strings to the LeagueConfig.model_params attribute suffix.
+_NORMALIZE_MARKET = {
+    "1X2": "1x2",
+    "onextwo": "1x2",
+    "h2h": "1x2",
+    "BTTS": "btts",
+    "OU": "ou",
+    "AH": "ah",
+    "CORNERS": "corners",
+}
 
 
 class PickEngine:
@@ -55,12 +70,14 @@ class PickEngine:
         scheduler: AsyncIOScheduler,
         sender: TelegramSender,
         settings: Settings,
+        league_registry: LeagueRegistry,
     ) -> None:
         self._pick_repo = pick_repo
         self._validator = validator
         self._scheduler = scheduler
         self._sender = sender
         self._settings = settings
+        self._league_registry = league_registry
 
     async def evaluate(self, prediction: Any, opening_odds: dict[str, Any]) -> Pick | None:
         fixture_id = prediction.fixture_id
@@ -75,7 +92,20 @@ class PickEngine:
                 f"fixture_id={fixture_id}: {exc}"
             ) from exc
 
-        idx = simulate_pick(probs, odds, threshold=EDGE_THRESHOLD_PCT)
+        # G-MAINT-01 / CORE-05: per-market threshold from league YAML.
+        market_normalized = _NORMALIZE_MARKET.get(market, market.lower())
+        try:
+            league_cfg = self._league_registry.get(prediction.league)
+            threshold = getattr(
+                league_cfg.model_params,
+                f"edge_threshold_{market_normalized}",
+                EDGE_THRESHOLD_PCT,
+            )
+        except KeyError:
+            # Unknown league — fall back to backtest default.
+            threshold = EDGE_THRESHOLD_PCT
+
+        idx = simulate_pick(probs, odds, threshold=threshold)
         if idx is None:
             return self._persist_filtered(prediction, opening_odds, "no_edge")
 
