@@ -154,8 +154,41 @@ def _atomic_write_md(path: Path, content: str) -> None:
 
 
 def main() -> int:
-    settings = Settings()
-    store = ParquetStore(base_path=Path(settings.parquet_base_path))
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(
+        description="CORNERS-01 D-17b: coverage gate over Phase 02.1 results Parquet"
+    )
+    parser.add_argument(
+        "--parquet-base-path",
+        default=None,
+        help="Override parquet base path (default: read from Settings / PARQUET_BASE_PATH env var)",
+    )
+    args = parser.parse_args()
+
+    # Resolve parquet_base_path: CLI arg > env var > Settings best-effort > hardcoded default.
+    # Settings may fail with ValidationError when API keys are absent (this script only reads
+    # Parquet, so DB / API credentials are not needed). Gracefully fall back so the script
+    # remains runnable in CI and local environments without a full .env file.
+    parquet_base_path_str: str
+    if args.parquet_base_path:
+        parquet_base_path_str = args.parquet_base_path
+    elif "PARQUET_BASE_PATH" in os.environ:
+        parquet_base_path_str = os.environ["PARQUET_BASE_PATH"]
+    else:
+        try:
+            settings = Settings()
+            parquet_base_path_str = settings.parquet_base_path
+        except Exception:
+            parquet_base_path_str = "data/cache"
+            logger.warning(
+                "settings_load_failed",
+                note="Falling back to default parquet_base_path=data/cache; "
+                     "set PARQUET_BASE_PATH env var or pass --parquet-base-path to override",
+            )
+
+    store = ParquetStore(base_path=Path(parquet_base_path_str))
     coverage = compute_coverage(store)
     passed, md = gate_decision(coverage)
     _atomic_write_md(OUTPUT_PATH, md)
