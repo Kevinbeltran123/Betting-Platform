@@ -1,9 +1,11 @@
 """The Odds API v4 async client for Pinnacle closing odds.
 
-Used at kickoff + 105 minutes for CLV snapshot (D-04a).
+Used at kickoff - 1 minute for CLV snapshot (closing-line capture).
 Rookie tier: 500 requests/month — use sparingly.
 """
 
+
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import structlog
@@ -111,6 +113,105 @@ class OddsApiClient:
         Returns None for markets not supported by The Odds API (e.g., corners).
         """
         return MARKET_KEY_MAP.get(internal_key)
+
+    @retry(
+        retry=retry_if_exception(_is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    async def find_event_by_fixture(
+        self,
+        *,
+        sport_key: str,
+        home_team: str,
+        away_team: str,
+        kickoff_utc: datetime,
+        window_hours: int = 2,
+    ) -> str | None:
+        """Resolve The Odds API event_id from API-Football fixture metadata.
+
+        Calls /v4/sports/{sport_key}/events and matches on:
+          - case-insensitive contains on home_team AND away_team
+          - abs(commence_time - kickoff_utc) <= window_hours
+
+        Args:
+            sport_key: Odds API sport identifier (e.g., "soccer_epl").
+            home_team: Home team name from the fixture.
+            away_team: Away team name from the fixture.
+            kickoff_utc: Fixture kickoff (timezone-aware UTC).
+            window_hours: Symmetric tolerance for commence_time matching (default 2).
+
+        Returns:
+            Event id of the first matching event, or None when no event matches.
+
+        Raises:
+            ApiError: After 3 retries on a non-retryable HTTP failure.
+        """
+        logger.info(
+            "find_event_by_fixture",
+            sport_key=sport_key,
+            home_team=home_team,
+            away_team=away_team,
+            kickoff_utc=kickoff_utc.isoformat(),
+        )
+        try:
+            response = await self._client.get(
+                f"/v4/sports/{sport_key}/events",
+                params={"apiKey": self._api_key},
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {429, 500, 502, 503, 504}:
+                raise
+            raise ApiError(
+                f"Odds API /events returned {exc.response.status_code} for sport {sport_key}"
+            ) from exc
+
+        events = response.json() or []
+        home_lc = home_team.strip().lower()
+        away_lc = away_team.strip().lower()
+        # Ensure kickoff is UTC-aware for comparison
+        if kickoff_utc.tzinfo is None:
+            kickoff_utc = kickoff_utc.replace(tzinfo=UTC)
+        window = timedelta(hours=window_hours)
+
+        for event in events:
+            api_home = (event.get("home_team") or "").strip().lower()
+            api_away = (event.get("away_team") or "").strip().lower()
+            commence_raw = event.get("commence_time")
+            if not commence_raw:
+                continue
+            try:
+                # Odds API returns "YYYY-MM-DDTHH:MM:SSZ"
+                commence = datetime.strptime(
+                    commence_raw, "%Y-%m-%dT%H:%M:%SZ"
+                ).replace(tzinfo=UTC)
+            except ValueError:
+                continue
+
+            home_match = home_lc in api_home or api_home in home_lc
+            away_match = away_lc in api_away or api_away in away_lc
+            time_match = abs(commence - kickoff_utc) <= window
+
+            if home_match and away_match and time_match:
+                event_id = event.get("id")
+                logger.info(
+                    "find_event_match",
+                    sport_key=sport_key,
+                    event_id=event_id,
+                )
+                return event_id
+
+        logger.warning(
+            "find_event_no_match",
+            sport_key=sport_key,
+            home_team=home_team,
+            away_team=away_team,
+            kickoff_utc=kickoff_utc.isoformat(),
+            event_count=len(events),
+        )
+        return None
 
     async def fetch_historical_closing(
         self,
