@@ -1,23 +1,55 @@
-"""Wave 0 RED stubs for PICK-04 init.
-
-Implementation lands in plan 03-06 (telegram/bot.py).
-"""
+"""GREEN tests for TelegramBot init / no-polling / rate limiter."""
 from __future__ import annotations
 
-import pytest
+import inspect
 
-pytestmark = pytest.mark.skip(reason="Wave 0 stub — implementation lands in plan 03-06")
+import pytest
 
 
 class TestBotInit:
     def test_init_no_polling(self):
-        """D-13: bot does NOT call updater.start_polling — outbound only."""
-        raise NotImplementedError("plan 03-06")
+        """D-13 + drift risk #8: bot must NOT call updater.start_polling()."""
+        from bip.core.telegram.bot import TelegramBot
+        TelegramBot(token="test-token", channel_id="-1001234567890")
+        src = inspect.getsource(TelegramBot)
+        assert "start_polling" not in src
 
     def test_aiorate_limiter_attached(self):
-        """Pitfall 2: app._rate_limiter is not None (AIORateLimiter wired)."""
-        raise NotImplementedError("plan 03-06")
+        """Pitfall 2 + Risks 2: AIORateLimiter must be wired (PTB 22.7 stores it on bot)."""
+        from telegram.ext import AIORateLimiter
 
-    def test_channel_id_validator_rejects_positive_int(self):
-        """Pitfall 8: TELEGRAM_CHANNEL_ID without -100 prefix raises ValidationError."""
-        raise NotImplementedError("plan 03-06")
+        from bip.core.telegram.bot import TelegramBot
+        bot = TelegramBot(token="test-token", channel_id="-1001234567890")
+        assert bot._app.bot.rate_limiter is not None
+        assert isinstance(bot._app.bot.rate_limiter, AIORateLimiter)
+
+    def test_initialize_then_start(self):
+        """Drift risk #7: bot.start() must call initialize() then start()."""
+        from bip.core.telegram.bot import TelegramBot
+        src = inspect.getsource(TelegramBot.start)
+        idx_init = src.find("initialize")
+        idx_start = src.find("self._app.start")
+        assert idx_init >= 0 and idx_start >= 0 and idx_init < idx_start
+
+    def test_empty_token_raises(self):
+        from bip.core.errors import TelegramError
+        from bip.core.telegram.bot import TelegramBot
+        with pytest.raises(TelegramError, match="telegram_bot_token"):
+            TelegramBot(token="", channel_id="-1001234567890")
+
+    def test_empty_channel_id_raises(self):
+        from bip.core.errors import TelegramError
+        from bip.core.telegram.bot import TelegramBot
+        with pytest.raises(TelegramError, match="telegram_channel_id"):
+            TelegramBot(token="test-token", channel_id="")
+
+    def test_channel_id_validator_rejects_positive_int(self, monkeypatch):
+        """Pitfall 8: TELEGRAM_CHANNEL_ID without -100 prefix raises ValidationError at Settings load."""
+        monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "k")
+        monkeypatch.setenv("API_FOOTBALL_KEY", "k")
+        monkeypatch.setenv("ODDS_API_KEY", "k")
+        monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "12345")
+        from bip.core.settings import Settings
+        with pytest.raises(Exception):
+            Settings(_env_file=None)
