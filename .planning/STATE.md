@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 3 context gathered
-last_updated: "2026-05-03T18:45:00.000Z"
-last_activity: 2026-05-03 -- Completed quick task 260503-iql: Vig removal en CLV recorder
+last_updated: "2026-05-03T19:10:00.000Z"
+last_activity: 2026-05-03 -- Completed quick task 260503-j74: Per-market edge thresholds desde YAML
 progress:
   total_phases: 8
   completed_phases: 3
@@ -108,6 +108,7 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260503-iql | Vig removal en CLV recorder | 2026-05-03 | 783b05c | [260503-iql-vig-removal-en-clv-recorder](./quick/260503-iql-vig-removal-en-clv-recorder/) |
+| 260503-j74 | Per-market edge thresholds desde YAML | 2026-05-03 | db0075d | [260503-j74-per-market-edge-thresholds-desde-yaml](./quick/260503-j74-per-market-edge-thresholds-desde-yaml/) |
 
 ## Deferred Items
 
