@@ -17,8 +17,8 @@ from apscheduler.triggers.date import DateTrigger
 
 from bip.core.errors import SchedulerError
 from bip.core.settings import Settings
-from bip.core.storage.models import PickStatus
-from bip.sports import SportPlugin
+from bip.core.storage.models import PickStatus, Prediction
+from bip.sports import FixtureData, SportPlugin
 
 logger = structlog.get_logger(__name__)
 
@@ -210,46 +210,73 @@ class PipelineOrchestrator:
                 misfire_grace_time=600,
             )
 
-    async def _run_pipeline(self, fixture: object, stage: str) -> None:
+    async def _run_pipeline(self, fixture: FixtureData, stage: str) -> None:
         """Run prediction pipeline for a fixture at the specified stage.
 
-        Phase 3 hook: PickEngine.evaluate at t_minus_2h + t_minus_30m.
-        D-01: T-30min skips evaluate when a (fixture_id, market='1X2') pick is already
-        PickStatus.pending — without this guard, every successful T-2h pick fires a
-        duplicate alert at T-30min.
+        Strategy 2 wiring (G-CODE-01/02/03 + G-MAINT-04):
+          - orchestrator constructs the typed Prediction;
+          - plugin.predict() stays pure (returns ProbabilityMap);
+          - PickEngine.evaluate is the only entry into the Pick lifecycle.
+
+        D-01: T-30min skips evaluate when a pending 1X2 pick already exists for the
+        fixture (prevents dup-alert from successful T-2h pick).
         """
-        fixture_id = fixture.fixture_id  # type: ignore[attr-defined]
+        fixture_id = fixture.fixture_id
         logger.info("pipeline_started", fixture_id=fixture_id, stage=stage)
         try:
-            await self.plugin.build_features(fixture)  # type: ignore[arg-type]
+            features = await self.plugin.build_features(fixture)
 
-            if self.pick_engine is not None and stage in ("t_minus_2h", "t_minus_30m"):
-                if stage == "t_minus_30m":
-                    # D-01 dup-alert guard (Blocker #1)
-                    existing = await self.pick_repo.get_pending_for_fixture(fixture.fixture_id)  # type: ignore[attr-defined]
-                    blocking = [p for p in existing
-                                if getattr(p, "market", None) == "1X2"
-                                and getattr(p, "status", None) == PickStatus.pending]
-                    if blocking:
-                        logger.info(
-                            "t30_skipped_pending_already",
-                            fixture_id=fixture.fixture_id,  # type: ignore[attr-defined]
-                            t2h_pick_id=blocking[0].id,
-                        )
-                        return
+            if self.pick_engine is None or stage not in ("t_minus_2h", "t_minus_30m"):
+                logger.info("pipeline_completed", fixture_id=fixture_id, stage=stage)
+                return
 
-                try:
-                    prob_map = await self.plugin.predict(fixture, market="1X2")  # type: ignore[attr-defined]
-                    if prob_map is None:
-                        logger.info("pipeline_skip_evaluate_no_prediction",
-                                    fixture_id=fixture_id, stage=stage)
-                    else:
-                        opening_odds = await self.plugin.get_opening_odds(  # type: ignore[attr-defined]
-                            fixture.fixture_id  # type: ignore[attr-defined]
-                        )
-                        await self.pick_engine.evaluate(prob_map, opening_odds)
-                except AttributeError:
-                    logger.warning("pipeline_evaluate_unsupported", fixture_id=fixture_id, stage=stage)
+            if stage == "t_minus_30m" and self.pick_repo is not None:
+                # D-01 dup-alert guard -- repo method is SYNC, returns list[dict]
+                existing = self.pick_repo.get_pending_for_fixture(fixture_id)
+                blocking = [
+                    p for p in existing
+                    if p.get("market") == "1X2"
+                    and p.get("status") == PickStatus.pending.value
+                ]
+                if blocking:
+                    logger.info(
+                        "t30_skipped_pending_already",
+                        fixture_id=fixture_id,
+                        t2h_pick_id=blocking[0].get("id"),
+                    )
+                    return
+
+            prob_map = await self.plugin.predict(features, market="1X2")
+            if prob_map is None:
+                logger.info(
+                    "pipeline_skip_evaluate_no_prediction",
+                    fixture_id=fixture_id, stage=stage,
+                )
+                logger.info("pipeline_completed", fixture_id=fixture_id, stage=stage)
+                return
+
+            opening_odds = await self.plugin.get_opening_odds(fixture_id)
+
+            prediction = Prediction(
+                fixture_id=fixture_id,
+                league=features.league,
+                sport="football",
+                market="1X2",
+                home_team=fixture.home_team,
+                away_team=fixture.away_team,
+                kickoff_utc=fixture.kickoff_utc,
+                probabilities=prob_map.probabilities,
+                model_version=prob_map.model_version,
+                is_lineup_adjusted=(stage == "t_minus_30m"),
+            )
+
+            try:
+                await self.pick_engine.evaluate(prediction, opening_odds)
+            except Exception as exc:
+                logger.error(
+                    "pipeline_evaluate_failed",
+                    fixture_id=fixture_id, stage=stage, error=str(exc),
+                )
 
             logger.info("pipeline_completed", fixture_id=fixture_id, stage=stage)
         except Exception as exc:
