@@ -21,6 +21,8 @@ class PickStatus(StrEnum):
     lost = "lost"
     void = "void"
     push = "push"
+    filtered = "filtered"   # D-03: did not clear edge / market_cap / claude_api_unavailable
+    rejected = "rejected"   # D-03: Claude Role C returned REJECT (never sent)
 
 
 class CalibrationMethod(StrEnum):
