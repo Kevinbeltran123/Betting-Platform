@@ -34,7 +34,9 @@ class PipelineOrchestrator:
     _STATUS_VOID = frozenset({"PST", "CANC", "ABD"})
     _STATUS_IN_PLAY = frozenset({"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT"})
     _STATUS_NOT_STARTED = frozenset({"TBD", "NS"})
-    _RECONCILE_MAX_RETRIES = 4
+    # Defaults used when settings is None (test fixtures); production reads Settings.
+    _RECONCILE_MAX_RETRIES_DEFAULT = 4
+    _RECONCILE_RETRY_MINUTES_DEFAULT = 30
 
     def __init__(
         self,
@@ -494,18 +496,29 @@ class PipelineOrchestrator:
             return
 
         if status in self._STATUS_IN_PLAY or status in self._STATUS_NOT_STARTED:
-            if retries >= self._RECONCILE_MAX_RETRIES:
+            max_retries = (
+                self.settings.reconcile_max_retries
+                if self.settings is not None
+                else self._RECONCILE_MAX_RETRIES_DEFAULT
+            )
+            retry_minutes = (
+                self.settings.reconcile_retry_minutes
+                if self.settings is not None
+                else self._RECONCILE_RETRY_MINUTES_DEFAULT
+            )
+            if retries >= max_retries:
                 logger.error(
                     "reconcile_abandoned",
                     fixture_id=fixture_id,
                     status=status,
                     retries=retries,
-                    note="max 4 reschedule attempts reached — leaving picks pending for manual review (Q3)",
+                    max_retries=max_retries,
+                    note="max reschedule attempts reached — leaving picks pending for manual review (Q3)",
                 )
                 return
             self.scheduler.add_job(
                 self._reconcile_results,
-                trigger=DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=30)),
+                trigger=DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=retry_minutes)),
                 args=[fixture, retries + 1],
                 id=f"reconcile_{fixture_id}",
                 replace_existing=True,

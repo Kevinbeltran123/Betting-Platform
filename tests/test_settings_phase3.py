@@ -111,3 +111,21 @@ class TestSettingsExistingFieldsPreserved:
         assert s.odds_api_key == "k"
         assert s.telegram_bot_token == ""
         assert s.log_level == "INFO"
+
+
+class TestReconcileTuning:
+    """G-MAINT-10 closeout (260503-txj): reconcile knobs are configurable via Settings."""
+
+    def test_reconcile_defaults_match_historical_behavior(self, monkeypatch):
+        """Defaults preserve the old 4-retry x 30-minute cadence (no behavior change)."""
+        s = _make_settings(monkeypatch)
+        assert s.reconcile_max_retries == 4
+        assert s.reconcile_retry_minutes == 30
+
+    def test_reconcile_max_retries_overridable_via_env(self, monkeypatch):
+        s = _make_settings(monkeypatch, {"RECONCILE_MAX_RETRIES": "8"})
+        assert s.reconcile_max_retries == 8
+
+    def test_reconcile_retry_minutes_overridable_via_env(self, monkeypatch):
+        s = _make_settings(monkeypatch, {"RECONCILE_RETRY_MINUTES": "15"})
+        assert s.reconcile_retry_minutes == 15

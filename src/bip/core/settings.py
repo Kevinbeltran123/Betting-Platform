@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     claude_model: str = "claude-sonnet-4-6"    # D-05: current Sonnet alias (verified May 2026)
     max_kelly_fraction: float = 0.25           # PICK-02 / D-10: quarter Kelly default
 
+    # Orchestrator reconciliation tuning (G-MAINT-10 closeout in 260503-txj)
+    # Defaults preserve historical behavior (4 retries x 30 minutes); ops can tune via env.
+    reconcile_max_retries: int = 4             # max reschedule attempts on IN_PLAY/NOT_STARTED before abandoning
+    reconcile_retry_minutes: int = 30          # backoff cadence between reschedule attempts
+
     @field_validator("telegram_channel_id")
     @classmethod
     def _validate_channel_id(cls, v: str) -> str:
