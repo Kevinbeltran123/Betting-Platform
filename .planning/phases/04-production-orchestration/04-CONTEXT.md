@@ -251,6 +251,65 @@ Phase 4 wires the working pipeline (data → predict → pick → Claude → Tel
 
 </deferred>
 
+<reconciliations>
+## ROADMAP Success-Criteria Reconciliations
+
+These narrow ROADMAP §Phase 4 §Success Criteria to match locked CONTEXT.md decisions.
+Final patch to ROADMAP.md applied in 04-08-PLAN (Wave 7).
+
+### SC#1 Reconciliation — drift scope narrowed to model-CLV only
+
+**Original ROADMAP wording (line 119):**
+> "If rolling 50-pick average CLV drops below +1%, a Telegram warning is sent
+> recommending to pause betting and audit"
+
+**Status:** This is the CLV trend alert (CLV-03), NOT drift. The drift item is
+implicit in §Phases line 18 ("CLV trend alerting"). Both must coexist.
+
+**Original CONTEXT.md (D-14) wording:**
+> "Weekly model-CLV drift check"
+
+**Reconciled wording for ROADMAP §Phase 4 §SC list (Wave 7 patch):**
+
+> SC#1: Weekly model-CLV drift check (last 4-week mean CLV vs prior 4-week mean)
+> per (league, market) with ≥30 settled picks per window — fires Telegram alert
+> on hard drop ≥2pp OR soft drop ≥1.5×stdev (where stdev is computed over daily
+> mean CLV in the prior window, floored at 1.0pp). Feature drift (KS test) and
+> odds drift are explicitly deferred to v2.
+
+**Justification:** RESEARCH §Drift Statistical Method shows the soft-gate stdev
+needs a floor (heavy-tailed CLV at n=30) and `Settings.drift_stdev_floor_pp = 1.0`
+is the new field that enforces it. Per CONTEXT.md `<deferred>` block, feature-drift
+and odds-drift are out of scope.
+
+### SC#2 Reconciliation — graceful degradation feature-flag wording
+
+**Original ROADMAP wording (line 120-121):**
+> "When Claude API is unavailable, the pipeline sends picks with
+> `claude_validation='SKIPPED'` instead of failing; when Odds API is unavailable,
+> picks still send but CLV recording is deferred"
+
+**Conflict:** Phase 3 D-07 says Claude failure → `filter` (NOT `SKIPPED`).
+Phase 4 D-02 says Odds API failure → CLV record SKIPPED, NOT deferred.
+
+**Reconciled wording for ROADMAP §Phase 4 §SC list (Wave 7 patch):**
+
+> SC#2: Graceful degradation. Claude API failure: feature flag
+> `Settings.claude_failure_mode` controls behavior. Default `"filter"` preserves
+> Phase 3 D-07 (account-longevity-first) — pick is persisted with
+> `status='filtered', reason_code='claude_api_unavailable'`, never sent. Opt-in
+> `"skip"` (set via `.env` once CLV track record justifies it) — pick is
+> persisted with `status='pending', claude_validation='SKIPPED'`, sent to
+> Telegram with a 🤖❌ marker. Odds API failure during CLV snapshot: skip
+> silently — no `clv_records` row written, picks still send (no backfill of
+> missed snapshots; Pinnacle moves post-match make backfill non-true closing
+> lines).
+
+**Justification:** Phase 3 D-07 (`filter`) is the locked default; Phase 4 D-01
+adds the opt-in flag. Phase 4 D-02 explicitly rejects deferred-backfill design.
+Both code paths exist; one is dormant at v1.
+</reconciliations>
+
 ---
 
 *Phase: 04-production-orchestration*
