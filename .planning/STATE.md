@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 3 context gathered
-last_updated: "2026-05-04T00:05:00.000Z"
-last_activity: 2026-05-03 -- Completed quick task 260503-q43: Move bip/scheduler to bip/core/scheduler (G-CODE-04/10 closed; CORE-02 now Complete)
+last_updated: "2026-05-04T00:35:00.000Z"
+last_activity: 2026-05-03 -- Completed quick task 260503-txj: Reconcile knobs configurable via Settings (G-MAINT-10)
 progress:
   total_phases: 8
   completed_phases: 3
@@ -124,6 +124,7 @@ None yet.
 | 260503-k8k | Wire ClvRecorder + OddsApiClient en orchestrator (kickoff-1m + find_event_by_fixture) | 2026-05-03 | cc0db4d | [260503-k8k-wire-clvrecorder-oddsapiclient-en-orches](./quick/260503-k8k-wire-clvrecorder-oddsapiclient-en-orches/) |
 | 260503-oml | MarketKey enum + migrate callers (G-MAINT-05) | 2026-05-03 | fc0ced1 | [260503-oml-marketkey-enum-migrar-callers-g-maint-05](./quick/260503-oml-marketkey-enum-migrar-callers-g-maint-05/) |
 | 260503-q43 | Move bip/scheduler to bip/core/scheduler (G-CODE-04/10) | 2026-05-03 | 2e192d8 | [260503-q43-mover-bip-scheduler-a-bip-core-scheduler](./quick/260503-q43-mover-bip-scheduler-a-bip-core-scheduler/) |
+| 260503-txj | Reconcile knobs configurable via Settings (G-MAINT-10) | 2026-05-03 | 6cc30ca | [260503-txj-reschedule-cadence-max-retries-a-setting](./quick/260503-txj-reschedule-cadence-max-retries-a-setting/) |
 
 ## Deferred Items
 
