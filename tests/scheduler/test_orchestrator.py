@@ -544,3 +544,112 @@ class TestRecordClv:
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         assert "clv_skip_unwired" in combined
+
+
+# ─────────────────────────────────────────────────────────────────
+# Phase 4 wiring tests (D-03, D-07, D-08, D-09–D-12, D-13, D-14)
+# ─────────────────────────────────────────────────────────────────
+
+
+class TestPhase4Wiring:
+    """4 new cron jobs + drift_checker delegation + auto_recover_complete event."""
+
+    @pytest.mark.asyncio
+    async def test_phase4_jobs_registered_when_deps_provided(self):
+        """All Phase 4 deps wired → start() registers heartbeat + clv_trend + metrics + drift."""
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
+
+        plugin = MagicMock()
+        heartbeat = MagicMock()
+        heartbeat.tick = MagicMock()
+        clv_trend = MagicMock()
+        metrics_agg = MagicMock()
+        drift_checker = MagicMock()
+        ops_sender = MagicMock()
+
+        orch = PipelineOrchestrator(
+            plugin=plugin,
+            heartbeat_ticker=heartbeat,
+            clv_trend_checker=clv_trend,
+            metrics_aggregator=metrics_agg,
+            drift_checker=drift_checker,
+            ops_sender=ops_sender,
+        )
+        # AsyncIOScheduler.start() needs a running loop — provided by @pytest.mark.asyncio.
+        orch.start()
+        try:
+            job_ids = {j.id for j in orch.scheduler.get_jobs()}
+            assert "heartbeat" in job_ids
+            assert "clv_trend" in job_ids
+            assert "metrics_aggregator" in job_ids
+            assert "weekly_drift" in job_ids
+        finally:
+            orch.scheduler.shutdown(wait=False)
+
+    @pytest.mark.asyncio
+    async def test_phase4_jobs_skipped_when_deps_none(self):
+        """Phase 4 deps None → only the 2 Phase 3 jobs register."""
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
+
+        plugin = MagicMock()
+        orch = PipelineOrchestrator(plugin=plugin)
+        orch.start()
+        try:
+            job_ids = {j.id for j in orch.scheduler.get_jobs()}
+            assert "heartbeat" not in job_ids
+            assert "clv_trend" not in job_ids
+            assert "metrics_aggregator" not in job_ids
+            assert "weekly_drift" not in job_ids
+            # Phase 3 jobs still register
+            assert "daily_orchestrator" in job_ids
+            assert "nightly_clv_reconciliation" in job_ids
+        finally:
+            orch.scheduler.shutdown(wait=False)
+
+    @pytest.mark.asyncio
+    async def test_check_drift_delegates_to_drift_checker(self):
+        """_check_drift calls self._drift_checker.run() when wired."""
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
+
+        plugin = MagicMock()
+        drift_checker = MagicMock()
+        drift_checker.run = AsyncMock(return_value=2)
+        orch = PipelineOrchestrator(plugin=plugin, drift_checker=drift_checker)
+        await orch._check_drift()
+        drift_checker.run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_check_drift_skips_gracefully_without_drift_checker(self):
+        """_check_drift logs skip when drift_checker is None — never crashes."""
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
+
+        plugin = MagicMock()
+        orch = PipelineOrchestrator(plugin=plugin)  # no drift_checker
+        # Should not raise.
+        await orch._check_drift()
+
+    @pytest.mark.asyncio
+    async def test_auto_recover_complete_event_fires(self, capsys):
+        """D-08: _auto_recover emits 'auto_recover_complete' with jobs_re_queued count."""
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
+
+        # Force the auto_recover path to reach the requeued log: need pick_repo + pick_engine
+        # set, AND the early `now < today_start` guard must NOT fire (i.e. tests run after
+        # 06:00 UTC). The recovery-already-skipped branch returns BEFORE the requeued log
+        # only if no fixture jobs exist AND _daily_orchestrator runs; but the pending-sends
+        # block runs unconditionally after that. To exercise just the pending-sends log
+        # path, stub _daily_orchestrator to a no-op via plugin mock.
+        plugin = MagicMock()
+        pick_repo = MagicMock()
+        pick_repo.query_pending_sends = MagicMock(return_value=[])  # no pending → count=0
+        pick_engine = MagicMock()
+        orch = PipelineOrchestrator(
+            plugin=plugin, pick_repo=pick_repo, pick_engine=pick_engine
+        )
+        # Stub the daily orchestrator so _auto_recover doesn't fan out into fixture logic.
+        orch._daily_orchestrator = AsyncMock()  # type: ignore[method-assign]
+        await orch._auto_recover()
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "auto_recover_complete" in combined
+        assert "jobs_re_queued=0" in combined

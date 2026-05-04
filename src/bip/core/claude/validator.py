@@ -25,7 +25,11 @@ logger = structlog.get_logger(__name__)
 class ClaudeVerdict(BaseModel):
     """D-06: tool_use response schema."""
 
-    verdict: str = Field(..., pattern="^(CONFIRM|FLAG|REJECT)$")
+    # D-01 broadens to allow SKIPPED — emitted ONLY by PickEngine local construction
+    # when Claude API is down (claude_failure_mode='skip'). The Claude API tool_use
+    # response itself never produces SKIPPED (VALIDATE_PICK_TOOL.input_schema.enum
+    # remains CONFIRM/FLAG/REJECT only).
+    verdict: str = Field(..., pattern="^(CONFIRM|FLAG|REJECT|SKIPPED)$")
     reason_code: str
     reasoning: str
     summary: str = Field(..., max_length=120)

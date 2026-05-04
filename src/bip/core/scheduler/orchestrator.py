@@ -7,13 +7,14 @@ Do NOT use 4.x API (AsyncScheduler + add_schedule) — APScheduler 4.x is still 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from bip.core.errors import SchedulerError
 from bip.core.settings import Settings
@@ -49,6 +50,12 @@ class PipelineOrchestrator:
         odds_api_client: Any | None = None,
         clv_recorder: Any | None = None,
         league_registry: Any | None = None,
+        # Phase 4 additions (D-03, D-07, D-09–D-12, D-13, D-14)
+        heartbeat_ticker: Any | None = None,
+        clv_trend_checker: Any | None = None,
+        metrics_aggregator: Any | None = None,
+        drift_checker: Any | None = None,
+        ops_sender: Any | None = None,
     ) -> None:
         self.plugin = plugin
         self.settings = settings
@@ -61,6 +68,12 @@ class PipelineOrchestrator:
         self.odds_api_client = odds_api_client
         self.clv_recorder = clv_recorder
         self.league_registry = league_registry
+        # Phase 4
+        self._heartbeat_ticker = heartbeat_ticker
+        self._clv_trend_checker = clv_trend_checker
+        self._metrics_aggregator = metrics_aggregator
+        self._drift_checker = drift_checker
+        self._ops_sender = ops_sender
 
     def start(self) -> None:
         self.scheduler.add_job(
@@ -76,6 +89,50 @@ class PipelineOrchestrator:
             id="nightly_clv_reconciliation",
             replace_existing=True,
         )
+
+        # ─── Phase 4 cron jobs (each conditional on its dep being wired) ───
+        if self._heartbeat_ticker is not None:
+            self.scheduler.add_job(
+                self._heartbeat_ticker.tick,
+                trigger=IntervalTrigger(minutes=5),
+                id="heartbeat",
+                replace_existing=True,
+                coalesce=True,
+                misfire_grace_time=60,
+            )
+
+        if self._clv_trend_checker is not None:
+            self.scheduler.add_job(
+                self._check_clv_trend,
+                trigger=CronTrigger(minute=0, timezone="UTC"),
+                id="clv_trend",
+                replace_existing=True,
+                coalesce=True,
+                misfire_grace_time=600,
+            )
+
+        if self._metrics_aggregator is not None:
+            self.scheduler.add_job(
+                self._aggregate_metrics,
+                trigger=CronTrigger(hour=23, minute=0, timezone="UTC"),
+                id="metrics_aggregator",
+                replace_existing=True,
+                coalesce=True,
+                misfire_grace_time=600,
+            )
+
+        # Weekly drift cron registers when ops_sender is wired; the actual drift
+        # body is owned by _drift_checker. _check_drift logs a skip when the
+        # checker is None — never crashes.
+        if self._ops_sender is not None:
+            self.scheduler.add_job(
+                self._check_drift,
+                trigger=CronTrigger(day_of_week='mon', hour=6, minute=0, timezone="UTC"),
+                id="weekly_drift",
+                replace_existing=True,
+                coalesce=True,
+                misfire_grace_time=600,
+            )
 
         self.scheduler.start()
         logger.info("scheduler_started", jobs=len(self.scheduler.get_jobs()))
@@ -136,6 +193,8 @@ class PipelineOrchestrator:
             )
             requeued += 1
         logger.info("auto_recover_requeued", count=requeued, scanned=len(pending))
+        # D-08: emit completion event so journal monitoring sees one terminal line per startup.
+        logger.info("auto_recover_complete", jobs_re_queued=requeued, scanned=len(pending))
 
     async def _send_recovered_pick(self, row: dict) -> None:
         """Pitfall 6 recovery dispatch — re-build a Pick from the DB row and send."""
@@ -565,6 +624,44 @@ class PipelineOrchestrator:
             self.pick_repo.update_status(pick["id"], new_status)
             settled += 1
         logger.info("reconcile_settled", fixture_id=fixture_id, status=status, count=settled)
+
+    # ─────────────────────────────────────────────────────────
+    # Phase 4 cron wrappers (D-09–D-12, D-13, D-14)
+    # ─────────────────────────────────────────────────────────
+
+    async def _check_clv_trend(self) -> None:
+        """Wrapper: delegate to ClvTrendChecker.check (D-09–D-12)."""
+        if self._clv_trend_checker is None:
+            return
+        try:
+            await self._clv_trend_checker.check()
+        except Exception as exc:
+            logger.error("clv_trend_check_failed", error=str(exc))
+
+    async def _aggregate_metrics(self) -> None:
+        """Wrapper: delegate to MetricsAggregator.run (D-13)."""
+        if self._metrics_aggregator is None:
+            return
+        try:
+            await self._metrics_aggregator.run()
+        except Exception as exc:
+            logger.error("metrics_aggregation_failed", error=str(exc))
+
+    async def _check_drift(self) -> None:
+        """Wrapper: weekly drift check (D-14).
+
+        Delegates to self._drift_checker (constructed in 04-05 builder.py). When
+        _drift_checker is None (test fixtures or partial wiring), log a skip
+        and return — never crashes.
+        """
+        if self._drift_checker is None:
+            logger.info("drift_check_skipped", reason="no_drift_checker_provided")
+            return
+        try:
+            logger.info("drift_check_started", date=date.today().isoformat())
+            await self._drift_checker.run()
+        except Exception as exc:
+            logger.error("drift_check_failed", error=str(exc))
 
     def get_registered_jobs(self) -> list:
         return self.scheduler.get_jobs()

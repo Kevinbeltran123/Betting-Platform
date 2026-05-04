@@ -118,6 +118,7 @@ def _make_engine(claude_verdict=None, window_picks=None, league_registry=None):
 
     settings = MagicMock()
     settings.max_kelly_fraction = 0.25
+    settings.claude_failure_mode = "filter"  # D-01 default — preserves Phase 3 D-07 semantics
 
     if league_registry is None:
         league_registry = _default_league_registry()

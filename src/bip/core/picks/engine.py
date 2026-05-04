@@ -26,7 +26,7 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 
-from bip.core.claude.validator import ClaudeValidator
+from bip.core.claude.validator import ClaudeValidator, ClaudeVerdict
 from bip.core.errors import PickError
 from bip.core.picks.account_longevity import (
     deterministic_jitter,
@@ -113,7 +113,26 @@ class PickEngine:
         verdict = await self._validator.validate(pick_summary, curated_signals)
 
         if verdict is None:
-            return self._persist_filtered(prediction, opening_odds, "claude_api_unavailable")
+            # D-01: claude_failure_mode controls behavior when Claude API is unreachable.
+            if self._settings.claude_failure_mode == "filter":
+                # Default — Phase 3 D-07 preserved: account-longevity-first.
+                return self._persist_filtered(
+                    prediction, opening_odds, "claude_api_unavailable"
+                )
+            # claude_failure_mode == "skip" (D-01 opt-in): persist as pending+SKIPPED, send.
+            skipped_verdict = ClaudeVerdict(
+                verdict="SKIPPED",
+                reason_code="claude_api_unavailable",
+                reasoning="",
+                summary="🤖❌ Claude validation unavailable; manual review recommended.",
+            )
+            pick = self._persist_pending(
+                prediction, opening_odds, selection, idx, edge, kelly_fraction, stake,
+                skipped_verdict,
+            )
+            send_at = deterministic_send_at(datetime.now(UTC), fixture_id)
+            self._schedule_send(pick, prediction, send_at)
+            return pick
 
         if verdict.verdict == "REJECT":
             return self._persist_rejected(
