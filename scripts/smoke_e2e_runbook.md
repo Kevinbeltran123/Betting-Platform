@@ -98,7 +98,7 @@ The smoke uses a kickoff 4 hours in the future, so reconciliation will not fire 
    from supabase import create_client
    from bip.core.settings import Settings
    from bip.core.storage.repositories import PickRepository
-   from bip.scheduler.orchestrator import PipelineOrchestrator
+   from bip.core.scheduler.orchestrator import PipelineOrchestrator
    from bip.sports.football.client import ApiFootballClient
    # ... wire pipeline orchestrator with pick_repo + api_football_client, call _reconcile_results
    "

@@ -14,7 +14,7 @@ from bip.sports import FeatureMatrix, FixtureData, ProbabilityMap, SportPlugin
 
 
 def _make_orchestrator(pending_rows=None, existing_jobs=None):
-    from bip.scheduler.orchestrator import PipelineOrchestrator
+    from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
     plugin = MagicMock()
     pick_repo = MagicMock()
@@ -98,7 +98,7 @@ class TestAutoRecover:
     @pytest.mark.asyncio
     async def test_recover_pending_sends(self, monkeypatch):
         from datetime import UTC, datetime
-        import bip.scheduler.orchestrator as mod
+        import bip.core.scheduler.orchestrator as mod
 
         class _Now(datetime):
             @classmethod
@@ -122,7 +122,7 @@ class TestAutoRecover:
     @pytest.mark.asyncio
     async def test_recover_skips_already_scheduled(self, monkeypatch):
         from datetime import UTC, datetime
-        import bip.scheduler.orchestrator as mod
+        import bip.core.scheduler.orchestrator as mod
 
         class _Now(datetime):
             @classmethod
@@ -144,7 +144,7 @@ class TestAutoRecover:
     @pytest.mark.asyncio
     async def test_recover_handles_no_pending(self, monkeypatch):
         from datetime import UTC, datetime
-        import bip.scheduler.orchestrator as mod
+        import bip.core.scheduler.orchestrator as mod
 
         class _Now(datetime):
             @classmethod
@@ -161,7 +161,7 @@ class TestAutoRecover:
     @pytest.mark.asyncio
     async def test_recover_skips_when_unwired(self, monkeypatch):
         from datetime import UTC, datetime
-        import bip.scheduler.orchestrator as mod
+        import bip.core.scheduler.orchestrator as mod
 
         class _Now(datetime):
             @classmethod
@@ -169,7 +169,7 @@ class TestAutoRecover:
                 return datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
         monkeypatch.setattr(mod, "datetime", _Now)
 
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
         plugin = MagicMock()
         orch = PipelineOrchestrator(plugin=plugin)
         # Provide a non-default fixture job so daily_orchestrator path is skipped
@@ -186,7 +186,7 @@ class TestT30DupAlertGuard:
 
     @pytest.mark.asyncio
     async def test_t30_skipped_when_t2h_pending(self, capsys):
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
         plugin = _abc_plugin()
         pick_engine = MagicMock()
@@ -217,7 +217,7 @@ class TestT30DupAlertGuard:
 
     @pytest.mark.asyncio
     async def test_t30_proceeds_when_t2h_rejected(self):
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
         plugin = _abc_plugin()
         pick_engine = MagicMock()
@@ -240,7 +240,7 @@ class TestT30DupAlertGuard:
 
     @pytest.mark.asyncio
     async def test_t30_proceeds_when_t2h_filtered(self):
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
         plugin = _abc_plugin()
         pick_engine = MagicMock()
@@ -266,7 +266,7 @@ class TestPipelineABCCompliance:
     @pytest.mark.asyncio
     async def test_pipeline_invokes_only_plugin_abc_methods(self):
         """No AttributeError when plugin is strictly spec'd to SportPlugin ABC."""
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
         plugin = _abc_plugin()
         pick_engine = MagicMock()
@@ -288,7 +288,7 @@ class TestPipelineABCCompliance:
     @pytest.mark.asyncio
     async def test_pipeline_builds_full_prediction(self):
         """Orchestrator constructs a typed Prediction from fixture+features+prob_map."""
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
         plugin = _abc_plugin(
             league="premier_league",
@@ -342,7 +342,7 @@ class TestPipelineABCCompliance:
     @pytest.mark.asyncio
     async def test_dup_alert_guard_uses_sync_repo_and_dict_access(self):
         """G-CODE-02 — sync call (no await) + dict access via p['market']."""
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
         plugin = _abc_plugin()
         pick_engine = MagicMock()
@@ -402,7 +402,7 @@ class TestRecordClv:
     @pytest.mark.asyncio
     async def test_record_clv_happy_path(self):
         """Pending pick + matched event + Pinnacle quote → ClvRecorder.record() called."""
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
         plugin = MagicMock()
         odds_api_client = MagicMock()
@@ -461,7 +461,7 @@ class TestRecordClv:
 
     @pytest.mark.asyncio
     async def test_record_clv_skips_when_no_pending_picks(self, capsys):
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
         plugin = MagicMock()
         odds_api_client = MagicMock()
@@ -491,7 +491,7 @@ class TestRecordClv:
 
     @pytest.mark.asyncio
     async def test_record_clv_skips_when_pinnacle_event_not_found(self, capsys):
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
         plugin = MagicMock()
         odds_api_client = MagicMock()
@@ -532,7 +532,7 @@ class TestRecordClv:
     @pytest.mark.asyncio
     async def test_record_clv_skips_when_unwired(self, capsys):
         """No clv_recorder / odds_api_client wired → log + return; no crash."""
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
         plugin = MagicMock()
         orch = PipelineOrchestrator(plugin=plugin)

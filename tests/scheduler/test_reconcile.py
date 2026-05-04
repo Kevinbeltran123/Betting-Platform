@@ -7,7 +7,7 @@ import pytest
 
 
 def _make_orchestrator(api_response):
-    from bip.scheduler.orchestrator import PipelineOrchestrator
+    from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
     plugin = MagicMock()
     api_client = MagicMock()
@@ -166,7 +166,7 @@ class TestReconcileUnknownAndAwarded:
 class TestRegisterReconciliation:
     def test_reconcile_job_registered_on_fixture(self):
         from datetime import UTC, datetime, timedelta
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
 
         plugin = MagicMock()
         orch = PipelineOrchestrator(plugin=plugin)

@@ -11,7 +11,7 @@ class TestPipelineOrchestrator:
 
     def test_uses_asyncio_scheduler_not_background(self):
         """Must use AsyncIOScheduler (not BackgroundScheduler) per D-03d."""
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         plugin = MagicMock()
         orch = PipelineOrchestrator(plugin=plugin)
@@ -19,7 +19,7 @@ class TestPipelineOrchestrator:
 
     def test_registers_date_trigger_jobs(self):
         """_daily_orchestrator must register 3 DateTrigger jobs per fixture: T-2h, T-30min, T-1min."""
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
         from bip.sports import FixtureData
 
         plugin = MagicMock()
@@ -46,7 +46,7 @@ class TestPipelineOrchestrator:
 
     def test_daily_orchestrator_job_uses_cron_trigger_at_06_utc(self):
         """Daily orchestrator CronTrigger must be hour=6, minute=0, timezone=UTC — D-03a."""
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
         from apscheduler.triggers.cron import CronTrigger
 
         plugin = MagicMock()
@@ -72,7 +72,7 @@ class TestPipelineOrchestrator:
         the closing line we benchmark CLV against. This replaces the earlier
         kickoff + 105m placeholder used while the recorder was unwired.
         """
-        from bip.scheduler.orchestrator import PipelineOrchestrator
+        from bip.core.scheduler.orchestrator import PipelineOrchestrator
         import inspect
         src = inspect.getsource(PipelineOrchestrator._register_fixture_jobs)
         assert "t_minus_1m" in src, (
