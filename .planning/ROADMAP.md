@@ -121,12 +121,18 @@ Plans:
   3. A systemd service on Hetzner VPS auto-restarts on crash, and a heartbeat file is updated every 5 minutes for external monitoring
   4. Performance metrics (ROI, yield, average CLV, win/loss/void counts) are aggregated in `performance_metrics` table by sport, league, market, and period
   5. If rolling 50-pick average CLV drops below +1%, a Telegram warning is sent recommending to pause betting and audit
-**Plans**: TBD
+**Plans**: 9 plans
 
 Plans:
-- [ ] 04-01: TBD
-- [ ] 04-02: TBD
-- [ ] 04-03: TBD
+- [ ] 04-00-PLAN.md — Wave 0 stubs (17 test files) + migration 005 SQL + supabase db push [BLOCKING]
+- [ ] 04-01-PLAN.md — Settings extension (9 fields + ops channel validator) + sdnotify==0.3.2 dep
+- [ ] 04-02-PLAN.md — HeartbeatTicker + ClvTrendChecker + ClvRecordRepository.last_n_settled (D-07, D-09–D-12)
+- [ ] 04-03-PLAN.md — PerformanceMetricRepository.compute_period RPC + MetricsAggregator + drift compute (D-13, D-14)
+- [ ] 04-04-PLAN.md — PickEngine D-01 branch + orchestrator extension (4 new cron jobs) + auto_recover_complete + two-channel routing test
+- [ ] 04-05-PLAN.md — bip.production.builder + __main__ + DriftChecker class (D-05, RESEARCH §Pattern 1)
+- [ ] 04-06-PLAN.md — deploy/systemd/bip.service + tmpfiles.d/bip.conf + install.sh + README (D-06)
+- [ ] 04-07-PLAN.md — ROADMAP SC#1/SC#2 reconciliation patch + deploy/SMOKE_TEST.md + staging exercise [BLOCKING]
+- [ ] 04-08-PLAN.md — Finalize 04-VALIDATION.md per-task table + nyquist_compliant: true
 
 ### Phase 5: Claude Confidence Modifier (Shadow)
 **Goal**: Claude Role B runs pre-prediction in shadow mode, logging confidence modifiers and reasoning without affecting live picks, until walk-forward CLV improvement is confirmed
