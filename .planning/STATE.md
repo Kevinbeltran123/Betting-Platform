@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 3 context gathered
-last_updated: "2026-05-03T22:55:00.000Z"
-last_activity: 2026-05-03 -- Completed quick task 260503-oml: MarketKey enum + migrate callers (G-MAINT-05)
+last_updated: "2026-05-04T00:05:00.000Z"
+last_activity: 2026-05-03 -- Completed quick task 260503-q43: Move bip/scheduler to bip/core/scheduler (G-CODE-04/10 closed; CORE-02 now Complete)
 progress:
   total_phases: 8
   completed_phases: 3
@@ -123,6 +123,7 @@ None yet.
 | 260503-jkf | Orchestrator/Plugin/Engine wiring (Strategy 2) | 2026-05-03 | e68df0e | [260503-jkf-orchestrator-plugin-engine-wiring-predic](./quick/260503-jkf-orchestrator-plugin-engine-wiring-predic/) |
 | 260503-k8k | Wire ClvRecorder + OddsApiClient en orchestrator (kickoff-1m + find_event_by_fixture) | 2026-05-03 | cc0db4d | [260503-k8k-wire-clvrecorder-oddsapiclient-en-orches](./quick/260503-k8k-wire-clvrecorder-oddsapiclient-en-orches/) |
 | 260503-oml | MarketKey enum + migrate callers (G-MAINT-05) | 2026-05-03 | fc0ced1 | [260503-oml-marketkey-enum-migrar-callers-g-maint-05](./quick/260503-oml-marketkey-enum-migrar-callers-g-maint-05/) |
+| 260503-q43 | Move bip/scheduler to bip/core/scheduler (G-CODE-04/10) | 2026-05-03 | 2e192d8 | [260503-q43-mover-bip-scheduler-a-bip-core-scheduler](./quick/260503-q43-mover-bip-scheduler-a-bip-core-scheduler/) |
 
 ## Deferred Items
 

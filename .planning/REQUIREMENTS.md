@@ -5,7 +5,7 @@
 ### CORE — Plugin Architecture
 
 - [x] **CORE-01**: `SportPlugin` ABC defined in `sports/__init__.py` with all required methods: `get_fixtures()`, `build_features()`, `predict()`, `build_claude_context()`, `get_available_markets()`, `get_opening_odds()` (G-CODE-01 closed in quick-260503-jkf)
-- [ ] **CORE-02**: `core/` layer contains zero sport-specific code — EV engine, Claude layer, Telegram bot, CLV tracker, pick engine, scheduler, Supabase client all sport-agnostic *(scheduler lives at `bip/scheduler/` not `bip/core/`; ev_engine + kelly folded into `core/picks/`. Layout drift documented in AUDIT-GAPS.md G-CODE-04..06; no SCALE-01 violation today since only football exists)*
+- [x] **CORE-02**: `core/` layer contains zero sport-specific code — EV engine, Claude layer, Telegram bot, CLV tracker, pick engine, scheduler, Supabase client all sport-agnostic. Scheduler moved under `core/scheduler/` in quick-260503-q43 (G-CODE-04/10 closed). EV engine + Kelly folded into `core/picks/` (intentional consolidation, not drift).
 - [x] **CORE-03**: Supabase migration 002 adds `sport VARCHAR(20) NOT NULL DEFAULT 'football'` to all 6 existing tables (predictions, picks, odds_snapshots, results, clv_records, performance_metrics)
 - [x] **CORE-04**: Football plugin (`sports/football/`) implements full `SportPlugin` interface and passes interface contract tests
 - [x] **CORE-05**: Markets defined as runtime YAML config (name, display, edge_threshold, kelly_max) — no hardcoded market enum in core (per-market threshold lookup wired in quick-260503-j74)
@@ -92,7 +92,7 @@
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | CORE-01 | Phase 1 | Complete |
-| CORE-02 | Phase 1 | Partial (layout drift — see G-CODE-04..06) |
+| CORE-02 | Phase 1 | Complete (scheduler moved under core/ in 260503-q43; G-CODE-04/10 closed) |
 | CORE-03 | Phase 1 | Complete |
 | CORE-04 | Phase 1 | Complete |
 | CORE-05 | Phase 1 | Complete (per-market wiring closed in 260503-j74) |
