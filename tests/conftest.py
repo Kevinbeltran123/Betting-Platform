@@ -41,6 +41,7 @@ def settings(monkeypatch):
     monkeypatch.setenv("ODDS_API_KEY", "test-odds-api-key")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-bot-token")
     monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "-1001234567890")
+    monkeypatch.setenv("TELEGRAM_OPS_CHANNEL_ID", "-1009876543210")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
     monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-4-6")
     from bip.core.settings import Settings
@@ -180,3 +181,41 @@ def mock_telegram_bot():
     bot = MagicMock()
     bot.send_html = AsyncMock()
     return bot
+
+
+# ------------------------------------------------------------------
+# Phase 4 fixtures — production orchestration mocks
+# ------------------------------------------------------------------
+
+@pytest.fixture
+def mock_sd_notify():
+    """sdnotify.SystemdNotifier mock (D-07).
+
+    Test pattern: HeartbeatTicker(path, mock_sd_notify).tick(); then
+        mock_sd_notify.notify.assert_called_with("WATCHDOG=1")
+    """
+    from unittest.mock import MagicMock
+    n = MagicMock()
+    n.notify = MagicMock(return_value=True)
+    return n
+
+
+@pytest.fixture
+def mock_ops_telegram_sender():
+    """TelegramSender mock for the OPS channel (D-03).
+
+    Distinct from `mock_telegram_bot` (picks channel). Tests for ClvTrendChecker,
+    drift alerts, and any ops-bound message use this fixture to assert routing.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    s = MagicMock()
+    s.send_html = AsyncMock()
+    return s
+
+
+@pytest.fixture
+def tmp_heartbeat_path(tmp_path):
+    """tmp_path / 'heartbeat' (D-07). File does NOT pre-exist; HeartbeatTicker.tick()
+    creates it via Path.touch(). Tests assert mtime advances on subsequent ticks.
+    """
+    return tmp_path / "heartbeat"
