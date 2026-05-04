@@ -366,6 +366,31 @@ class ClvRecordRepository:
         except Exception as e:
             raise StorageError(f"Failed to select from clv_records: {e}") from e
 
+    def last_n_settled(self, n: int = 50, market: str | None = None) -> list[dict]:
+        """Return the last n CLV records joined with picks.status (settled only).
+
+        D-09: feeds compute_rolling_clv_average via ClvTrendChecker. PostgREST
+        nested-resource syntax `picks!inner(status)` performs an INNER JOIN to
+        picks; combined with .neq filters this excludes non-settled rows
+        (filtered/rejected/pending). Per-market filter is OPTIONAL (D-10 — global
+        scope when market is None).
+        """
+        try:
+            query = (
+                self.client.table("clv_records")
+                .select("clv_percentage, market, created_at, picks!inner(status)")
+                .neq("picks.status", "filtered")
+                .neq("picks.status", "rejected")
+                .neq("picks.status", "pending")
+                .order("created_at", desc=True)
+                .limit(n)
+            )
+            if market is not None:
+                query = query.eq("market", market)
+            return query.execute().data or []
+        except Exception as e:
+            raise StorageError(f"Failed to query last_n_settled clv_records: {e}") from e
+
 
 @dataclass
 class PerformanceMetricRepository:
