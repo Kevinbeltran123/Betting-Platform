@@ -11,6 +11,7 @@ exceptions to StorageError with context (table name, operation).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, time
 
 from bip.core.errors import StorageError
 from bip.core.storage.models import (
@@ -21,6 +22,7 @@ from bip.core.storage.models import (
     Prediction,
     Result,
 )
+from bip.core.types import AggregationPeriod
 from supabase import Client
 
 
@@ -412,6 +414,58 @@ class PerformanceMetricRepository:
             return response.data[0]
         except Exception as e:
             raise StorageError(f"Failed to upsert into performance_metrics: {e}") from e
+
+    def compute_period(
+        self,
+        sport: str,
+        league: str,
+        market: str,
+        period: AggregationPeriod,
+        period_start: date,
+        period_end: date,
+    ) -> PerformanceMetric:
+        """D-16: single Supabase round trip for one (sport,league,market) over a window.
+
+        Calls Postgres function compute_performance_period(p_sport,p_league,p_market,p_start,p_end)
+        added by migration 005. LEFT JOIN on clv_records — picks with no CLV row (D-02
+        Odds API failure path) are still counted; AVG ignores NULL clv_percentage
+        (Pitfall 3).
+
+        T-4-03 mitigation: parameters are bound via the dict argument to .rpc(), NOT
+        interpolated. Migration 005's function is LANGUAGE sql STABLE — no EXECUTE.
+        """
+        try:
+            response = self.client.rpc(
+                "compute_performance_period",
+                {
+                    "p_sport":  sport,
+                    "p_league": league,
+                    "p_market": market,
+                    "p_start":  datetime.combine(period_start, time.min, tzinfo=UTC).isoformat(),
+                    "p_end":    datetime.combine(period_end, time.min, tzinfo=UTC).isoformat(),
+                },
+            ).execute()
+        except Exception as e:
+            raise StorageError(
+                f"Failed compute_performance_period(sport={sport},league={league},"
+                f"market={market}): {e}"
+            ) from e
+
+        row = response.data[0] if response.data else {}
+        return PerformanceMetric(
+            sport=sport, league=league, market=market,
+            period=period, period_start=period_start, period_end=period_end,
+            total_picks=int(row.get("total_picks") or 0),
+            won=int(row.get("won") or 0),
+            lost=int(row.get("lost") or 0),
+            void=int(row.get("void") or 0),
+            total_staked=float(row.get("total_staked") or 0.0),
+            total_pnl=float(row.get("total_pnl") or 0.0),
+            roi=float(row["roi"]) if row.get("roi") is not None else None,
+            yield_pct=(float(row["roi"]) * 100.0) if row.get("roi") is not None else None,
+            avg_clv=float(row["avg_clv"]) if row.get("avg_clv") is not None else None,
+            avg_edge=float(row["avg_edge"]) if row.get("avg_edge") is not None else None,
+        )
 
     def get_by_league_market(
         self, league: str, market: str, sport: str | None = None
