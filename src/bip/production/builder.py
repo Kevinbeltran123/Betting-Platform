@@ -49,7 +49,10 @@ from supabase import create_client
 
 logger = structlog.get_logger(__name__)
 
-_LEAGUES_DIR = Path("src/bip/sports/football/config/leagues")
+# Anchor at the package, not the CWD: under systemd WorkingDirectory=/opt/bip the
+# CWD-relative path resolved fine, but `python -m bip.production` from anywhere
+# else (e.g. local-mode tmux from the user's home) silently pointed nowhere.
+_LEAGUES_DIR = Path(__file__).resolve().parents[1] / "sports" / "football" / "config" / "leagues"
 
 
 class DriftChecker:
