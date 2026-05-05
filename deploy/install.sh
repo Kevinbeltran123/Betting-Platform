@@ -62,7 +62,9 @@ else
     echo "${ENV_FILE} already exists — preserving (mode 600 owner bip)."
 fi
 
-# 5. Validate .env required keys (T-4-06: never echo values)
+# 5. Validate .env required keys have NON-EMPTY values (T-4-06: never echo values)
+# Regex requires `KEY=` followed by at least one non-whitespace char so commented
+# (`#KEY=...`) and empty (`KEY=`) lines both fail validation early.
 REQUIRED_KEYS=(
     SUPABASE_URL SUPABASE_KEY
     API_FOOTBALL_KEY ODDS_API_KEY
@@ -71,15 +73,15 @@ REQUIRED_KEYS=(
 )
 MISSING=()
 for KEY in "${REQUIRED_KEYS[@]}"; do
-    if ! grep -q "^${KEY}=" "${ENV_FILE}"; then
+    if ! grep -qE "^${KEY}=[[:space:]]*[^[:space:]#]" "${ENV_FILE}"; then
         MISSING+=("${KEY}")
     fi
 done
 if [ ${#MISSING[@]} -gt 0 ]; then
-    echo "ERROR: ${ENV_FILE} missing required keys: ${MISSING[*]}"
+    echo "ERROR: ${ENV_FILE} missing or empty required keys: ${MISSING[*]}"
     exit 1
 fi
-echo "All required keys present in ${ENV_FILE}."
+echo "All required keys present and non-empty in ${ENV_FILE}."
 
 # 6. Install systemd unit + reload
 install -m 644 deploy/systemd/bip.service "${SYSTEMD_DIR}/bip.service"
