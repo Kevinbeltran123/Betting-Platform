@@ -56,10 +56,14 @@ class PipelineOrchestrator:
         metrics_aggregator: Any | None = None,
         drift_checker: Any | None = None,
         ops_sender: Any | None = None,
+        scheduler: AsyncIOScheduler | None = None,
     ) -> None:
         self.plugin = plugin
         self.settings = settings
-        self.scheduler = AsyncIOScheduler(timezone="UTC")
+        # Inject scheduler when one needs to be shared with PickEngine (DateTrigger
+        # send jobs and CronTrigger orchestrator jobs MUST live on the same scheduler
+        # instance). Default keeps the standalone-orchestrator path unchanged.
+        self.scheduler = scheduler if scheduler is not None else AsyncIOScheduler(timezone="UTC")
         self._today_jobs_registered = False
         self.pick_engine = pick_engine
         self.pick_repo = pick_repo

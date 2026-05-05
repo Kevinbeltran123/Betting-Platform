@@ -20,6 +20,19 @@ def fake_settings(monkeypatch):
     return Settings()
 
 
+def _pick_engine_factory(**kw):
+    """Mock factory that propagates the scheduler kwarg into _scheduler so the
+    builder's `pick_engine._scheduler is orchestrator.scheduler` invariant assert
+    passes against the same shared_scheduler the real PickEngine would store."""
+    return MagicMock(_scheduler=kw.get("scheduler"))
+
+
+def _orchestrator_factory(**kw):
+    """Mirror the scheduler kwarg into the mock orchestrator's .scheduler attr
+    so the invariant assert matches identity against the same shared_scheduler."""
+    return MagicMock(scheduler=kw.get("scheduler"))
+
+
 def _patch_all_deps():
     """Returns a dict of patcher contexts ready to enter — keys map to friendly names."""
     return {
@@ -29,7 +42,9 @@ def _patch_all_deps():
         "OddsApiClient": patch("bip.production.builder.OddsApiClient"),
         "ClvRecorder": patch("bip.production.builder.ClvRecorder"),
         "ClaudeValidator": patch("bip.production.builder.ClaudeValidator"),
-        "PickEngine": patch("bip.production.builder.PickEngine"),
+        "PickEngine": patch(
+            "bip.production.builder.PickEngine", side_effect=_pick_engine_factory
+        ),
         "LeagueRegistry": patch("bip.production.builder.LeagueRegistry"),
         "FootballPlugin": patch("bip.production.builder.FootballPlugin"),
         "_load_learnings": patch(
@@ -96,7 +111,7 @@ def test_build_orchestrator_passes_settings_to_components(fake_settings):
         patch("bip.production.builder.OddsApiClient") as mock_odds,
         patch("bip.production.builder.ClvRecorder"),
         patch("bip.production.builder.ClaudeValidator") as mock_claude,
-        patch("bip.production.builder.PickEngine"),
+        patch("bip.production.builder.PickEngine", side_effect=_pick_engine_factory),
         patch("bip.production.builder.LeagueRegistry"),
         patch("bip.production.builder.FootballPlugin"),
         patch(
@@ -130,14 +145,17 @@ def test_build_orchestrator_wires_drift_checker(fake_settings):
         patch("bip.production.builder.OddsApiClient"),
         patch("bip.production.builder.ClvRecorder"),
         patch("bip.production.builder.ClaudeValidator"),
-        patch("bip.production.builder.PickEngine"),
+        patch("bip.production.builder.PickEngine", side_effect=_pick_engine_factory),
         patch("bip.production.builder.LeagueRegistry"),
         patch("bip.production.builder.FootballPlugin"),
         patch(
             "bip.production.builder._load_learnings",
             return_value=("# learnings", "abc123"),
         ),
-        patch("bip.production.builder.PipelineOrchestrator") as mock_orch,
+        patch(
+            "bip.production.builder.PipelineOrchestrator",
+            side_effect=_orchestrator_factory,
+        ) as mock_orch,
     ):
         mock_create_client.return_value = MagicMock()
         mock_bot.side_effect = lambda **kw: MagicMock(channel_id=kw.get("channel_id"))

@@ -177,10 +177,8 @@ def build_orchestrator(
     plugin = FootballPlugin(settings=settings)
 
     # Shared scheduler — PickEngine schedules send jobs on the SAME AsyncIOScheduler
-    # the orchestrator uses, so we instantiate it here and reassign onto the orchestrator
-    # after construction. PipelineOrchestrator owns its scheduler attr; binding both
-    # PickEngine and orchestrator to one instance keeps DateTrigger sends and CronTrigger
-    # crons in one event-loop pool.
+    # the orchestrator uses. Built once here and injected into BOTH constructors so
+    # the binding is invariant by construction (no post-init reassignment).
     shared_scheduler = AsyncIOScheduler(timezone="UTC")
 
     picks_sender = TelegramSender(bot=picks_bot)
@@ -222,11 +220,16 @@ def build_orchestrator(
         metrics_aggregator=metrics_aggregator,
         drift_checker=drift_checker,
         ops_sender=ops_bot,
+        scheduler=shared_scheduler,
     )
-    # Reassign orchestrator.scheduler to the shared instance so PickEngine's
-    # DateTrigger send jobs and orchestrator's CronTrigger jobs all live on
-    # ONE scheduler instance.
-    orchestrator.scheduler = shared_scheduler
+    # Hard invariant: PickEngine's DateTrigger send jobs and orchestrator's
+    # CronTrigger jobs MUST live on the SAME AsyncIOScheduler. Anything that
+    # silently breaks this (e.g. constructing two schedulers by mistake) makes
+    # send jobs land in an orphan event-loop pool. Fail loud at startup.
+    assert pick_engine._scheduler is orchestrator.scheduler, (
+        "shared_scheduler invariant violated: PickEngine and PipelineOrchestrator "
+        "do not share the same AsyncIOScheduler instance"
+    )
 
     # T-4-06: log non-secret booleans only — DO NOT pass settings instance.
     logger.info(
