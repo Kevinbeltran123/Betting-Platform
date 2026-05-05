@@ -125,7 +125,7 @@ def _load_learnings(settings: Settings) -> tuple[str, str]:
     handles that case (the prompt-cache just becomes useless, not broken). Production
     deployments populate the file via Phase 5 learnings work.
     """
-    path = Path(getattr(settings, "learnings_path", "data/learnings/default.md"))
+    path = Path(settings.learnings_path)
     if not path.exists():
         logger.warning("learnings_file_missing", path=str(path))
         return "", "empty"

@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     drift_stdev_multiplier: float = 1.5
     # RESEARCH §Drift Statistical Method: prevents zero-stdev tight gate (Pitfall 4)
     drift_stdev_floor_pp: float = 1.0
+    # Markdown file consumed by ClaudeValidator's prompt-cache. Missing file is
+    # tolerated (logged as warning); the cache becomes useless but the validator
+    # still runs. Override via .env if learnings live outside the repo.
+    learnings_path: str = "data/learnings/default.md"
 
     @field_validator("telegram_channel_id")
     @classmethod
