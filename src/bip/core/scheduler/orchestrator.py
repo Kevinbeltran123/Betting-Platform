@@ -530,13 +530,14 @@ class PipelineOrchestrator:
         )
 
     async def _reconcile_clv(self) -> None:
-        # Phase 4 deliverable -- rolling-50 CLV trend alerting + back-fill of
-        # snapshots for fixtures that missed the T-1m window. The cron entry
-        # remains so ops can confirm the schedule fires; the body is a no-op
-        # warning until that work lands.
-        logger.warning(
-            "clv_reconciliation_deferred",
-            note="Phase 4 deliverable -- rolling-50 trend + back-fill not yet implemented",
+        # Phase 4 implemented rolling-50 trend via ClvTrendChecker. Snapshot
+        # back-fill for fixtures that missed the T-1m window remains intentionally
+        # deferred (Pinnacle moves post-match make backfill non-true closing lines
+        # — see ROADMAP Phase 4 SC#2). Logged at info level so it doesn't pollute
+        # the journal with false-warning noise every night.
+        logger.info(
+            "clv_reconciliation_skipped",
+            reason="snapshot_backfill_intentionally_deferred",
         )
 
     async def _reconcile_results(self, fixture: object, retries: int = 0) -> None:
