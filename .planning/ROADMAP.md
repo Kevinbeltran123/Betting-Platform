@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Foundation + Data Pipeline + CLV** - Plugin architecture, async data client, Supabase schema, feature store, and CLV recording infrastructure
 - [x] **Phase 2: ML Core -- Football** - Ensemble training pipeline with walk-forward backtesting using opening odds + slippage from day 1
 - [ ] **Phase 3: Pick Engine + Delivery + Account Protection** - EV filter, Kelly sizing, Betano account longevity protections, Telegram alerts, and Claude validator (Role C)
-- [ ] **Phase 4: Production Orchestration** - APScheduler pipeline, systemd deployment, graceful degradation, health monitoring, and CLV trend alerting
+- [x] **Phase 4: Production Orchestration** - APScheduler pipeline, systemd deployment, graceful degradation, health monitoring, and CLV trend alerting
 - [ ] **Phase 5: Claude Confidence Modifier (Shadow)** - Role B confidence modifier shipped in shadow mode; promoted only after walk-forward CLV improvement confirmed
 - [ ] **Phase 6: Timed Corners Module (Conditional)** - Corner time-window distribution model and EV integration, gated on CORNERS-01 verification
 - [ ] **Phase 7: Scalability Validation -- Tennis Scaffold** - Tennis SportPlugin scaffold proving zero core changes required for new sports
@@ -124,15 +124,15 @@ Plans:
 **Plans**: 9 plans
 
 Plans:
-- [ ] 04-00-PLAN.md — Wave 0 stubs (17 test files) + migration 005 SQL + supabase db push [BLOCKING]
-- [ ] 04-01-PLAN.md — Settings extension (9 fields + ops channel validator) + sdnotify==0.3.2 dep
-- [ ] 04-02-PLAN.md — HeartbeatTicker + ClvTrendChecker + ClvRecordRepository.last_n_settled (D-07, D-09–D-12)
-- [ ] 04-03-PLAN.md — PerformanceMetricRepository.compute_period RPC + MetricsAggregator + drift compute (D-13, D-14)
-- [ ] 04-04-PLAN.md — PickEngine D-01 branch + orchestrator extension (4 new cron jobs) + auto_recover_complete + two-channel routing test
-- [ ] 04-05-PLAN.md — bip.production.builder + __main__ + DriftChecker class (D-05, RESEARCH §Pattern 1)
-- [ ] 04-06-PLAN.md — deploy/systemd/bip.service + tmpfiles.d/bip.conf + install.sh + README (D-06)
-- [ ] 04-07-PLAN.md — ROADMAP SC#1/SC#2 reconciliation patch + deploy/SMOKE_TEST.md + staging exercise [BLOCKING]
-- [ ] 04-08-PLAN.md — Finalize 04-VALIDATION.md per-task table + nyquist_compliant: true
+- [x] 04-00-PLAN.md — Wave 0 stubs (17 test files) + migration 005 SQL + supabase db push [BLOCKING]
+- [x] 04-01-PLAN.md — Settings extension (9 fields + ops channel validator) + sdnotify==0.3.2 dep
+- [x] 04-02-PLAN.md — HeartbeatTicker + ClvTrendChecker + ClvRecordRepository.last_n_settled (D-07, D-09–D-12)
+- [x] 04-03-PLAN.md — PerformanceMetricRepository.compute_period RPC + MetricsAggregator + drift compute (D-13, D-14)
+- [x] 04-04-PLAN.md — PickEngine D-01 branch + orchestrator extension (4 new cron jobs) + auto_recover_complete + two-channel routing test
+- [x] 04-05-PLAN.md — bip.production.builder + __main__ + DriftChecker class (D-05, RESEARCH §Pattern 1)
+- [x] 04-06-PLAN.md — deploy/systemd/bip.service + tmpfiles.d/bip.conf + install.sh + README (D-06)
+- [x] 04-07-PLAN.md — ROADMAP SC#1/SC#2 reconciliation patch + deploy/SMOKE_TEST.md + staging exercise [BLOCKING]
+- [x] 04-08-PLAN.md — Finalize 04-VALIDATION.md per-task table + nyquist_compliant: true
 
 ### Phase 5: Claude Confidence Modifier (Shadow)
 **Goal**: Claude Role B runs pre-prediction in shadow mode, logging confidence modifiers and reasoning without affecting live picks, until walk-forward CLV improvement is confirmed
