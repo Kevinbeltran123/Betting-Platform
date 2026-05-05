@@ -104,6 +104,38 @@ Find and deliver bets with genuine statistical edge (CLV > +3% against Pinnacle 
 | CLV vs Pinnacle as primary success metric | Pinnacle is the sharpest market; positive CLV = genuine edge regardless of short-term results | — Pending |
 | Reuse Football_analysis Supabase schema | Already designed for this exact use case; migration 002 adds sport column for multi-sport | — Pending |
 
+## Infrastructure Investment Gate
+
+The pipeline runs in **local mode** by default — operator-supervised `python -m bip.production` in a tmux session per `deploy/local/RUNBOOK.md`. No paid infrastructure. This is intentional: the platform must demonstrate real edge before any recurring infrastructure cost is justified.
+
+### Promotion criteria — ALL must hold to graduate to a paid VPS
+
+A paid VPS (Hetzner per `deploy/systemd/bip.service`, or equivalent) is justified ONLY when ALL of the following are simultaneously true:
+
+| # | Criterion | Source of truth | Why this threshold |
+|---|-----------|-----------------|--------------------|
+| 1 | **90 consecutive days** of pipeline runtime in local mode | `clv_records` row span — `max(snapshot_at) - min(snapshot_at) ≥ 90 days` with no >48h gap | Filters out short-term variance. 90 days covers ≥3 typical Bundesliga matchweeks across multiple leagues. |
+| 2 | **Rolling-50 CLV ≥ +3%** sustained for the final 30 days of the window | `compute_rolling_clv_average(last_50_settled)` ≥ 3.0 every day for 30 days | The "core value" metric in this PROJECT.md. Anything below is project-failing. |
+| 3 | **2 consecutive calendar months of positive realized ROI** (real money, not paper) | Operator's own betting ledger reconciled against `picks` table — picks where `result IN ('won','lost','void')` produced net-positive P&L per month | CLV is a *predictor* of profit, not a guarantee. Two months of real ROI confirms the predictor translated to outcomes. |
+| 4 | **Operator availability has become the bottleneck**, not infrastructure | Self-assessment: "Am I missing fixtures because I'm not running the pipeline, AND those missed fixtures had qualifying picks I'd have placed?" | Local mode's ~30% missed coverage only matters if the missed picks would've been profitable. If they wouldn't have, paying for a VPS solves nothing. |
+
+### What graduation looks like
+
+When all 4 hold:
+1. Audit `deploy/systemd/bip.service` against current code (drift may have accumulated).
+2. Run `deploy/SMOKE_TEST.md` end-to-end on the chosen VPS (currently 8 checks; the `MemoryDenyWriteExecute=true` enable check is part of this).
+3. Update SC#3 in ROADMAP.md once VPS is the primary deployment target.
+4. Local mode stays documented in `deploy/local/RUNBOOK.md` as the dev/fallback path.
+
+### What graduation does NOT require
+
+- Hitting **CLV +3%** in early periods. Calibration takes time; the criterion above wants 30 days *at the end of* a 90-day window.
+- Approval from anyone other than the operator. This is a personal project; the gate is self-imposed discipline, not external sign-off.
+
+### Failure mode — when to scrap, not graduate
+
+If after **6 months** of local-mode operation criterion #2 has *never* been met for any rolling-50 window, the project's core thesis is unproven. At that point, paying for a VPS to keep the same pipeline running longer is throwing good money after a bad bet. The correct decision is to either pivot the methodology (not the infra) or close the project.
+
 ## Evolution
 
 This document evolves at phase transitions and milestone boundaries.
