@@ -102,7 +102,7 @@ When ops alerts fire: pause manual betting, audit recent picks, run `pytest test
 
 ## Troubleshooting
 
-**Service fails on import with `mmap: Permission denied`** — `MemoryDenyWriteExecute=true` is incompatible with one of your ML wheels. Edit `/etc/systemd/system/bip.service` and remove just that one line; `systemctl daemon-reload && systemctl restart bip.service`. (RESEARCH §Pitfall 8)
+**Hardening — `MemoryDenyWriteExecute`** — disabled by default in `bip.service` because CatBoost/XGBoost/LightGBM use `mmap(PROT_EXEC)` for CPU-dispatch JIT and the directive blocks them with `mmap: Permission denied`. Enable only after running `deploy/SMOKE_TEST.md` Check 5 against the same host with all ML wheels actually imported. (RESEARCH §Pitfall 8)
 
 **`WatchdogSec` triggers restarts every 10 min** — `Type=notify` is paired with `WatchdogSec` but `sd_notify("WATCHDOG=1")` isn't reaching systemd. Check: `journalctl -u bip.service | grep -i notify`; verify the `sdnotify` Python package is installed (`uv pip show sdnotify`).
 

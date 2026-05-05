@@ -41,9 +41,12 @@ RestrictNamespaces=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
-# CAVEAT (RESEARCH §Pitfall 8): if any ML wheel import fails with "mmap: Permission denied",
-# DROP the next line. The rest of the hardening still applies. Smoke-test on staging.
-MemoryDenyWriteExecute=true
+# DISABLED by default (RESEARCH §Pitfall 8): CatBoost/XGBoost/LightGBM use mmap with
+# PROT_EXEC for CPU-dispatch JIT, which MemoryDenyWriteExecute=true blocks. Enabling
+# this directive without a verified staging smoke-test will likely break the service
+# on first start with "mmap: Permission denied". To enable: uncomment the line below
+# and run deploy/SMOKE_TEST.md Check 5 against THIS host with all ML wheels imported.
+# MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
