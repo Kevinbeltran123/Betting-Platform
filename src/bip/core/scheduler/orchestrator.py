@@ -151,9 +151,21 @@ class PipelineOrchestrator:
         if now < today_start:
             logger.info("auto_recovery_skipped", reason="before_06:00_UTC")
         else:
+            # Persistent (non-fixture) jobs MUST be excluded so a hot restart that
+            # only kept these alive still triggers fixture-job recovery. Phase 4
+            # added 4 jobs (heartbeat, clv_trend, metrics_aggregator, weekly_drift)
+            # that previously fooled the filter into thinking fixtures existed.
+            persistent_job_ids = {
+                "daily_orchestrator",
+                "nightly_clv_reconciliation",
+                "heartbeat",
+                "clv_trend",
+                "metrics_aggregator",
+                "weekly_drift",
+            }
             existing_fixture_jobs = [
                 j for j in self.scheduler.get_jobs()
-                if j.id not in {"daily_orchestrator", "nightly_clv_reconciliation"}
+                if j.id not in persistent_job_ids
             ]
             if not existing_fixture_jobs:
                 logger.info("auto_recovery_triggered", reason="no_fixture_jobs_found")
