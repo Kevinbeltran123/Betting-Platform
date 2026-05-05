@@ -32,7 +32,7 @@ def _make_checker(rows_global=None, rows_market=None, threshold=1.0, cooldown_ho
     )
 
 
-def _rows(values: list[float], market: str = "1X2") -> list[dict]:
+def _rows(values: list[float], market: str = "onextwo") -> list[dict]:
     return [
         {"clv_percentage": v, "market": market, "created_at": "2026-05-01T00:00:00Z"}
         for v in values

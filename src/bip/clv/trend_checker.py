@@ -36,8 +36,9 @@ class ClvTrendChecker:
     changes here (extend the markets tuple).
     """
 
-    # D-10: extend this tuple in Phase 6 when corners ships.
-    _MARKETS: tuple[str, ...] = ("1X2",)
+    # (canonical_db_value, display_name) — DB stores MarketKey.ONEXTWO.value="onextwo";
+    # alerts read by humans use the legacy "1X2" tag. D-10: extend in Phase 6 for corners.
+    _MARKETS: tuple[tuple[str, str], ...] = (("onextwo", "1X2"),)
 
     def __init__(
         self,
@@ -55,11 +56,13 @@ class ClvTrendChecker:
 
     async def check(self) -> None:
         """Run hourly. Global rolling-50 + per-market rolling-50 (when >=50 picks)."""
-        await self._check_scope(scope="global", market=None)
-        for market in self._MARKETS:
-            await self._check_scope(scope="market", market=market)
+        await self._check_scope(scope="global", market=None, market_display=None)
+        for canonical, display in self._MARKETS:
+            await self._check_scope(scope="market", market=canonical, market_display=display)
 
-    async def _check_scope(self, scope: str, market: str | None) -> None:
+    async def _check_scope(
+        self, scope: str, market: str | None, market_display: str | None
+    ) -> None:
         try:
             rows = self._repo.last_n_settled(n=50, market=market)
         except Exception as exc:
@@ -91,8 +94,8 @@ class ClvTrendChecker:
             logger.info("clv_trend_in_cooldown", scope=scope, market=market, avg=avg)
             return
 
-        # Fire alert — D-12 minimal format.
-        suffix = f" [market: {market}]" if market else ""
+        # Fire alert — D-12 minimal format. Display the human-friendly market tag.
+        suffix = f" [market: {market_display}]" if market_display else ""
         text = f"⚠️ CLV +{avg:.1f}% < +{self._threshold:.0f}% threshold{suffix}"
         await self._sender.send_html(text)
         self._last_alert[key] = now
