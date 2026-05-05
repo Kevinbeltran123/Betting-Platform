@@ -116,11 +116,11 @@ Plans:
 **Depends on**: Phase 3
 **Requirements**: (no new requirements -- integrates CORE, DATA, CLV, PICK, CLAUDE requirements into production orchestration)
 **Success Criteria** (what must be TRUE):
-  1. APScheduler runs all jobs on schedule: pre-kickoff (T-2h, T-30min), CLV snapshot (post-match), results collection, daily metrics aggregation, and weekly drift check
-  2. When Claude API is unavailable, the pipeline sends picks with `claude_validation='SKIPPED'` instead of failing; when Odds API is unavailable, picks still send but CLV recording is deferred
-  3. A systemd service on Hetzner VPS auto-restarts on crash, and a heartbeat file is updated every 5 minutes for external monitoring
-  4. Performance metrics (ROI, yield, average CLV, win/loss/void counts) are aggregated in `performance_metrics` table by sport, league, market, and period
-  5. If rolling 50-pick average CLV drops below +1%, a Telegram warning is sent recommending to pause betting and audit
+  1. APScheduler runs all jobs on schedule: pre-kickoff (T-2h, T-30min), CLV snapshot (kickoff-1min), results collection, daily metrics aggregation (23:00 UTC), and weekly model-CLV drift check (Mon 06:00 UTC). Drift compares last 4-week mean CLV vs prior 4-week mean per (league, market) with ≥30 settled picks per window — fires Telegram alert on hard drop ≥2pp OR soft drop ≥1.5×stdev (where stdev is computed over daily mean CLV in the prior window, floored at 1.0pp). Feature drift (KS test) and odds drift are explicitly deferred to v2.
+  2. Graceful degradation. Claude API failure: feature flag `Settings.claude_failure_mode` controls behavior. Default `"filter"` preserves Phase 3 D-07 (account-longevity-first) — pick is persisted with `status='filtered', reason_code='claude_api_unavailable'`, never sent. Opt-in `"skip"` (set via `.env` once CLV track record justifies it) — pick is persisted with `status='pending', claude_validation='SKIPPED'`, sent to Telegram with a 🤖❌ marker. Odds API failure during CLV snapshot: skip silently — no `clv_records` row written, picks still send (no backfill of missed snapshots; Pinnacle moves post-match make backfill non-true closing lines).
+  3. A systemd service on Hetzner VPS auto-restarts on crash (Type=notify + WatchdogSec=600 + Restart=always), and a heartbeat file at `/var/run/bip/heartbeat` is updated every 5 minutes alongside `sd_notify("WATCHDOG=1")` for systemd watchdog (RESEARCH §1 — file mtime alone is insufficient).
+  4. Performance metrics (ROI, yield, average CLV, win/loss/void counts) are aggregated in `performance_metrics` table by sport, league, market, and period (daily/weekly/monthly/all_time) via Postgres `compute_performance_period(...)` RPC (migration 005) using LEFT JOIN on `clv_records` (so picks with no CLV row from D-02 are still counted).
+  5. If rolling 50-pick average CLV drops below +1%, a Telegram warning is sent to the OPS channel (`TELEGRAM_OPS_CHANNEL_ID`, separate from picks channel per D-03) recommending to pause betting and audit. 12h in-memory cooldown per scope (D-11). Per-market dimension activates when ≥50 settled picks for that market exist (D-10).
 **Plans**: 9 plans
 
 Plans:
