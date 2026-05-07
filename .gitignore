@@ -16,3 +16,8 @@ supabase/.temp/
 # Regenerable coverage / probe outputs (re-run scripts to recreate)
 scripts/corners_gate_coverage.md
 
+# Spike: tournament-evaluator regenerable outputs
+# (locked_predictions/ MUST stay tracked — those are the prospective test record)
+src/bip/evaluation/**/reports/
+src/bip/evaluation/**/cache/
+
