@@ -92,6 +92,31 @@ class ApiFootballClient:
         stop=stop_after_attempt(5),
         reraise=True,
     )
+    async def get_fixtures_by_season(self, league_id: int, season: int) -> dict:
+        """GET /fixtures?league={id}&season={yr}.
+
+        Bulk pull of all fixtures for a league/season. Used by the spike
+        qualifying_loader to grab every qualifier match in one call.
+
+        Args:
+            league_id: API-Football league ID.
+            season: Season start year.
+
+        Returns:
+            Parsed JSON response dict with all fixtures in the season.
+        """
+        params = {"league": league_id, "season": season}
+        logger.info("api_football_request", endpoint="/fixtures", params=params)
+        response = await self._client.get("/fixtures", params=params)
+        response.raise_for_status()
+        return response.json()
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
     async def get_lineups(self, fixture_id: int) -> dict:
         """GET /fixtures/lineups?fixture={id}.
 
