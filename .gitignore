@@ -9,3 +9,10 @@ dist/
 data/cache/
 .venv/
 catboost_info/
+
+# Supabase CLI cache (auto-managed, machine-local)
+supabase/.temp/
+
+# Regenerable coverage / probe outputs (re-run scripts to recreate)
+scripts/corners_gate_coverage.md
+
