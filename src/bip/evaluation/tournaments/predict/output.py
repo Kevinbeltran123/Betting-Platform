@@ -19,6 +19,7 @@ from typing import Any
 from bip.evaluation.tournaments.predict.blender import BlendedRates
 from bip.evaluation.tournaments.predict.player_projections import PlayerProjection
 from bip.evaluation.tournaments.predictors.base import GoalsDistribution
+from bip.evaluation.tournaments.predictors.corners_poisson import CornersDistribution
 
 JSON_SCHEMA_VERSION = "1.0.0"
 MODEL_VERSION = "spike-v1"
@@ -56,6 +57,9 @@ class MatchPrediction:
     rho: float | None  # None for IndependentPoisson
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
+    # Corners distribution — None when no corners model was run.
+    corners: CornersDistribution | None = None
+
 
 # ─────────────────────────────────────────────────────────────────
 # JSON emitter
@@ -85,6 +89,7 @@ def to_json_dict(pred: MatchPrediction) -> dict[str, Any]:
             "lambda_away": pred.goals.lambda_away,
             "model": pred.goals.model_name,
         },
+        "corners_markets": _corners_to_json(pred.corners),
         "diagnostics": {
             "alpha": pred.alpha,
             "rho": pred.rho,
@@ -92,6 +97,27 @@ def to_json_dict(pred: MatchPrediction) -> dict[str, Any]:
             "n_starters_with_form_away": pred.away.blended.n_starters_with_form,
             "warnings": list(pred.warnings),
         },
+    }
+
+
+def _corners_to_json(c: CornersDistribution | None) -> dict | None:
+    if c is None:
+        return None
+    return {
+        "lambda_home": c.lambda_home,
+        "lambda_away": c.lambda_away,
+        "lambda_total": c.lambda_total,
+        "p_over_8_5": c.p_over_8_5,
+        "p_over_9_5": c.p_over_9_5,
+        "p_over_10_5": c.p_over_10_5,
+        "p_over_11_5": c.p_over_11_5,
+        "p_home_more": c.p_home_more,
+        "p_away_more": c.p_away_more,
+        "p_home_ahc_minus_1_5": c.p_home_ahc_minus_1_5,
+        "p_away_ahc_minus_1_5": c.p_away_ahc_minus_1_5,
+        "p_home_ahc_plus_1_5": c.p_home_ahc_plus_1_5,
+        "p_total_fh_over_4_5": c.p_total_fh_over_4_5,
+        "p_total_fh_over_5_5": c.p_total_fh_over_5_5,
     }
 
 

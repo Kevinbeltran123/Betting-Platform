@@ -34,6 +34,7 @@ from bip.evaluation.tournaments.predict.player_projections import (
     project_starters,
 )
 from bip.evaluation.tournaments.predictors.base import GoalsModel
+from bip.evaluation.tournaments.predictors.corners_poisson import CornersPoissonModel
 
 
 @dataclass(frozen=True)
@@ -57,9 +58,11 @@ class MatchPredictionRunner:
         goals_model: GoalsModel,
         *,
         alpha: float = DEFAULT_ALPHA,
+        corners_model: CornersPoissonModel | None = None,
     ) -> None:
         self._goals_model = goals_model
         self._alpha = alpha
+        self._corners_model = corners_model
 
     def predict(
         self,
@@ -81,6 +84,11 @@ class MatchPredictionRunner:
         )
 
         goals = self._goals_model.predict(home_blend, away_blend)
+        corners = (
+            self._corners_model.predict(home_blend, away_blend)
+            if self._corners_model is not None
+            else None
+        )
 
         home_starters = _project_with_lineup_order(
             home.lineup_form, home.lineup, name_overrides=home.name_overrides
@@ -130,6 +138,7 @@ class MatchPredictionRunner:
                 blended=away_blend,
             ),
             goals=goals,
+            corners=corners,
             alpha=self._alpha,
             rho=rho,
             warnings=tuple(warnings),
