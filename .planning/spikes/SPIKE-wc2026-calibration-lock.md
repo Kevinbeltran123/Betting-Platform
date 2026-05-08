@@ -1,7 +1,7 @@
 ---
 spike: wc2026-calibration-lock
 slug: wc2026-calibration-lock
-status: phase-3-next
+status: phase-4-next
 created: 2026-05-08
 last_updated: 2026-05-08
 operator: Kevin Beltrán
@@ -9,8 +9,8 @@ branch: spike/national-team-tournament-evaluator
 companion_to: SPIKE-tournament-evaluator.md
 hard_deadline: 2026-06-08
 graduates_to: TBD (calibrated predictors merged into evaluator output OR Phase 6 v1.0 corners module)
-tests_passing: 631
-tests_xfail: 6
+tests_passing: 660
+tests_xfail: 7
 commits_on_branch: 12
 ---
 
@@ -74,14 +74,25 @@ tests/evaluation/
 └── test_logit_calibrator.py                # DONE — 20 tests + 2 xfail Layer-2
 ```
 
-Files to add (NEW — Phase 3+):
+Files added (NEW — Phase 3, this commit):
 ```
 src/bip/evaluation/tournaments/live/
-└── bayesian_updater.py                     # MODIFY — split into 3 timescale methods (Phase 3)
+├── bayesian_updater.py                     # DONE — split into 3 timescale methods + sigma_s_per_day param
+├── competition_weights.py                  # DONE — CompetitionType enum + DEFAULT_WEIGHTS (WC=4×, qual=2×, friendly=1×, etc.)
+└── state.py                                # MODIFIED — explicit prior_var_* per metric + obs_weight_total + n_prior_eff_* properties
 
 scripts/
-└── seed_international_history.py           # NEW — pull 2010–2024 int. tournament results (Phase 3)
+└── seed_international_history.py           # DONE — Layer-1 σ_s sweep harness (Held criterion C); CLI gated # requires-real-data
 
+tests/evaluation/
+└── test_bayesian_updater.py                # +22 tests (between_window decay, competition weighting, within_match Gamma-Poisson, JSON BC)
+
+tests/scripts/
+└── test_seed_international_history.py      # +7 tests (calibrator on synthetic data + 1 xfail Layer-2 real-data run)
+```
+
+Files to add (NEW — Phase 4+):
+```
 src/bip/evaluation/tournaments/
 └── data/
     └── league_strength.py                  # EXISTS — extend with Shelopugin Table V/VI seed values (Phase 4)
@@ -152,8 +163,8 @@ The synthesis identified 8 phases. This spike scopes **only the 4 directly relev
 | 0.5 | Understat xG client + TeamFormFeatures | ~4h | pre-Phase 1 | ✅ COMPLETE | `f9ce4e5` |
 | 1 | Calibration baseline audit (classwise-ECE infra + measure existing predictors) | ~6h | 2026-05-12 | ✅ COMPLETE | `94e63fc` |
 | 2 | Replace isotonic with `LogisticLogitCalibrator` (Ojeda Step 3) | ~6h | 2026-05-15 | ✅ COMPLETE | `234c54e` |
-| 3 | Two-timescale `BayesianUpdater` refactor + σ_s calibration via Held criterion C on 2010–2024 int. results | ~16h | 2026-05-22 *(checkpoint)* | ⏳ **NEXT** | — |
-| 4 | League-strength normalization layer (Shelopugin Table V/VI seed + `CompositionBlender` wiring) | ~12h | 2026-05-29 | ⏳ pending | — |
+| 3 | Two-timescale `BayesianUpdater` refactor + σ_s calibration via Held criterion C on 2010–2024 int. results | ~16h | 2026-05-22 *(checkpoint)* | ✅ Layer-1 COMPLETE | _pending_ |
+| 4 | League-strength normalization layer (Shelopugin Table V/VI seed + `CompositionBlender` wiring) | ~12h | 2026-05-29 | ⏳ **NEXT** | — |
 | 5 | Pre-lock backtest on WC 2018, Euro 2024, Copa 2024 + gate verification | ~12h | 2026-06-05 | ⏳ pending | — |
 | 6 | LOCK — locked tournament-evaluator predictions for WC2026 (commits to `locked_predictions/`) | ~3h | **2026-06-08 HARD** | ⏳ pending | — |
 
@@ -166,8 +177,7 @@ Each phase ships in two layers. Layer 1 (structural) MUST close before the deadl
 | 0.5 | `UnderstatClient` + `TeamFormFeatures` (5-dim: volume/recency/venue/variance/quality) + 31 tests | Backfill xG top-5 EU 2020/21–2025/26 to parquet; consume in corners_poisson as `xg_total_l5` covariate | — | ✅ commit `f9ce4e5` |
 | 1 | `CalibrationReport` Pydantic model + `classwise_ece`/`bin_fill_check` + `CalibrationAudit` harness + `gate_status()` + 27 tests | Audit run on real walk-forward backtest output | Conclusions 1, 4, 6 | ✅ commit `94e63fc` |
 | 2 | `LogisticLogitCalibrator` (fit p_cal=σ(α+β·logit(p_raw)) per class via L-BFGS-B MLE; binary + multiclass; identity fallback for n<50; persistence) + `_IsotonicCalibrator` shim + 20 tests | Side-by-side vs isotonic on real validation set (Phase 5 backtest) | Conclusion 1 | ✅ commit `234c54e` |
-| 3 | `BayesianUpdater.between_window_step()` + `within_tournament_step()` + `within_match_step()` (Gamma-Poisson) with synthetic state tests; `scripts/seed_international_history.py` skeleton + parquet schema | σ_s sweep via Held criterion C on real 2010–2024 fixtures (queued) | Conclusions 5, 7 | ⏳ **NEXT** (deadline 2026-05-22) |
-| 3 | `BayesianUpdater.between_window_step()` + `within_tournament_step()` + `within_match_step()` (Gamma-Poisson) with synthetic state tests; `scripts/seed_international_history.py` skeleton + parquet schema | σ_s sweep via Held criterion C on real 2010–2024 fixtures (queued) | Conclusions 5, 7 | ⏳ pending |
+| 3 | `BayesianUpdater.between_window_step()` + `within_tournament_step()` + `within_match_step()` (Gamma-Poisson) with synthetic state tests; `scripts/seed_international_history.py` skeleton + parquet schema | σ_s sweep via Held criterion C on real 2010–2024 fixtures (queued) | Conclusions 5, 7 | ✅ Layer-1 COMPLETE — 29 tests + 1 xfail Layer-2 |
 | 4 | League-strength lookup table (Shelopugin Table V/VI YAML) + `apply_league_adjustment()` + parametric tests covering Premier-2118 → Brazil-1868 case + `CompositionBlender` consumption with mock rates | Full E2E swap-in once `ClubFormLoader` returns real per-league data | Conclusion 3 | ⏳ pending |
 | 5 | Backtest harness + gate-evaluation script with synthetic `CalibrationReport` fixtures verifying gate logic (ECE/Brier thresholds correctly fail/pass mock data) | Real run on WC 2018 / Euro 2024 / Copa 2024 historical fixtures | Conclusions 1, 2 | ⏳ pending |
 | 6 | Lock JSON schema + emitter writing to `locked_predictions/` with `calibration_status` field (`pass` / `marginal` / `below-gate` / `coverage-partial`) | Operator runs the full pipeline against WC2026 fixtures and commits the JSON | n/a | ⏳ pending |
@@ -259,6 +269,9 @@ For graduation to v1.0 Phase 6 (post-WC decision):
 | 2026-05-08 | σ_s via Held's criterion C on 2010–2024 int. results, NOT heuristic | Operator preference; +1 day cost is acceptable for correct calibration |
 | 2026-05-08 | Logistic-on-logit replaces isotonic as default calibrator | Ojeda 2023 Scenarios 16–23: isotonic fails systematically under covariate shift; club→national-team is by definition a shifted distribution |
 | 2026-05-08 | `BayesianUpdater` split into between-window + within-tournament + in-match steps | Glickman & Stern 1998 + Held 2005 + Zou 2020 each operate on a different timescale; one mechanism cannot serve all three |
+| 2026-05-08 | Phase 3 decay model = Held log-rate random walk (not exponential effective-sample-size decay) | Operator chose the realist over the easy path. Δvar = days · σ_s² · μ² makes σ_s dimensionless ("fractional volatility per day"), so a single value works across goals/corners/shots scales. Backward-compat preserved via `n_prior_eff = mean / var` derivation that recovers pre-Phase-3 blend at default initialization |
+| 2026-05-08 | `competition_weight` scales obs but not n_matches_played | Bayesian evidence (obs_weight_total) reflects Held weighting (WC = 4× evidence units) while match-count semantics for player-events / minutes-bookkeeping stay literal. Two counters with different physical meanings |
+| 2026-05-08 | `_blend()` formula stays intact; n_prior_eff derived per-metric on demand | Avoids breaking 14 legacy bayesian_updater tests + the 631-test suite. Variance-driven shrinkage emerges naturally from the property derivation rather than a formula rewrite |
 | 2026-05-08 | League-strength multipliers seeded from Shelopugin (2023) Table V/VI lookup | Premier-2118 vs Brazil-1868 (~250 pt gap) is empirically validated and stable; rebuilding the rating system is out of scope |
 | 2026-05-08 | Synthesis Phases 5–8 (SysID, NB corners, Cemek, prod backtest) deferred to v1.0 Phase 6 | Two-pronged placement decision; keeps spike scope minimal and respects v1.0 roadmap integrity |
 
