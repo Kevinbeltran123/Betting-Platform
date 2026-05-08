@@ -1,0 +1,108 @@
+# League strength multipliers — operator-tuned reference table.
+#
+# Reference league: Premier League (multiplier = 1.0). Other leagues scaled
+# relative to it. Used by player_recent_form to normalize per-90 rates
+# across heterogeneous club leagues before blending into match predictions.
+#
+# Confidence levels:
+#   high   -- operator has direct experience watching the league
+#   medium -- inferred from public data (Club Elo, UEFA coefficient)
+#   low    -- coarse guess; flag for review post-Mundial-2026 backtest
+#
+# Adding a league: pick its API-Football league_id from /leagues, choose a
+# multiplier (0.1-1.5), set confidence honestly, and re-run tests to verify
+# the schema still validates.
+#
+# **PLACEHOLDER VALUES** — operator MUST review before Phase 4 backtest.
+# Seeded from public Club Elo league averages (2025) as initial estimates.
+
+leagues:
+  - api_football_league_id: 39
+    name: "Premier League (England)"
+    multiplier: 1.00
+    confidence: high
+
+  - api_football_league_id: 140
+    name: "La Liga (Spain)"
+    multiplier: 0.97
+    confidence: medium
+
+  - api_football_league_id: 78
+    name: "Bundesliga (Germany)"
+    multiplier: 0.93
+    confidence: medium
+
+  - api_football_league_id: 135
+    name: "Serie A (Italy)"
+    multiplier: 0.93
+    confidence: medium
+
+  - api_football_league_id: 61
+    name: "Ligue 1 (France)"
+    multiplier: 0.88
+    confidence: medium
+
+  - api_football_league_id: 88
+    name: "Eredivisie (Netherlands)"
+    multiplier: 0.78
+    confidence: medium
+
+  - api_football_league_id: 94
+    name: "Primeira Liga (Portugal)"
+    multiplier: 0.78
+    confidence: medium
+
+  - api_football_league_id: 144
+    name: "Belgian Pro League"
+    multiplier: 0.72
+    confidence: low
+
+  - api_football_league_id: 71
+    name: "Brasileirão Série A"
+    multiplier: 0.78
+    confidence: low
+
+  - api_football_league_id: 128
+    name: "Argentine Primera División"
+    multiplier: 0.75
+    confidence: low
+
+  - api_football_league_id: 253
+    name: "Major League Soccer (USA/CAN)"
+    multiplier: 0.55
+    confidence: medium
+
+  - api_football_league_id: 307
+    name: "Saudi Pro League"
+    multiplier: 0.60
+    confidence: medium
+
+  - api_football_league_id: 98
+    name: "J1 League (Japan)"
+    multiplier: 0.62
+    confidence: low
+
+  - api_football_league_id: 292
+    name: "K League 1 (South Korea)"
+    multiplier: 0.55
+    confidence: low
+
+  - api_football_league_id: 169
+    name: "Süper Lig (Turkey)"
+    multiplier: 0.70
+    confidence: low
+
+  - api_football_league_id: 197
+    name: "Greek Super League"
+    multiplier: 0.65
+    confidence: low
+
+  - api_football_league_id: 2
+    name: "UEFA Champions League"
+    multiplier: 1.10
+    confidence: high
+
+  - api_football_league_id: 3
+    name: "UEFA Europa League"
+    multiplier: 0.95
+    confidence: medium

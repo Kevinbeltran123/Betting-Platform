@@ -16,3 +16,19 @@ supabase/.temp/
 # Regenerable coverage / probe outputs (re-run scripts to recreate)
 scripts/corners_gate_coverage.md
 
+# Spike: tournament-evaluator regenerable outputs
+# (locked_predictions/ MUST stay tracked — those are the prospective test record)
+src/bip/evaluation/**/reports/
+src/bip/evaluation/**/cache/
+
+# Research notes — local-only working library
+# Papers/ contains 20+ paper PDFs and synthesis notes used to drive the
+# WC2026 calibration roadmap. Findings are persisted into the repo via
+# .planning/spikes/SPIKE-wc2026-calibration-lock.md (execution doc).
+# Operator preference: keep PDFs and the SYNTHESIS.md off the repo.
+Papers/
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
+

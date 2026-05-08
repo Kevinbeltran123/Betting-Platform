@@ -92,6 +92,31 @@ class ApiFootballClient:
         stop=stop_after_attempt(5),
         reraise=True,
     )
+    async def get_fixtures_by_season(self, league_id: int, season: int) -> dict:
+        """GET /fixtures?league={id}&season={yr}.
+
+        Bulk pull of all fixtures for a league/season. Used by the spike
+        qualifying_loader to grab every qualifier match in one call.
+
+        Args:
+            league_id: API-Football league ID.
+            season: Season start year.
+
+        Returns:
+            Parsed JSON response dict with all fixtures in the season.
+        """
+        params = {"league": league_id, "season": season}
+        logger.info("api_football_request", endpoint="/fixtures", params=params)
+        response = await self._client.get("/fixtures", params=params)
+        response.raise_for_status()
+        return response.json()
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
     async def get_lineups(self, fixture_id: int) -> dict:
         """GET /fixtures/lineups?fixture={id}.
 
@@ -171,6 +196,170 @@ class ApiFootballClient:
         response = await self._client.get("/fixtures/headtohead", params=params)
         response.raise_for_status()
         return response.json()
+
+    # ─────────────────────────────────────────────────────────────────
+    # Player-level endpoints — added by spike/national-team-tournament-evaluator
+    # (Phase 1.1, see .planning/spikes/SPIKE-tournament-evaluator.md §3.2)
+    # ─────────────────────────────────────────────────────────────────
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    async def get_player_statistics(
+        self,
+        player_id: int,
+        season: int,
+        team_id: int | None = None,
+    ) -> dict:
+        """GET /players?id={pid}&season={yr}[&team={tid}].
+
+        Player season aggregates per club. Required for player recent-form
+        baseline (last-N rolling computed downstream from /fixtures/players).
+
+        Args:
+            player_id: API-Football player ID.
+            season: Season start year (e.g., 2025 for 2025/26).
+            team_id: Optional team filter (if a player has multiple clubs in season).
+
+        Returns:
+            Parsed JSON response dict from API-Football.
+        """
+        params: dict[str, int] = {"id": player_id, "season": season}
+        if team_id is not None:
+            params["team"] = team_id
+        logger.info("api_football_request", endpoint="/players", params=params)
+        response = await self._client.get("/players", params=params)
+        response.raise_for_status()
+        return response.json()
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    async def get_fixture_players(self, fixture_id: int) -> dict:
+        """GET /fixtures/players?fixture={fid}.
+
+        Per-match player stats (shots, SoT, fouls, key passes, minutes).
+        Source for last-N rolling form computation in Phase 1.3.
+
+        Args:
+            fixture_id: API-Football fixture ID.
+
+        Returns:
+            Parsed JSON response dict from API-Football.
+        """
+        params = {"fixture": fixture_id}
+        logger.info("api_football_request", endpoint="/fixtures/players", params=params)
+        response = await self._client.get("/fixtures/players", params=params)
+        response.raise_for_status()
+        return response.json()
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    async def get_squad(self, team_id: int) -> dict:
+        """GET /players/squads?team={tid}.
+
+        Current squad for a team. For national teams returns the most-recently
+        called-up roster (typically 23-30 players including reserves).
+
+        Args:
+            team_id: API-Football team ID.
+
+        Returns:
+            Parsed JSON response dict from API-Football.
+        """
+        params = {"team": team_id}
+        logger.info("api_football_request", endpoint="/players/squads", params=params)
+        response = await self._client.get("/players/squads", params=params)
+        response.raise_for_status()
+        return response.json()
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    async def get_team_statistics(
+        self,
+        league_id: int,
+        season: int,
+        team_id: int,
+    ) -> dict:
+        """GET /teams/statistics?league={lid}&season={yr}&team={tid}.
+
+        Team aggregates over a league/season: fixtures, goals_for/against,
+        clean_sheets, cards, penalties. NOTE: corners are NOT in this
+        endpoint — must be aggregated via /fixtures/statistics per match.
+
+        Args:
+            league_id: API-Football league ID (qualifier league).
+            season: Season start year.
+            team_id: API-Football team ID.
+
+        Returns:
+            Parsed JSON response dict from API-Football.
+        """
+        params = {"league": league_id, "season": season, "team": team_id}
+        logger.info("api_football_request", endpoint="/teams/statistics", params=params)
+        response = await self._client.get("/teams/statistics", params=params)
+        response.raise_for_status()
+        return response.json()
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    async def get_league(
+        self,
+        league_id: int | None = None,
+        country: str | None = None,
+        season: int | None = None,
+    ) -> dict:
+        """GET /leagues with id, country, or season filters.
+
+        At least one filter must be provided. Used for league metadata
+        resolution (qualifier league IDs, type=Cup vs League, country code).
+
+        Args:
+            league_id: API-Football league ID.
+            country: Country name (e.g., "Brazil").
+            season: Season start year.
+
+        Returns:
+            Parsed JSON response dict from API-Football.
+
+        Raises:
+            ValueError: If no filter is provided.
+        """
+        params: dict[str, int | str] = {}
+        if league_id is not None:
+            params["id"] = league_id
+        if country is not None:
+            params["country"] = country
+        if season is not None:
+            params["season"] = season
+        if not params:
+            raise ValueError("get_league: at least one of league_id/country/season required")
+        logger.info("api_football_request", endpoint="/leagues", params=params)
+        response = await self._client.get("/leagues", params=params)
+        response.raise_for_status()
+        return response.json()
+
+    # ─────────────────────────────────────────────────────────────────
+    # Odds — pre-existing
+    # ─────────────────────────────────────────────────────────────────
 
     @retry(
         retry=retry_if_exception(is_retryable_http_error),
