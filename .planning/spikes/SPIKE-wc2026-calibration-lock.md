@@ -136,6 +136,28 @@ Each phase ships in two layers. Layer 1 (structural) MUST close before the deadl
 
 **Result if data does not arrive in time:** Layer 1 ships for all 6 phases. The spike branch is structurally complete. The lock JSON ships with `calibration_status: "structural-only"` and all queued Layer-2 validations remain `xfail` with `# requires-real-data` markers. Post-tournament scoring still grades the predictions honestly because the predictors themselves are unchanged.
 
+### Optional / parallel phases (added 2026-05-08 from data-sources audit)
+
+These phases were unblocked by re-evaluating data-source rejections (`Papers/DATA_SOURCES_AUDIT.md`). They are **outside the WC2026 lock critical path** — they don't gate the 2026-06-08 deadline — but each one materially improves calibration when included. Operator approved all three on 2026-05-08.
+
+| # | Phase | Hours | Position vs critical path | Layer 1 deliverable | Layer 2 (queued) |
+|---|---|---|---|---|---|
+| 0.5 | Understat xG client (quick win) | ~4h | Before Phase 1 OR parallel with Phase 1 | `src/bip/data/understat_client.py` wrapping `soccerdata.Understat` + tests with mock responses + Polars schema for shot events | Backfill xG for top-5 EU 2020/21–2025/26 to parquet; consume in `corners_poisson` and goal model as `xg_total_l5` covariate |
+| 4.5 | Betfair Delayed API CLV reference | ~3h | Parallel with Phase 4 (no dependency on Phases 1-4) | `src/bip/data/betfair_client.py` wrapping `betfairlightweight` (Delayed Key, free with funded account) + tests | Pull market book at kickoff-1min for WC2026 fixtures; compare to The Odds API Pinnacle scrape; store both as CLV anchors |
+| 7 | Offline shot-quality model from PFF FC + StatsBomb 360 | ~12-16h | Parallel with Phase 5 (no dependency on Phases 1-4); could even run post-lock | `scripts/train_shot_quality.py` consuming `kloppy.pff` + `statsbombpy` for WC2018/22 + Euro 2020/24; LightGBM xG model on tracking-derived features; persist per-player feature table to parquet | Apply trained model to WC2026 lineup predictions to upgrade per-shot xG estimates over Understat's generic baseline |
+
+**Phase 0.5 is the highest-ROI quick win** (~4h, no critical-path risk, fills the largest existing gap). Recommended to ship immediately on resume.
+
+**Phase 4.5 requires:** funded Betfair account + applying for Delayed App Key (free, ~24h approval). Operator action item: confirm Betfair account exists.
+
+**Phase 7 requires:** form registration at PFF FC (free, fchelp@pff.com confirms 2026 license). Operator action item: register and verify license terms permit derived features in a betting tool.
+
+**Reframings from the audit (no new phase, just updates):**
+
+- "Live in-play tick events" → not a feature gap. The existing `BayesianUpdater` consumes post-match aggregates from API-Football's `/fixtures/statistics` (already paid). The structural code is ready; just needs invocation with post-match data after each WC2026 fixture.
+- "FBref scraping" → gray-area fallback only. Use `soccerdata.FBref` as backup when Understat doesn't cover a needed market. Not a planned phase.
+- "Pinnacle direct API" → closed 2025-07-23. Phase 4.5 (Betfair Delayed) is the recommended replacement; The Odds API website-scrape continues as primary.
+
 **WC2026 kickoff:** 2026-06-11. Lock by 2026-06-08 gives 3 days of review and prevents opening-odds influence.
 
 **Slip plan (operator-approved):**
