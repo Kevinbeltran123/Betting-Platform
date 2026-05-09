@@ -51,6 +51,7 @@ from bip.evaluation.tournaments.backtest.calibration_audit import (  # noqa: E40
     CalibrationAudit,
 )
 from bip.evaluation.tournaments.backtest.calibration_report import (  # noqa: E402
+    MARKET_1X2,
     MARKET_BTTS,
     MARKET_OU_2_5,
     CalibrationReport,
@@ -1191,6 +1192,389 @@ def tune_alpha_walkforward(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Rolling-origin cross-validation (proper time-series evaluation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# Default folds — chronologically valid: each fold trains on tournaments
+# that ended BEFORE the held-out tournament started. Random K-fold would
+# break causality (a 2024 match training a 2018 prediction). Hyndman &
+# Athanasopoulos (2018) call this rolling-origin evaluation; it is the
+# only valid CV scheme for autoregressive/walk-forward predictors.
+#
+# Tournament chronology (StatsBomb cache as of 2026-05-09):
+#   WC 2018  → Jun-Jul 2018
+#   Euro 2020→ Jun-Jul 2021 (delayed)
+#   WC 2022  → Nov-Dec 2022
+#   AFCON23  → Jan-Feb 2024
+#   Copa 24  → Jun-Jul 2024
+#   Euro 24  → Jun-Jul 2024
+#
+# Each fold's training set has at least 179 matches (>3× n_prior=10), enough
+# for the LogisticLogitCalibrator's MLE to converge stably.
+DEFAULT_ROLLING_ORIGIN_FOLDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("wc_2018", "euro_2020", "wc_2022"), "afcon_2023"),
+    (("wc_2018", "euro_2020", "wc_2022", "afcon_2023"), "copa_2024"),
+    (("wc_2018", "euro_2020", "wc_2022", "afcon_2023", "copa_2024"), "euro_2024"),
+)
+
+
+@dataclass(frozen=True)
+class FoldMetrics:
+    """Per-fold calibration metrics for one predictor variant (raw or calibrated)."""
+
+    market: str
+    ece: float
+    brier: float
+    n_samples: int
+
+
+@dataclass(frozen=True)
+class FoldResult:
+    """Outcome of one rolling-origin fold."""
+
+    fold_index: int
+    train_tournaments: tuple[str, ...]
+    held_out_tournament: str
+    n_train: int
+    n_test: int
+    raw_metrics: tuple[FoldMetrics, ...]
+    calibrated_metrics: tuple[FoldMetrics, ...]
+
+
+@dataclass(frozen=True)
+class RollingOriginCVResult:
+    """Aggregate result across all folds, with bootstrap CIs."""
+
+    folds: tuple[FoldResult, ...]
+    n_total_test: int
+    # Aggregate metrics — keyed by (market, variant) where variant is 'raw' or 'cal'.
+    aggregate_metrics: dict[tuple[str, str], dict[str, float]]
+
+
+def _bootstrap_ci(
+    values: np.ndarray,
+    *,
+    n_bootstrap: int = 1000,
+    confidence: float = 0.95,
+    seed: int = 42,
+) -> tuple[float, float, float]:
+    """Bootstrap mean + 95% CI for an i.i.d. score sample.
+
+    Returns ``(mean, ci_low, ci_high)``. For Brier scores (one per match)
+    this is exactly what we want — Brier is i.i.d. across matches under
+    the standard calibration assumption.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(values)
+    if n == 0:
+        return 0.0, 0.0, 0.0
+    means = np.empty(n_bootstrap)
+    for i in range(n_bootstrap):
+        idx = rng.integers(0, n, size=n)
+        means[i] = float(values[idx].mean())
+    alpha = (1 - confidence) / 2
+    return (
+        float(values.mean()),
+        float(np.quantile(means, alpha)),
+        float(np.quantile(means, 1 - alpha)),
+    )
+
+
+def _brier_per_sample_1x2(
+    p_home: np.ndarray, p_draw: np.ndarray, p_away: np.ndarray, outcome: np.ndarray,
+) -> np.ndarray:
+    """Per-match 3-class sum-Brier divided by K=3 to align with the gate scale."""
+    one_hot = np.zeros((len(outcome), 3))
+    one_hot[np.arange(len(outcome)), outcome] = 1.0
+    probs = np.column_stack([p_home, p_draw, p_away])
+    return np.sum((probs - one_hot) ** 2, axis=1) / 3.0
+
+
+def _brier_per_sample_binary(p_yes: np.ndarray, outcome: np.ndarray) -> np.ndarray:
+    """Per-match binary Brier (already in [0,1]; matches gate scale directly)."""
+    return (p_yes - outcome.astype(float)) ** 2
+
+
+def run_rolling_origin_cv(
+    snapshots: list[BacktestSnapshot],
+    folds_definition: tuple[tuple[tuple[str, ...], str], ...] = DEFAULT_ROLLING_ORIGIN_FOLDS,
+    *,
+    sigma_s_per_day: float = DEFAULT_SIGMA_S_PER_DAY,
+    rho: float = BIVARIATE_DEFAULT_RHO,
+    alpha: float = 0.50,
+    predictor_kind: str = "xg_blended",
+    n_bins: int | None = None,
+    min_bin_fill: float | None = None,
+    n_bootstrap: int = 1000,
+    seed: int = 42,
+) -> RollingOriginCVResult:
+    """Rolling-origin CV: per-fold walk-forward + calibrator + aggregate metrics.
+
+    For each fold (train_slugs, held_out_slug):
+
+    1. Filter snapshots to those in train_slugs ∪ {held_out_slug}, sorted
+       chronologically.
+    2. Build a fresh predictor; walk-forward predicts EVERY snapshot
+       (state advances naturally by chronology — train and held-out
+       interleave seamlessly because the predictor doesn't know which is
+       which until we partition by tournament_slug afterwards).
+    3. Split predictions: train_pairs = those in train_slugs; test_pairs
+       = those in held_out_slug.
+    4. Fit ``LogisticLogitCalibrator`` on train_pairs (one per market).
+    5. Score test_pairs both raw and calibrated → per-match Brier vectors.
+    6. Compute fold-level ECE on test_pairs.
+
+    After all folds, concatenate per-match Brier vectors across folds
+    (each match scored exactly once across all folds) and compute
+    aggregate Brier mean + bootstrap 95% CI. Aggregate ECE is the
+    sample-weighted average of fold ECEs (proxy for global ECE on
+    aggregated probabilities — exact would require recomputing on the
+    full pooled vector).
+    """
+    if n_bins is None:
+        n_bins = FOOTBALL_DEFAULT_N_BINS
+    if min_bin_fill is None:
+        min_bin_fill = FOOTBALL_DEFAULT_MIN_BIN_FILL
+
+    folds: list[FoldResult] = []
+
+    # Per-match Brier accumulators across all folds (each match exactly once)
+    raw_brier_1x2: list[np.ndarray] = []
+    cal_brier_1x2: list[np.ndarray] = []
+    raw_brier_btts: list[np.ndarray] = []
+    cal_brier_btts: list[np.ndarray] = []
+    raw_brier_ou25: list[np.ndarray] = []
+    cal_brier_ou25: list[np.ndarray] = []
+
+    # Per-fold ECE values (sample-weighted aggregation)
+    raw_ece_1x2: list[tuple[float, int]] = []
+    cal_ece_1x2: list[tuple[float, int]] = []
+    raw_ece_btts: list[tuple[float, int]] = []
+    cal_ece_btts: list[tuple[float, int]] = []
+    raw_ece_ou25: list[tuple[float, int]] = []
+    cal_ece_ou25: list[tuple[float, int]] = []
+
+    for fold_idx, (train_slugs, held_out_slug) in enumerate(folds_definition):
+        relevant_slugs = set(train_slugs) | {held_out_slug}
+        fold_snaps = sorted(
+            (s for s in snapshots if s.tournament in relevant_slugs),
+            key=lambda s: s.match_date or "",
+        )
+
+        predictor = _make_predictor(
+            predictor_kind, sigma_s_per_day=sigma_s_per_day,
+            rho=rho, alpha=alpha,
+        )
+
+        raw_predictions: list[tuple[BacktestSnapshot, FixturePrediction]] = []
+        for snap in fold_snaps:
+            pred = predictor.predict_fixture(snap)
+            raw_predictions.append((snap, pred))
+
+        train_pairs = [
+            (s, p) for s, p in raw_predictions if s.tournament in train_slugs
+        ]
+        test_pairs = [
+            (s, p) for s, p in raw_predictions if s.tournament == held_out_slug
+        ]
+
+        if not train_pairs or not test_pairs:
+            raise RuntimeError(
+                f"Fold {fold_idx}: empty split (train={len(train_pairs)}, "
+                f"test={len(test_pairs)})"
+            )
+
+        # Fit calibrators on training set
+        cal_1x2 = _fit_1x2_calibrator(train_pairs)
+        cal_btts = _fit_binary_calibrator(
+            [p.p_btts for _, p in train_pairs if p.p_btts is not None],
+            [s.observed_btts for s, p in train_pairs if p.p_btts is not None],
+        )
+        cal_ou25 = _fit_binary_calibrator(
+            [p.p_over_2_5 for _, p in train_pairs if p.p_over_2_5 is not None],
+            [
+                int(s.observed_total_goals > 2)
+                for s, p in train_pairs if p.p_over_2_5 is not None
+            ],
+        )
+
+        # Score test set raw + calibrated
+        raw_audit = CalibrationAudit(
+            predictor_name=f"fold{fold_idx}_raw",
+            n_bins=n_bins, min_bin_fill=min_bin_fill,
+        )
+        cal_audit = CalibrationAudit(
+            predictor_name=f"fold{fold_idx}_cal",
+            n_bins=n_bins, min_bin_fill=min_bin_fill,
+        )
+
+        # Per-match Brier vectors for bootstrap
+        p_home_raw, p_draw_raw, p_away_raw = [], [], []
+        p_home_cal, p_draw_cal, p_away_cal = [], [], []
+        outcomes_1x2 = []
+        p_btts_raw, p_btts_cal, outcomes_btts = [], [], []
+        p_ou_raw, p_ou_cal, outcomes_ou = [], [], []
+
+        for snap, pred in test_pairs:
+            raw_1x2 = [pred.p_home_win, pred.p_draw, pred.p_away_win]
+            cal_1x2_p = (
+                cal_1x2.transform(np.asarray([raw_1x2]))[0].tolist()
+                if cal_1x2 is not None else raw_1x2
+            )
+            raw_audit.record_1x2(
+                p_home=raw_1x2[0], p_draw=raw_1x2[1], p_away=raw_1x2[2],
+                outcome=snap.observed_1x2,
+            )
+            cal_audit.record_1x2(
+                p_home=cal_1x2_p[0], p_draw=cal_1x2_p[1], p_away=cal_1x2_p[2],
+                outcome=snap.observed_1x2,
+            )
+            p_home_raw.append(raw_1x2[0])
+            p_draw_raw.append(raw_1x2[1])
+            p_away_raw.append(raw_1x2[2])
+            p_home_cal.append(cal_1x2_p[0])
+            p_draw_cal.append(cal_1x2_p[1])
+            p_away_cal.append(cal_1x2_p[2])
+            outcomes_1x2.append(snap.observed_1x2)
+
+            if pred.p_btts is not None:
+                p_btts_cal_v = (
+                    float(cal_btts.transform([pred.p_btts])[0])
+                    if cal_btts is not None else pred.p_btts
+                )
+                raw_audit.record_binary(
+                    MARKET_BTTS, p_yes=pred.p_btts, outcome=snap.observed_btts,
+                )
+                cal_audit.record_binary(
+                    MARKET_BTTS, p_yes=p_btts_cal_v, outcome=snap.observed_btts,
+                )
+                p_btts_raw.append(pred.p_btts)
+                p_btts_cal.append(p_btts_cal_v)
+                outcomes_btts.append(snap.observed_btts)
+
+            if pred.p_over_2_5 is not None:
+                obs_over = int(snap.observed_total_goals > 2)
+                p_ou_cal_v = (
+                    float(cal_ou25.transform([pred.p_over_2_5])[0])
+                    if cal_ou25 is not None else pred.p_over_2_5
+                )
+                raw_audit.record_binary(
+                    MARKET_OU_2_5, p_yes=pred.p_over_2_5, outcome=obs_over,
+                )
+                cal_audit.record_binary(
+                    MARKET_OU_2_5, p_yes=p_ou_cal_v, outcome=obs_over,
+                )
+                p_ou_raw.append(pred.p_over_2_5)
+                p_ou_cal.append(p_ou_cal_v)
+                outcomes_ou.append(obs_over)
+
+        # Compute per-match Brier vectors
+        outcome_arr = np.asarray(outcomes_1x2)
+        b_raw_1x2 = _brier_per_sample_1x2(
+            np.asarray(p_home_raw), np.asarray(p_draw_raw),
+            np.asarray(p_away_raw), outcome_arr,
+        )
+        b_cal_1x2 = _brier_per_sample_1x2(
+            np.asarray(p_home_cal), np.asarray(p_draw_cal),
+            np.asarray(p_away_cal), outcome_arr,
+        )
+        raw_brier_1x2.append(b_raw_1x2)
+        cal_brier_1x2.append(b_cal_1x2)
+
+        if outcomes_btts:
+            o_btts = np.asarray(outcomes_btts)
+            raw_brier_btts.append(
+                _brier_per_sample_binary(np.asarray(p_btts_raw), o_btts)
+            )
+            cal_brier_btts.append(
+                _brier_per_sample_binary(np.asarray(p_btts_cal), o_btts)
+            )
+
+        if outcomes_ou:
+            o_ou = np.asarray(outcomes_ou)
+            raw_brier_ou25.append(
+                _brier_per_sample_binary(np.asarray(p_ou_raw), o_ou)
+            )
+            cal_brier_ou25.append(
+                _brier_per_sample_binary(np.asarray(p_ou_cal), o_ou)
+            )
+
+        # Pull fold-level ECE from the audit reports
+        raw_reports = {r.market: r for r in raw_audit.compute_reports()}
+        cal_reports = {r.market: r for r in cal_audit.compute_reports()}
+
+        def _ece_for(reports_dict: dict, market: str) -> float:
+            return float(reports_dict[market].classwise_ece) if market in reports_dict else 0.0
+
+        n_test = len(test_pairs)
+        raw_ece_1x2.append((_ece_for(raw_reports, MARKET_1X2), n_test))
+        cal_ece_1x2.append((_ece_for(cal_reports, MARKET_1X2), n_test))
+        raw_ece_btts.append((_ece_for(raw_reports, MARKET_BTTS), len(outcomes_btts)))
+        cal_ece_btts.append((_ece_for(cal_reports, MARKET_BTTS), len(outcomes_btts)))
+        raw_ece_ou25.append((_ece_for(raw_reports, MARKET_OU_2_5), len(outcomes_ou)))
+        cal_ece_ou25.append((_ece_for(cal_reports, MARKET_OU_2_5), len(outcomes_ou)))
+
+        folds.append(FoldResult(
+            fold_index=fold_idx,
+            train_tournaments=tuple(train_slugs),
+            held_out_tournament=held_out_slug,
+            n_train=len(train_pairs),
+            n_test=n_test,
+            raw_metrics=tuple([
+                FoldMetrics(MARKET_1X2, _ece_for(raw_reports, MARKET_1X2),
+                            float(b_raw_1x2.mean()), n_test),
+                FoldMetrics(MARKET_BTTS, _ece_for(raw_reports, MARKET_BTTS),
+                            float(raw_brier_btts[-1].mean()) if outcomes_btts else 0.0,
+                            len(outcomes_btts)),
+                FoldMetrics(MARKET_OU_2_5, _ece_for(raw_reports, MARKET_OU_2_5),
+                            float(raw_brier_ou25[-1].mean()) if outcomes_ou else 0.0,
+                            len(outcomes_ou)),
+            ]),
+            calibrated_metrics=tuple([
+                FoldMetrics(MARKET_1X2, _ece_for(cal_reports, MARKET_1X2),
+                            float(b_cal_1x2.mean()), n_test),
+                FoldMetrics(MARKET_BTTS, _ece_for(cal_reports, MARKET_BTTS),
+                            float(cal_brier_btts[-1].mean()) if outcomes_btts else 0.0,
+                            len(outcomes_btts)),
+                FoldMetrics(MARKET_OU_2_5, _ece_for(cal_reports, MARKET_OU_2_5),
+                            float(cal_brier_ou25[-1].mean()) if outcomes_ou else 0.0,
+                            len(outcomes_ou)),
+            ]),
+        ))
+
+    # Aggregate Brier across folds via concatenation (each match once)
+    def _agg_brier(brier_list: list[np.ndarray]) -> dict[str, float]:
+        if not brier_list:
+            return {"brier": 0.0, "ci_low": 0.0, "ci_high": 0.0, "n": 0}
+        all_b = np.concatenate(brier_list)
+        mean, lo, hi = _bootstrap_ci(all_b, n_bootstrap=n_bootstrap, seed=seed)
+        return {"brier": mean, "ci_low": lo, "ci_high": hi, "n": int(len(all_b))}
+
+    # Aggregate ECE via sample-weighted average of per-fold ECEs
+    def _agg_ece(ece_list: list[tuple[float, int]]) -> float:
+        total_n = sum(n for _, n in ece_list)
+        if total_n == 0:
+            return 0.0
+        return sum(e * n for e, n in ece_list) / total_n
+
+    aggregate: dict[tuple[str, str], dict[str, float]] = {}
+    aggregate[(MARKET_1X2, "raw")] = {**_agg_brier(raw_brier_1x2), "ece": _agg_ece(raw_ece_1x2)}
+    aggregate[(MARKET_1X2, "cal")] = {**_agg_brier(cal_brier_1x2), "ece": _agg_ece(cal_ece_1x2)}
+    aggregate[(MARKET_BTTS, "raw")] = {**_agg_brier(raw_brier_btts), "ece": _agg_ece(raw_ece_btts)}
+    aggregate[(MARKET_BTTS, "cal")] = {**_agg_brier(cal_brier_btts), "ece": _agg_ece(cal_ece_btts)}
+    aggregate[(MARKET_OU_2_5, "raw")] = {**_agg_brier(raw_brier_ou25), "ece": _agg_ece(raw_ece_ou25)}
+    aggregate[(MARKET_OU_2_5, "cal")] = {**_agg_brier(cal_brier_ou25), "ece": _agg_ece(cal_ece_ou25)}
+
+    n_total_test = sum(f.n_test for f in folds)
+    return RollingOriginCVResult(
+        folds=tuple(folds),
+        n_total_test=n_total_test,
+        aggregate_metrics=aggregate,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1269,6 +1653,20 @@ def _parse_args() -> argparse.Namespace:
         "--alpha-grid", type=float, nargs="+", default=None,
         help="Custom α candidates. Defaults to "
         f"{list(DEFAULT_ALPHA_GRID)}.",
+    )
+    p.add_argument(
+        "--rolling-origin-cv", action="store_true",
+        help="Run rolling-origin cross-validation across 3 chronologically-"
+        "valid folds (Hyndman & Athanasopoulos 2018). Each fold trains a "
+        "calibrator on tournaments that finished BEFORE the held-out — "
+        "valid for walk-forward predictors. Reports aggregate Brier with "
+        "bootstrap 95% CI plus per-fold breakdown. Replaces the single "
+        "held-out backtest path.",
+    )
+    p.add_argument(
+        "--n-bootstrap", type=int, default=1000,
+        help="Bootstrap iterations for Brier CIs (default 1000). Only "
+        "consumed with --rolling-origin-cv.",
     )
     return p.parse_args()
 
@@ -1350,6 +1748,70 @@ def main() -> None:
         print()
 
         alpha = best_alpha
+
+    if args.rolling_origin_cv:
+        if snapshots is None:
+            outcomes = load_outcomes_from_parquet(args.outcomes_parquet)
+            if not outcomes:
+                raise RuntimeError(
+                    f"No outcomes found in {args.outcomes_parquet}."
+                )
+            snapshots, _ = make_snapshots(outcomes)
+
+        print(f"[phase5] running rolling-origin CV (3 folds, "
+              f"predictor={predictor_kind}, ρ={rho:.3f}, α={alpha:.2f})",
+              file=sys.stderr)
+
+        cv_result = run_rolling_origin_cv(
+            snapshots,
+            sigma_s_per_day=args.sigma_s,
+            rho=rho, alpha=alpha,
+            predictor_kind=predictor_kind,
+            n_bins=args.n_bins,
+            min_bin_fill=args.min_bin_fill,
+            n_bootstrap=args.n_bootstrap,
+        )
+
+        print()
+        print("=" * 78)
+        print("ROLLING-ORIGIN CROSS-VALIDATION — proper time-series evaluation")
+        print("=" * 78)
+        print(f"Predictor: {predictor_kind} (ρ={rho:.3f}, α={alpha:.2f})")
+        print(f"Total held-out matches across folds: {cv_result.n_total_test}")
+        print()
+        print("Per-fold breakdown:")
+        for f in cv_result.folds:
+            print(f"\n  Fold {f.fold_index + 1}: train={'+'.join(f.train_tournaments)} "
+                  f"({f.n_train} matches) → held={f.held_out_tournament} ({f.n_test})")
+            for raw, cal in zip(f.raw_metrics, f.calibrated_metrics):
+                print(f"    {raw.market:30}  raw  ECE={raw.ece:.4f} Brier={raw.brier:.4f} "
+                      f"|  cal  ECE={cal.ece:.4f} Brier={cal.brier:.4f}")
+
+        print()
+        print("=" * 78)
+        print(f"AGGREGATE METRICS (n={cv_result.n_total_test} held-out, bootstrap 95% CI)")
+        print("=" * 78)
+        for market in (MARKET_1X2, MARKET_BTTS, MARKET_OU_2_5):
+            for variant in ("raw", "cal"):
+                m = cv_result.aggregate_metrics[(market, variant)]
+                gate_brier = 0.21 if market == MARKET_1X2 else 0.20
+                inside = "✓ within gate" if m["ci_high"] <= gate_brier else (
+                    "≈ at gate" if m["brier"] <= gate_brier else "✗ above gate"
+                )
+                print(
+                    f"  {market:30} {variant:4}  "
+                    f"ECE={m['ece']:.4f}  "
+                    f"Brier={m['brier']:.4f}  "
+                    f"95% CI=[{m['ci_low']:.4f}, {m['ci_high']:.4f}]  "
+                    f"({inside})"
+                )
+
+        # Don't write a LockDecision JSON — the rolling-origin verdict is
+        # advisory; the lock decision still uses the spike-approved
+        # held-out (Copa+Euro 2024). Operator interprets the CV result
+        # alongside that for the final R-08 call.
+        print()
+        return
 
     runner = (
         run_phase5_backtest_calibrated if args.apply_calibrator

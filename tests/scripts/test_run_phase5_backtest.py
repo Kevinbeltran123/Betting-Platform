@@ -537,6 +537,168 @@ class TestTuneAlphaWalkforward:
             tune_alpha_walkforward(snaps, [0.5], held_out_tournaments=("copa_2024",))
 
 
+# ── Rolling-origin cross-validation (Option 3 / Fase F) ─────────────────────
+
+
+class TestBootstrapCI:
+    def test_bootstrap_returns_mean_and_ci_around_truth(self):
+        import numpy as np
+
+        from scripts.run_phase5_backtest import _bootstrap_ci
+
+        # Distribution centered on 0.5 with known SE
+        rng = np.random.RandomState(0)
+        v = rng.normal(0.5, 0.1, 200)
+        m, lo, hi = _bootstrap_ci(v, n_bootstrap=500, seed=0)
+        # Mean should match sample mean
+        assert m == pytest.approx(float(v.mean()), abs=1e-6)
+        # CI should bracket the mean
+        assert lo < m < hi
+        # CI width should be reasonable for n=200, sigma=0.1 → SE ≈ 0.007 →
+        # 95% CI ≈ ±0.014. Generous bound: width < 0.05.
+        assert hi - lo < 0.05
+
+    def test_empty_input_returns_zeros(self):
+        import numpy as np
+
+        from scripts.run_phase5_backtest import _bootstrap_ci
+
+        m, lo, hi = _bootstrap_ci(np.asarray([]))
+        assert (m, lo, hi) == (0.0, 0.0, 0.0)
+
+
+class TestBrierPerSample:
+    def test_perfect_prediction_yields_zero_brier(self):
+        """Probability 1.0 on the correct outcome → Brier = 0."""
+        import numpy as np
+
+        from scripts.run_phase5_backtest import _brier_per_sample_1x2
+
+        # Predict home win with prob 1.0; observed home win
+        b = _brier_per_sample_1x2(
+            np.asarray([1.0]), np.asarray([0.0]), np.asarray([0.0]),
+            np.asarray([0]),
+        )
+        assert b[0] == pytest.approx(0.0, abs=1e-9)
+
+    def test_uniform_prediction_brier_value(self):
+        """Uniform 1/3 over 3 classes — Brier = (2/3)²/3 = 0.148... per match."""
+        import numpy as np
+
+        from scripts.run_phase5_backtest import _brier_per_sample_1x2
+
+        n = 100
+        b = _brier_per_sample_1x2(
+            np.full(n, 1 / 3), np.full(n, 1 / 3), np.full(n, 1 / 3),
+            np.zeros(n, dtype=int),
+        )
+        # Each match: ((1/3-1)² + (1/3)² + (1/3)²) / 3 = (4/9 + 1/9 + 1/9) / 3 = 2/9
+        assert b[0] == pytest.approx(2 / 9, abs=1e-6)
+
+    def test_binary_brier_squared_error(self):
+        import numpy as np
+
+        from scripts.run_phase5_backtest import _brier_per_sample_binary
+
+        b = _brier_per_sample_binary(
+            np.asarray([0.7, 0.2, 1.0]), np.asarray([1, 0, 1]),
+        )
+        # (0.7-1)² = 0.09, (0.2-0)² = 0.04, (1.0-1)² = 0.0
+        np.testing.assert_allclose(b, [0.09, 0.04, 0.0], atol=1e-9)
+
+
+class TestRollingOriginCV:
+    def test_default_folds_are_chronologically_valid(self):
+        from scripts.run_phase5_backtest import DEFAULT_ROLLING_ORIGIN_FOLDS
+
+        # Sanity: each fold's held-out tournament must come AFTER all train ones
+        # (chronologically). We don't have actual dates here, but the slugs
+        # encode order: WC2018 < Euro2020 < WC2022 < AFCON2023 < Copa2024 < Euro2024
+        chronology = ["wc_2018", "euro_2020", "wc_2022", "afcon_2023", "copa_2024", "euro_2024"]
+        for train, held in DEFAULT_ROLLING_ORIGIN_FOLDS:
+            held_idx = chronology.index(held)
+            for t in train:
+                assert chronology.index(t) < held_idx, (
+                    f"Fold violates chronology: {t} >= {held}"
+                )
+
+    def test_three_folds_each_growing(self):
+        from scripts.run_phase5_backtest import DEFAULT_ROLLING_ORIGIN_FOLDS
+
+        assert len(DEFAULT_ROLLING_ORIGIN_FOLDS) == 3
+        # Each subsequent fold has a larger training set
+        for i in range(1, len(DEFAULT_ROLLING_ORIGIN_FOLDS)):
+            prev_train = set(DEFAULT_ROLLING_ORIGIN_FOLDS[i - 1][0])
+            curr_train = set(DEFAULT_ROLLING_ORIGIN_FOLDS[i][0])
+            assert prev_train.issubset(curr_train)
+
+    def test_synthetic_run_produces_aggregate_metrics(self):
+        """Smoke: build a synthetic snapshot set spanning the 6 tournaments
+        and confirm rolling-origin CV runs end-to-end."""
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import (
+            DEFAULT_ROLLING_ORIGIN_FOLDS,
+            run_rolling_origin_cv,
+        )
+
+        snaps = []
+        slugs_dates = [
+            ("wc_2018", "2018-06-14"),
+            ("euro_2020", "2021-06-11"),
+            ("wc_2022", "2022-11-20"),
+            ("afcon_2023", "2024-01-13"),
+            ("copa_2024", "2024-06-20"),
+            ("euro_2024", "2024-06-14"),
+        ]
+        # 30 matches per tournament; rotating team ids
+        match_idx = 0
+        for slug, base_date in slugs_dates:
+            for i in range(30):
+                hg = i % 3
+                ag = (i + 1) % 3
+                snaps.append(BacktestSnapshot(
+                    match_id=f"{slug}_{i}", tournament=slug,
+                    home_team_id=i % 8, away_team_id=(i + 1) % 8,
+                    observed_1x2=0 if hg > ag else (1 if hg == ag else 2),
+                    observed_total_goals=hg + ag,
+                    observed_btts=int(hg > 0 and ag > 0),
+                    observed_home_goals=hg, observed_away_goals=ag,
+                    observed_home_xg=1.0 + (i % 4) * 0.3,
+                    observed_away_xg=0.8 + (i % 3) * 0.4,
+                    match_date=f"{base_date[:7]}-{(i % 28) + 1:02d}",
+                ))
+                match_idx += 1
+
+        result = run_rolling_origin_cv(
+            snaps, DEFAULT_ROLLING_ORIGIN_FOLDS,
+            rho=0.04, alpha=0.50,
+            n_bootstrap=100,
+        )
+
+        # 3 folds
+        assert len(result.folds) == 3
+        # Total test count = afcon_2023 + copa_2024 + euro_2024 sizes
+        assert result.n_total_test == 30 * 3
+        # Each fold has growing train set
+        for i in range(1, 3):
+            assert result.folds[i].n_train > result.folds[i - 1].n_train
+        # Aggregate metrics present for all 3 markets × 2 variants
+        from bip.evaluation.tournaments.backtest.calibration_report import (
+            MARKET_1X2,
+            MARKET_BTTS,
+            MARKET_OU_2_5,
+        )
+        for market in (MARKET_1X2, MARKET_BTTS, MARKET_OU_2_5):
+            for variant in ("raw", "cal"):
+                m = result.aggregate_metrics[(market, variant)]
+                # Bootstrap CI bounds the mean
+                assert m["ci_low"] <= m["brier"] <= m["ci_high"]
+                # Brier in valid range
+                assert 0.0 <= m["brier"] <= 1.0
+                # ECE in valid range
+                assert 0.0 <= m["ece"] <= 1.0
+
+
 class TestBayesianPoissonPredictor:
     def test_first_match_uses_priors(self):
         """Cold-start: with both teams unseen, prediction uses cohort priors
