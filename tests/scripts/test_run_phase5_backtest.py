@@ -162,6 +162,83 @@ class TestTournamentToCompetition:
 # ── BayesianPoissonPredictor ─────────────────────────────────────────────────
 
 
+class TestBayesianBivariatePoissonPredictor:
+    def test_rho_zero_yields_independent_poisson_grid(self):
+        """ρ=0 collapses to Independent Poisson (Bivariate is a strict generalization)."""
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import (
+            BayesianBivariatePoissonPredictor,
+            BayesianPoissonPredictor,
+        )
+
+        snap = BacktestSnapshot(
+            match_id="m1", tournament="wc_2018",
+            home_team_id=0, away_team_id=1,
+            observed_1x2=1, observed_total_goals=0, observed_btts=0,
+            observed_home_goals=0, observed_away_goals=0,
+            match_date="2018-06-14",
+        )
+        ind = BayesianPoissonPredictor()
+        biv = BayesianBivariatePoissonPredictor(rho=0.0)
+        ind_pred = ind.predict_fixture(snap)
+        biv_pred = biv.predict_fixture(snap)
+        assert biv_pred.p_home_win == pytest.approx(ind_pred.p_home_win, abs=1e-6)
+        assert biv_pred.p_draw == pytest.approx(ind_pred.p_draw, abs=1e-6)
+        assert biv_pred.p_btts == pytest.approx(ind_pred.p_btts, abs=1e-6)
+
+    def test_positive_rho_inflates_draw_probability(self):
+        """ρ>0 should yield higher P(draw) than ρ=0 — corrects Independent
+        Poisson's draw underestimation per SYNTHESIS Conclusion 2."""
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import BayesianBivariatePoissonPredictor
+
+        snap = BacktestSnapshot(
+            match_id="m1", tournament="wc_2018",
+            home_team_id=0, away_team_id=1,
+            observed_1x2=1, observed_total_goals=0, observed_btts=0,
+            observed_home_goals=0, observed_away_goals=0,
+            match_date="2018-06-14",
+        )
+        rho_0 = BayesianBivariatePoissonPredictor(rho=0.0).predict_fixture(snap)
+        rho_high = BayesianBivariatePoissonPredictor(rho=0.20).predict_fixture(snap)
+        assert rho_high.p_draw > rho_0.p_draw
+
+    def test_invalid_rho_rejected(self):
+        from scripts.run_phase5_backtest import BayesianBivariatePoissonPredictor
+
+        with pytest.raises(ValueError, match="rho must be"):
+            BayesianBivariatePoissonPredictor(rho=0.6)
+        with pytest.raises(ValueError, match="rho must be"):
+            BayesianBivariatePoissonPredictor(rho=-0.6)
+
+
+class TestPredictorFactory:
+    def test_independent_kind(self):
+        from scripts.run_phase5_backtest import (
+            BayesianPoissonPredictor,
+            _make_predictor,
+        )
+
+        p = _make_predictor("independent", sigma_s_per_day=0.0001)
+        assert isinstance(p, BayesianPoissonPredictor)
+
+    def test_bivariate_kind_uses_rho(self):
+        from scripts.run_phase5_backtest import (
+            BayesianBivariatePoissonPredictor,
+            _make_predictor,
+        )
+
+        p = _make_predictor("bivariate", sigma_s_per_day=0.0001, rho=0.10)
+        assert isinstance(p, BayesianBivariatePoissonPredictor)
+        assert p.rho == 0.10
+
+    def test_unknown_kind_raises(self):
+        from scripts.run_phase5_backtest import _make_predictor
+
+        with pytest.raises(ValueError, match="Unknown predictor_kind"):
+            _make_predictor("nonexistent", sigma_s_per_day=0.0001)
+
+
 class TestBayesianPoissonPredictor:
     def test_first_match_uses_priors(self):
         """Cold-start: with both teams unseen, prediction uses cohort priors
@@ -301,8 +378,8 @@ class TestRealBacktestLayer2:
 
         # Two predictors: raw + logit-calibrated, both with 3 markets each
         names = {v.predictor_name for v in decision.predictor_verdicts}
-        assert "bayesian_poisson_raw" in names
-        assert "bayesian_poisson_logit_calibrated" in names
+        assert "bayesian_independent_poisson_raw" in names
+        assert "bayesian_independent_poisson_logit_calibrated" in names
         # Held-out scope: ~83 fixtures (Copa 2024 + Euro 2024)
         assert decision.n_fixtures_with_predictions > 50
         assert decision.n_fixtures_with_predictions < 100
@@ -317,11 +394,11 @@ class TestRealBacktestLayer2:
         decision, _ = run_phase5_backtest_calibrated(output_path=None)
         raw_v = next(
             v for v in decision.predictor_verdicts
-            if v.predictor_name == "bayesian_poisson_raw"
+            if v.predictor_name == "bayesian_independent_poisson_raw"
         )
         cal_v = next(
             v for v in decision.predictor_verdicts
-            if v.predictor_name == "bayesian_poisson_logit_calibrated"
+            if v.predictor_name == "bayesian_independent_poisson_logit_calibrated"
         )
         # At least one market should have lower ECE after calibration
         improved = sum(

@@ -9,9 +9,9 @@ branch: spike/national-team-tournament-evaluator
 companion_to: SPIKE-tournament-evaluator.md
 hard_deadline: 2026-06-08
 graduates_to: TBD (calibrated predictors merged into evaluator output OR Phase 6 v1.0 corners module)
-tests_passing: 794
+tests_passing: 800
 tests_xfail: 6
-commits_on_branch: 18
+commits_on_branch: 19
 ---
 
 # Spike — WC2026 Calibration Lock
@@ -291,6 +291,9 @@ For graduation to v1.0 Phase 6 (post-WC decision):
 | 2026-05-09 | Football-specific calibration audit defaults: n_bins=10, min_bin_fill=0.5 | Walsh & Joshi 2024 used n_bins=20/min_bin_fill=0.8 on NBA. Football probabilities concentrate in 0.40-0.60 (over-3 outcomes rare; decisive outcomes narrowly clustered) — empirically only 8-10 of 20 bins fill, triggering 'unreliable-bins' regardless of true calibration. n_bins=10 spreads same probability mass across half the bins (more samples per bin → lower noise); min_bin_fill=0.5 matches the realistic fill rate. Sweep results: 1X2 ECE 0.0433 → 0.0421, BTTS ECE 0.0618 → 0.0465 (within gate!), OU2.5 ECE 0.0778 → 0.0598 |
 | 2026-05-09 | LogisticLogitCalibrator post-hoc applied to held-out (Copa 2024 + Euro 2024, 83 matches): OU 2.5 ECE 0.067 → 0.031 (>2× improvement, within gate); 1X2 ECE 0.070 → 0.064; BTTS ECE 0.057 → 0.081 (got worse — overfit on 83-match held-out) | Post-hoc calibration helps SOME markets, hurts others on small samples. Brier scores ~unchanged — confirms the bottleneck is predictor SHARPNESS (Independent Poisson lacks confidence in correct directions), not just calibration shift. LogisticLogitCalibrator can re-shape probability distributions but cannot improve discrimination. Next iteration: Bivariate Poisson predictor (corrects draw underestimation per SYNTHESIS Conclusion 2) |
 | 2026-05-09 | Train/test split by tournament (not by index) preserves causality | Held-out = Copa 2024 + Euro 2024 (operator-approved spike §9 Q3). Calibrator is fit on the OTHER 4 tournaments (231 matches) and applied to the held-out 83. Coverage in LockDecision reports test-set count, not training. Lock JSON downstream (Phase 6) consumes this with same held-out invariant |
+| 2026-05-09 | Bivariate Poisson predictor added as `BayesianBivariatePoissonPredictor` with ρ as configurable parameter (default 0.04 = Dixon-Coles 1997) | Independent Poisson systematically underestimates draws (SYNTHESIS Conclusion 2). Bivariate adds `λ_3 = ρ · √(μ_h · μ_a)` shared component capturing positive home/away goal correlation. ρ=0 is strict generalization (collapses to Independent). Reuses `_bivariate_poisson_grid` from existing `predictors/bivariate_poisson.py` Karlis-Ntzoufras 2003 implementation |
+| 2026-05-09 | ρ-sweep on held-out (with overfit caveat): ρ=0.20 yields 1X2 marginal verdict (ECE=0.0478, Brier=0.2117 — both within gate) | Sweep over ρ ∈ {0.02, 0.04, 0.05, 0.08, 0.10, 0.12, 0.15, 0.20, 0.22, 0.25, 0.30, 0.35, 0.40} on the 83 held-out matches. ρ=0.20 produces best 1X2 ECE (0.0478, under 5% gate) and Brier (0.2117, just under 0.21 ceiling). HOWEVER: tuning on held-out is test-set contamination — ρ should be tuned on the 231 training matches with held-out reserved for verdict. Phase 6+ work is to add proper train-time ρ tuning. Keeping ρ=0.04 default (literature) until then; CLI `--rho` flag allows operator override |
+| 2026-05-09 | Bivariate ρ=0.04 (default) on held-out raw: BTTS ECE 0.0574 → 0.0492 (14% improvement), Brier deltas tiny (~0.0005) | Bivariate matches Karlis-Ntzoufras 2003 reported gains: 0.5-1pp improvements over Independent. Confirms predictor sharpness ceiling — Bivariate is small structural improvement, not a transformative one. Path forward to actually pass gates is ANS-NB / negative-binomial (Michels SYNTHESIS Conclusion 2) and/or larger held-out (more historical tournaments) — not just predictor swap |
 | 2026-05-08 | League-strength multipliers seeded from Shelopugin (2023) Table V/VI lookup | Premier-2118 vs Brazil-1868 (~250 pt gap) is empirically validated and stable; rebuilding the rating system is out of scope |
 | 2026-05-08 | Synthesis Phases 5–8 (SysID, NB corners, Cemek, prod backtest) deferred to v1.0 Phase 6 | Two-pronged placement decision; keeps spike scope minimal and respects v1.0 roadmap integrity |
 

@@ -72,6 +72,12 @@ from bip.evaluation.tournaments.live.state import (  # noqa: E402
     TeamLiveState,
     TournamentLiveState,
 )
+from bip.evaluation.tournaments.predictors.bivariate_poisson import (  # noqa: E402
+    DEFAULT_RHO as BIVARIATE_DEFAULT_RHO,
+)
+from bip.evaluation.tournaments.predictors.bivariate_poisson import (  # noqa: E402
+    _bivariate_poisson_grid,
+)
 from scripts.backtest_int_tournaments import (  # noqa: E402
     DEFAULT_HELD_OUT_TOURNAMENTS,
     BacktestSnapshot,
@@ -259,6 +265,151 @@ def _tournament_to_competition(slug: str) -> CompetitionType:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# BayesianBivariatePoissonPredictor — Karlis-Ntzoufras bivariate grid
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class BayesianBivariatePoissonPredictor:
+    """Bivariate-Poisson predictor over Bayesian per-team rates.
+
+    Same state machinery as ``BayesianPoissonPredictor`` (Phase 3
+    ``BayesianUpdater``), but the score grid is built with the Karlis &
+    Ntzoufras (2003) Bivariate Poisson distribution — ``λ_3 = ρ · √(μ_h
+    · μ_a)`` shared component captures positive home/away goal correlation.
+    Independent Poisson is the special case ρ = 0; default ρ = 0.04
+    (Dixon-Coles 1997 empirical estimate).
+
+    Per SYNTHESIS Conclusion 2: Independent Poisson systematically
+    underestimates draws (ΔG = 0). Bivariate Poisson with ρ > 0 corrects
+    this — empirically 24-37% draw rate ceiling cited by HIGFormer is
+    closer reachable. This predictor is the structural sharpness fix the
+    Phase 5 Layer-2 verdict identified as the bottleneck (LogisticLogitCalibrator
+    can re-shape but not improve discrimination).
+    """
+
+    name: str = "bayesian_bivariate_poisson_intl"
+    sigma_s_per_day: float = DEFAULT_SIGMA_S_PER_DAY
+    rho: float = BIVARIATE_DEFAULT_RHO  # 0.04 default (Dixon-Coles)
+    prior_goals: float = 1.30
+    prior_corners: float = 5.0
+    n_prior: int = DEFAULT_N_PRIOR
+
+    def __post_init__(self) -> None:
+        if not -0.5 <= self.rho <= 0.5:
+            raise ValueError(f"rho must be in [-0.5, 0.5], got {self.rho}")
+        self._state = TournamentLiveState(tournament_slug="phase5_backtest_biv")
+        self._updater = BayesianUpdater(sigma_s_per_day=self.sigma_s_per_day)
+        self._registered: set[int] = set()
+        self._last_match_date: date | None = None
+
+    def _ensure_team(self, team_id: int) -> None:
+        if team_id in self._registered:
+            return
+        self._state.team_states[team_id] = TeamLiveState(
+            team_id=team_id,
+            prior_goals_for=self.prior_goals,
+            prior_goals_against=self.prior_goals,
+            prior_corners_for=self.prior_corners,
+            prior_corners_against=self.prior_corners,
+            prior_shots_for=12.0,
+            prior_sot_for=4.0,
+            n_prior=self.n_prior,
+        )
+        self._registered.add(team_id)
+
+    def predict_fixture(self, snap: BacktestSnapshot) -> FixturePrediction:
+        self._ensure_team(snap.home_team_id)
+        self._ensure_team(snap.away_team_id)
+
+        if snap.match_date is not None:
+            current = date.fromisoformat(snap.match_date)
+            if self._last_match_date is not None:
+                gap = (current - self._last_match_date).days
+                if gap > 0:
+                    self._updater.between_window_step(self._state, days_elapsed=gap)
+            self._last_match_date = current
+
+        home_state = self._state.team_states[snap.home_team_id]
+        away_state = self._state.team_states[snap.away_team_id]
+
+        mu_h = max(
+            (home_state.lambda_goals_for + away_state.lambda_goals_against) / 2.0,
+            1e-3,
+        )
+        mu_a = max(
+            (away_state.lambda_goals_for + home_state.lambda_goals_against) / 2.0,
+            1e-3,
+        )
+
+        # λ_3 = ρ · √(μ_h · μ_a) clamped so λ_1, λ_2 stay non-negative.
+        lam12 = self.rho * math.sqrt(mu_h * mu_a)
+        lam12 = max(0.0, min(lam12, min(mu_h, mu_a) - 1e-9))
+        lam1 = mu_h - lam12
+        lam2 = mu_a - lam12
+
+        grid = _bivariate_poisson_grid(lam1, lam2, lam12, MAX_GOALS_GRID)
+        prediction = _grid_to_prediction(grid)
+
+        # Observe AFTER predicting — walk-forward causality.
+        if snap.observed_home_goals is not None and snap.observed_away_goals is not None:
+            result = TournamentMatchResult(
+                match_id=snap.match_id,
+                home_team_id=snap.home_team_id,
+                away_team_id=snap.away_team_id,
+                home_goals=snap.observed_home_goals,
+                away_goals=snap.observed_away_goals,
+                home_corners=snap.observed_home_corners,
+                away_corners=snap.observed_away_corners,
+                competition=_tournament_to_competition(snap.tournament),
+            )
+            self._updater.within_tournament_step(self._state, result)
+
+        return prediction
+
+
+def _grid_to_prediction(grid: np.ndarray) -> FixturePrediction:
+    """Convert a 2D score-grid into FixturePrediction market probabilities.
+
+    Shared logic between Independent and Bivariate Poisson predictors —
+    both produce the same shape grid; only the construction differs.
+    """
+    total = float(grid.sum())
+    if total > 0:
+        grid = grid / total
+
+    p_home = float(np.sum(np.tril(grid, k=-1)))
+    p_draw = float(np.sum(np.diag(grid)))
+    p_away = float(np.sum(np.triu(grid, k=1)))
+    s = p_home + p_draw + p_away
+    if s > 0:
+        p_home /= s
+        p_draw /= s
+        p_away /= s
+
+    p_h0 = float(grid[0, :].sum())
+    p_a0 = float(grid[:, 0].sum())
+    p_00 = float(grid[0, 0])
+    p_btts = max(0.0, min(1.0, 1.0 - p_h0 - p_a0 + p_00))
+
+    over25 = 0.0
+    n = grid.shape[0]
+    for i in range(n):
+        for j in range(n):
+            if i + j >= 3:
+                over25 += grid[i, j]
+    p_over_2_5 = max(0.0, min(1.0, over25))
+
+    return FixturePrediction(
+        p_home_win=p_home,
+        p_draw=p_draw,
+        p_away_win=p_away,
+        p_btts=p_btts,
+        p_over_2_5=p_over_2_5,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Poisson score grid → market probabilities
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -320,6 +471,28 @@ def _poisson_score_grid_to_prediction(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _make_predictor(
+    predictor_kind: str,
+    *,
+    sigma_s_per_day: float,
+    rho: float = BIVARIATE_DEFAULT_RHO,
+):
+    """Instantiate the requested predictor by name.
+
+    ``predictor_kind`` must be one of ``'independent'`` or ``'bivariate'``.
+    """
+    if predictor_kind == "independent":
+        return BayesianPoissonPredictor(sigma_s_per_day=sigma_s_per_day)
+    if predictor_kind == "bivariate":
+        return BayesianBivariatePoissonPredictor(
+            sigma_s_per_day=sigma_s_per_day, rho=rho,
+        )
+    raise ValueError(
+        f"Unknown predictor_kind {predictor_kind!r}. "
+        f"Valid: 'independent', 'bivariate'."
+    )
+
+
 def run_phase5_backtest(
     outcomes_parquet: Path = DEFAULT_STATSBOMB_PARQUET,
     *,
@@ -330,6 +503,8 @@ def run_phase5_backtest(
     allow_below_gate: bool = False,
     n_bins: int | None = None,
     min_bin_fill: float | None = None,
+    predictor_kind: str = "independent",
+    rho: float = BIVARIATE_DEFAULT_RHO,
 ) -> tuple[LockDecision, list[CalibrationReport]]:
     """Main entry: load StatsBomb outcomes, run backtest, emit LockDecision.
 
@@ -339,6 +514,10 @@ def run_phase5_backtest(
     ``FOOTBALL_DEFAULT_*`` constants for rationale. Override to use
     Walsh & Joshi 2024's NBA defaults (20 / 0.8) if calibration is
     being checked on a non-football dataset.
+
+    ``predictor_kind`` selects between Independent Poisson (default,
+    backward-compatible) and Bivariate Poisson (corrects draw
+    underestimation per SYNTHESIS Conclusion 2).
     """
     if n_bins is None:
         n_bins = FOOTBALL_DEFAULT_N_BINS
@@ -352,7 +531,9 @@ def run_phase5_backtest(
         )
 
     snapshots, _ = make_snapshots(outcomes)
-    predictor = BayesianPoissonPredictor(sigma_s_per_day=sigma_s_per_day)
+    predictor = _make_predictor(
+        predictor_kind, sigma_s_per_day=sigma_s_per_day, rho=rho,
+    )
 
     reports = run_backtest_layer1(
         snapshots, [predictor],
@@ -387,6 +568,8 @@ def run_phase5_backtest_calibrated(
     allow_below_gate: bool = False,
     n_bins: int | None = None,
     min_bin_fill: float | None = None,
+    predictor_kind: str = "independent",
+    rho: float = BIVARIATE_DEFAULT_RHO,
 ) -> tuple[LockDecision, list[CalibrationReport]]:
     """Phase 2 ∘ Phase 5 — apply LogisticLogitCalibrator post-hoc.
 
@@ -419,7 +602,9 @@ def run_phase5_backtest_calibrated(
             f"Run scripts/seed_statsbomb_tournaments.py first."
         )
     snapshots, _ = make_snapshots(outcomes)
-    predictor = BayesianPoissonPredictor(sigma_s_per_day=sigma_s_per_day)
+    predictor = _make_predictor(
+        predictor_kind, sigma_s_per_day=sigma_s_per_day, rho=rho,
+    )
 
     # ── Pass 1: predict every fixture, capture raw probs ───────────────
     raw_predictions: list[tuple[BacktestSnapshot, FixturePrediction]] = []
@@ -452,12 +637,14 @@ def run_phase5_backtest_calibrated(
     )
 
     # ── Pass 3: score test set both raw + calibrated ───────────────────
+    raw_name = f"bayesian_{predictor_kind}_poisson_raw"
+    cal_name = f"bayesian_{predictor_kind}_poisson_logit_calibrated"
     raw_audit = CalibrationAudit(
-        predictor_name="bayesian_poisson_raw",
+        predictor_name=raw_name,
         n_bins=n_bins, min_bin_fill=min_bin_fill, git_sha=git_sha,
     )
     cal_audit = CalibrationAudit(
-        predictor_name="bayesian_poisson_logit_calibrated",
+        predictor_name=cal_name,
         n_bins=n_bins, min_bin_fill=min_bin_fill, git_sha=git_sha,
     )
 
@@ -580,6 +767,20 @@ def _parse_args() -> argparse.Namespace:
         "them to held-out (Copa 2024 + Euro 2024). Emits side-by-side "
         "raw vs calibrated verdicts in the LockDecision.",
     )
+    p.add_argument(
+        "--predictor", default="independent",
+        choices=("independent", "bivariate"),
+        help="Goal-distribution predictor. 'independent' = Independent "
+        "Poisson (default, backward-compat). 'bivariate' = Bivariate "
+        "Poisson with shared λ_3 correlation (corrects draw "
+        "underestimation per SYNTHESIS Conclusion 2).",
+    )
+    p.add_argument(
+        "--rho", type=float, default=BIVARIATE_DEFAULT_RHO,
+        help="Correlation parameter for Bivariate Poisson. Dixon-Coles "
+        "1997 estimate is 0.04. Range [-0.5, 0.5]; ρ=0 collapses to "
+        "Independent Poisson. Only consumed when --predictor=bivariate.",
+    )
     return p.parse_args()
 
 
@@ -597,6 +798,8 @@ def main() -> None:
         allow_below_gate=args.allow_below_gate,
         n_bins=args.n_bins,
         min_bin_fill=args.min_bin_fill,
+        predictor_kind=args.predictor,
+        rho=args.rho,
     )
 
     print()
