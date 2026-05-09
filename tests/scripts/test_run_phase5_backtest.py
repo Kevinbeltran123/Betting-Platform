@@ -239,6 +239,170 @@ class TestPredictorFactory:
             _make_predictor("nonexistent", sigma_s_per_day=0.0001)
 
 
+# ── Train-time ρ tuner (Layer-1 — synthetic snapshots) ───────────────────────
+
+
+class TestBivariateLogPmf:
+    def test_rho_zero_matches_independent_poisson_log_pmf(self):
+        """ρ=0 → joint log-PMF == log P(X=h)·P(Y=a) (independent)."""
+        import math
+
+        from scripts.run_phase5_backtest import _bivariate_log_pmf, _poisson_pmf
+
+        mu_h, mu_a = 1.5, 1.2
+        for h in (0, 1, 2, 3):
+            for a in (0, 1, 2, 3):
+                joint = _bivariate_log_pmf(h, a, mu_h, mu_a, rho=0.0)
+                expected = math.log(_poisson_pmf(h, mu_h) * _poisson_pmf(a, mu_a))
+                assert joint == pytest.approx(expected, abs=1e-6)
+
+    def test_positive_rho_inflates_diagonal_probability(self):
+        """ρ>0 should raise log P(h, h) — concentrates mass on the diagonal."""
+        from scripts.run_phase5_backtest import _bivariate_log_pmf
+
+        mu_h, mu_a = 1.5, 1.5
+        zero = _bivariate_log_pmf(1, 1, mu_h, mu_a, rho=0.0)
+        positive = _bivariate_log_pmf(1, 1, mu_h, mu_a, rho=0.20)
+        assert positive > zero
+
+    def test_extreme_score_returns_finite_log(self):
+        """Score above MAX_GOALS_GRID truncates to grid edge; result stays finite."""
+        import math
+
+        from scripts.run_phase5_backtest import _bivariate_log_pmf
+
+        # Even very low probability still finite (truncated to grid edge)
+        v = _bivariate_log_pmf(20, 20, 0.5, 0.5, rho=0.0)
+        assert math.isfinite(v)
+
+    def test_zero_probability_cell_floored(self):
+        """When the grid cell is identically 0 (e.g., μ=0), log returns the floor
+        rather than -inf, so averaging stays well-behaved."""
+        import math
+
+        from scripts.run_phase5_backtest import _MIN_BIVARIATE_LOG_PROB, _bivariate_log_pmf
+
+        # μ=0 → grid[k>0, k>0] is exactly 0 — floor kicks in
+        v = _bivariate_log_pmf(2, 2, mu_h=0.0, mu_a=0.0, rho=0.0)
+        assert math.isfinite(v)
+        assert v == pytest.approx(_MIN_BIVARIATE_LOG_PROB, abs=1e-9)
+
+
+class TestTuneRhoWalkforward:
+    def test_excludes_held_out_tournaments(self):
+        """All snapshots in held-out tournaments → tuner refuses (no train data)."""
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import tune_rho_walkforward
+
+        snaps = [
+            BacktestSnapshot(
+                match_id=f"m{i}", tournament="copa_2024",
+                home_team_id=i % 4, away_team_id=(i + 1) % 4,
+                observed_1x2=0, observed_total_goals=2, observed_btts=1,
+                observed_home_goals=1, observed_away_goals=1,
+                match_date=f"2024-06-{i + 1:02d}",
+            )
+            for i in range(8)
+        ]
+        with pytest.raises(RuntimeError, match="No train snapshots"):
+            tune_rho_walkforward(
+                snaps, [0.0, 0.04],
+                held_out_tournaments=("copa_2024",),
+            )
+
+    def test_returns_score_per_candidate(self):
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import tune_rho_walkforward
+
+        # Mix train (wc_2018) and held-out (copa_2024)
+        train_snaps = [
+            BacktestSnapshot(
+                match_id=f"t{i}", tournament="wc_2018",
+                home_team_id=i % 4, away_team_id=(i + 1) % 4,
+                observed_1x2=0, observed_total_goals=2, observed_btts=1,
+                observed_home_goals=1, observed_away_goals=1,
+                match_date=f"2018-06-{(i % 28) + 1:02d}",
+            )
+            for i in range(20)
+        ]
+        held_snaps = [
+            BacktestSnapshot(
+                match_id=f"h{i}", tournament="copa_2024",
+                home_team_id=i, away_team_id=i + 1,
+                observed_1x2=0, observed_total_goals=2, observed_btts=1,
+                observed_home_goals=1, observed_away_goals=1,
+                match_date=f"2024-06-{(i % 28) + 1:02d}",
+            )
+            for i in range(8)
+        ]
+        candidates = [0.0, 0.04, 0.10]
+        best, scores = tune_rho_walkforward(
+            train_snaps + held_snaps, candidates,
+            held_out_tournaments=("copa_2024",),
+        )
+        assert set(scores.keys()) == set(candidates)
+        assert best in candidates
+        assert all(isinstance(v, float) for v in scores.values())
+
+    def test_picks_higher_rho_on_diagonal_heavy_synthetic_data(self):
+        """If train data has many 1-1, 2-2 score lines, ρ>0 should win the
+        sweep — diagonal mass is exactly what positive ρ adds.
+
+        Construct 30 fixtures across 6 teams where ~80% end on the diagonal
+        (1-1 or 2-2). Independent Poisson under-predicts these; positive ρ
+        should yield higher avg joint log-likelihood.
+        """
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import tune_rho_walkforward
+
+        snaps = []
+        for i in range(30):
+            home_id = i % 6
+            away_id = (i + 1) % 6
+            # 80% diagonal (1-1 or 2-2), 20% non-diagonal (2-1 / 1-2)
+            if i % 5 == 0:
+                hg, ag = (2, 1) if i % 2 == 0 else (1, 2)
+            else:
+                hg, ag = (1, 1) if i % 2 == 0 else (2, 2)
+            snaps.append(BacktestSnapshot(
+                match_id=f"m{i}", tournament="wc_2018",
+                home_team_id=home_id, away_team_id=away_id,
+                observed_1x2=0 if hg > ag else (1 if hg == ag else 2),
+                observed_total_goals=hg + ag,
+                observed_btts=int(hg > 0 and ag > 0),
+                observed_home_goals=hg, observed_away_goals=ag,
+                match_date=f"2018-06-{(i % 28) + 1:02d}",
+            ))
+        best, scores = tune_rho_walkforward(
+            snaps, [0.0, 0.10, 0.25],
+            held_out_tournaments=("copa_2024",),
+        )
+        # On diagonal-heavy data, ρ=0 should be strictly worse than ρ>0
+        assert scores[0.10] > scores[0.0]
+        assert scores[0.25] > scores[0.0]
+        assert best in (0.10, 0.25)
+
+    def test_empty_candidates_rejected(self):
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import tune_rho_walkforward
+
+        snaps = [BacktestSnapshot(
+            match_id="m0", tournament="wc_2018",
+            home_team_id=0, away_team_id=1,
+            observed_1x2=0, observed_total_goals=1, observed_btts=0,
+            observed_home_goals=1, observed_away_goals=0,
+            match_date="2018-06-14",
+        )]
+        with pytest.raises(ValueError, match="rho_candidates must not be empty"):
+            tune_rho_walkforward(snaps, [])
+
+    def test_empty_snapshots_rejected(self):
+        from scripts.run_phase5_backtest import tune_rho_walkforward
+
+        with pytest.raises(ValueError, match="snapshots must not be empty"):
+            tune_rho_walkforward([], [0.0, 0.04])
+
+
 class TestBayesianPoissonPredictor:
     def test_first_match_uses_priors(self):
         """Cold-start: with both teams unseen, prediction uses cohort priors

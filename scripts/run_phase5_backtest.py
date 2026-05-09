@@ -78,6 +78,13 @@ from bip.evaluation.tournaments.predictors.bivariate_poisson import (  # noqa: E
 from bip.evaluation.tournaments.predictors.bivariate_poisson import (  # noqa: E402
     _bivariate_poisson_grid,
 )
+
+# Default ρ search grid — covers the 0.04 (Dixon-Coles) to 0.32 region. The
+# 2026-05-08 held-out sweep favored 0.20 with a known test-set contamination
+# caveat; this train-time tuner is the de-contamination pass.
+DEFAULT_RHO_GRID: tuple[float, ...] = (
+    0.00, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24, 0.28, 0.32,
+)
 from scripts.backtest_int_tournaments import (  # noqa: E402
     DEFAULT_HELD_OUT_TOURNAMENTS,
     BacktestSnapshot,
@@ -737,6 +744,169 @@ def _fit_binary_calibrator(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Train-time ρ tuner (Bivariate Poisson)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# Floor for log-probabilities so a single 0-probability cell can't dominate
+# the average via -inf (e.g., extreme score above MAX_GOALS_GRID after
+# truncation). 1e-12 ≈ -27.6 nats — ~10× worse than a genuine 9-goal upset.
+_MIN_BIVARIATE_LOG_PROB = math.log(1e-12)
+
+
+def _bivariate_log_pmf(
+    home_goals: int,
+    away_goals: int,
+    mu_h: float,
+    mu_a: float,
+    rho: float,
+    *,
+    max_n: int = MAX_GOALS_GRID,
+) -> float:
+    """Joint log P(X=home_goals, Y=away_goals | μ_h, μ_a, ρ) — Bivariate Poisson.
+
+    Required because the *marginals* of a Bivariate Poisson are still
+    Poisson(μ), so scoring marginal log-PMFs is invariant to ρ. Only the
+    joint cell carries ρ-dependent information. See Karlis & Ntzoufras
+    (2003) §2.
+
+    The decomposition mirrors ``BayesianBivariatePoissonPredictor``:
+    ``λ_3 = ρ · √(μ_h · μ_a)`` clamped so ``λ_1, λ_2 ≥ 0``.
+    """
+    lam12 = rho * math.sqrt(mu_h * mu_a)
+    lam12 = max(0.0, min(lam12, min(mu_h, mu_a) - 1e-9))
+    lam1 = mu_h - lam12
+    lam2 = mu_a - lam12
+
+    grid = _bivariate_poisson_grid(lam1, lam2, lam12, max_n)
+    h = min(home_goals, max_n)
+    a = min(away_goals, max_n)
+    p = float(grid[h, a])
+    if p <= 0.0:
+        return _MIN_BIVARIATE_LOG_PROB
+    return math.log(p)
+
+
+def tune_rho_walkforward(
+    snapshots: list[BacktestSnapshot],
+    rho_candidates: list[float] | tuple[float, ...] = DEFAULT_RHO_GRID,
+    *,
+    held_out_tournaments: tuple[str, ...] = DEFAULT_HELD_OUT_TOURNAMENTS,
+    sigma_s_per_day: float = DEFAULT_SIGMA_S_PER_DAY,
+    prior_goals: float = 1.30,
+    prior_corners: float = 5.0,
+    n_prior: int = DEFAULT_N_PRIOR,
+) -> tuple[float, dict[float, float]]:
+    """Held-criterion-C ρ sweep on training matches only — defuses overfit.
+
+    Mirrors ``calibrate_sigma_s_walkforward`` in
+    ``scripts/seed_international_history.py``: for each candidate ρ, builds
+    a fresh ``TournamentLiveState`` over all teams seen in training, walks
+    matches in chronological order, scores each fixture's observed
+    (home_goals, away_goals) via the JOINT Bivariate Poisson log-PMF, and
+    advances state via ``within_tournament_step`` with competition
+    weighting. Optimal ρ maximizes average per-match log-likelihood.
+
+    Snapshots whose tournament is in ``held_out_tournaments`` are excluded
+    completely — the tuner never peeks at test data, which is the whole
+    point of this pass over the 2026-05-08 held-out sweep.
+
+    Returns ``(best_rho, scores)`` where ``scores[ρ]`` is the average
+    per-match (NOT per-side) joint log-likelihood under that ρ.
+    """
+    if not rho_candidates:
+        raise ValueError("rho_candidates must not be empty")
+    if not snapshots:
+        raise ValueError("snapshots must not be empty")
+
+    held_out = set(held_out_tournaments)
+    train = [s for s in snapshots if s.tournament not in held_out]
+    if not train:
+        raise RuntimeError(
+            f"No train snapshots after filtering held_out={held_out_tournaments}. "
+            f"All snapshots belong to held-out tournaments."
+        )
+
+    # Order matters — Held's criterion C is one-step-ahead predictive.
+    train = sorted(train, key=lambda s: s.match_date or "")
+
+    # Stable team_id assignment via insertion order; matches the
+    # BayesianBivariatePoissonPredictor lazy-registration pattern.
+    teams_seen: dict[int, bool] = {}
+    for s in train:
+        teams_seen[s.home_team_id] = True
+        teams_seen[s.away_team_id] = True
+
+    scores: dict[float, float] = {}
+    for rho in rho_candidates:
+        state = TournamentLiveState(tournament_slug="phase5_rho_tune")
+        for tid in teams_seen:
+            state.team_states[tid] = TeamLiveState(
+                team_id=tid,
+                prior_goals_for=prior_goals,
+                prior_goals_against=prior_goals,
+                prior_corners_for=prior_corners,
+                prior_corners_against=prior_corners,
+                prior_shots_for=12.0,
+                prior_sot_for=4.0,
+                n_prior=n_prior,
+            )
+        updater = BayesianUpdater(sigma_s_per_day=sigma_s_per_day)
+        last_match_date: date | None = None
+
+        log_lik_total = 0.0
+        n_scored = 0
+
+        for snap in train:
+            if snap.match_date is not None:
+                current = date.fromisoformat(snap.match_date)
+                if last_match_date is not None:
+                    gap = (current - last_match_date).days
+                    if gap > 0:
+                        updater.between_window_step(state, days_elapsed=gap)
+                last_match_date = current
+
+            home_state = state.team_states[snap.home_team_id]
+            away_state = state.team_states[snap.away_team_id]
+            mu_h = max(
+                (home_state.lambda_goals_for + away_state.lambda_goals_against) / 2.0,
+                1e-3,
+            )
+            mu_a = max(
+                (away_state.lambda_goals_for + home_state.lambda_goals_against) / 2.0,
+                1e-3,
+            )
+
+            if snap.observed_home_goals is None or snap.observed_away_goals is None:
+                continue
+
+            log_lik_total += _bivariate_log_pmf(
+                snap.observed_home_goals,
+                snap.observed_away_goals,
+                mu_h, mu_a, rho,
+            )
+            n_scored += 1
+
+            # Update state for next iteration — preserves walk-forward causality.
+            result = TournamentMatchResult(
+                match_id=snap.match_id,
+                home_team_id=snap.home_team_id,
+                away_team_id=snap.away_team_id,
+                home_goals=snap.observed_home_goals,
+                away_goals=snap.observed_away_goals,
+                home_corners=snap.observed_home_corners,
+                away_corners=snap.observed_away_corners,
+                competition=_tournament_to_competition(snap.tournament),
+            )
+            updater.within_tournament_step(state, result)
+
+        scores[rho] = log_lik_total / n_scored if n_scored else float("-inf")
+
+    best_rho = max(scores, key=lambda r: scores[r])
+    return best_rho, scores
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -779,7 +949,21 @@ def _parse_args() -> argparse.Namespace:
         "--rho", type=float, default=BIVARIATE_DEFAULT_RHO,
         help="Correlation parameter for Bivariate Poisson. Dixon-Coles "
         "1997 estimate is 0.04. Range [-0.5, 0.5]; ρ=0 collapses to "
-        "Independent Poisson. Only consumed when --predictor=bivariate.",
+        "Independent Poisson. Only consumed when --predictor=bivariate. "
+        "Ignored when --auto-tune-rho is set.",
+    )
+    p.add_argument(
+        "--auto-tune-rho", action="store_true",
+        help="Sweep ρ on training tournaments only (excludes held-out via "
+        "DEFAULT_HELD_OUT_TOURNAMENTS), pick the ρ that maximizes joint "
+        "Bivariate Poisson log-likelihood, and use that ρ for the held-out "
+        "backtest. Defuses the test-set-contamination caveat from the "
+        "2026-05-08 held-out sweep. Forces --predictor=bivariate.",
+    )
+    p.add_argument(
+        "--rho-grid", type=float, nargs="+", default=None,
+        help="Custom ρ candidates (space-separated). Defaults to "
+        f"{list(DEFAULT_RHO_GRID)}.",
     )
     return p.parse_args()
 
@@ -787,6 +971,43 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     print(f"[phase5] loading outcomes from {args.outcomes_parquet}", file=sys.stderr)
+
+    rho = args.rho
+    predictor_kind = args.predictor
+
+    if args.auto_tune_rho:
+        # Force bivariate — tuning ρ on Independent Poisson is meaningless.
+        predictor_kind = "bivariate"
+        outcomes = load_outcomes_from_parquet(args.outcomes_parquet)
+        if not outcomes:
+            raise RuntimeError(
+                f"No outcomes found in {args.outcomes_parquet}. "
+                f"Run scripts/seed_statsbomb_tournaments.py first."
+            )
+        snapshots, _ = make_snapshots(outcomes)
+        grid = list(args.rho_grid) if args.rho_grid is not None else list(DEFAULT_RHO_GRID)
+
+        print(f"[phase5] tuning ρ on training tournaments (excluding "
+              f"{', '.join(DEFAULT_HELD_OUT_TOURNAMENTS)})", file=sys.stderr)
+        print(f"[phase5] candidate ρ grid: {grid}", file=sys.stderr)
+
+        best_rho, scores = tune_rho_walkforward(
+            snapshots, grid, sigma_s_per_day=args.sigma_s,
+        )
+
+        print()
+        print("=" * 72)
+        print(f"ρ TUNING — train-time avg joint log-likelihood per match")
+        print("=" * 72)
+        for rho_cand in sorted(scores):
+            marker = " ←" if rho_cand == best_rho else ""
+            print(f"  ρ = {rho_cand:.3f}   loglik = {scores[rho_cand]:.6f}{marker}")
+        print()
+        print(f"best ρ_train = {best_rho:.3f}")
+        print()
+
+        rho = best_rho
+
     runner = (
         run_phase5_backtest_calibrated if args.apply_calibrator
         else run_phase5_backtest
@@ -798,14 +1019,18 @@ def main() -> None:
         allow_below_gate=args.allow_below_gate,
         n_bins=args.n_bins,
         min_bin_fill=args.min_bin_fill,
-        predictor_kind=args.predictor,
-        rho=args.rho,
+        predictor_kind=predictor_kind,
+        rho=rho,
     )
 
     print()
     print("=" * 72)
     print(f"PHASE 5 BACKTEST — calibration_status: {decision.calibration_status}")
     print("=" * 72)
+    print(f"Predictor: {predictor_kind}" + (
+        f" (ρ = {rho:.3f}{' tuned' if args.auto_tune_rho else ''})"
+        if predictor_kind == "bivariate" else ""
+    ))
     print(f"Fixtures scored: {decision.n_fixtures_with_predictions}")
     print(f"Coverage: {decision.coverage_pct:.1%}")
     print(f"Held-out tournaments: {', '.join(decision.held_out_tournaments)}")
