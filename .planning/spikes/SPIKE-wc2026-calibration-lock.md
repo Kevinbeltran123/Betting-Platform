@@ -1,7 +1,7 @@
 ---
 spike: wc2026-calibration-lock
 slug: wc2026-calibration-lock
-status: phase-4-next
+status: layer-1-complete
 created: 2026-05-08
 last_updated: 2026-05-08
 operator: Kevin Beltrán
@@ -9,9 +9,9 @@ branch: spike/national-team-tournament-evaluator
 companion_to: SPIKE-tournament-evaluator.md
 hard_deadline: 2026-06-08
 graduates_to: TBD (calibrated predictors merged into evaluator output OR Phase 6 v1.0 corners module)
-tests_passing: 660
-tests_xfail: 7
-commits_on_branch: 12
+tests_passing: 751
+tests_xfail: 8
+commits_on_branch: 15
 ---
 
 # Spike — WC2026 Calibration Lock
@@ -163,10 +163,10 @@ The synthesis identified 8 phases. This spike scopes **only the 4 directly relev
 | 0.5 | Understat xG client + TeamFormFeatures | ~4h | pre-Phase 1 | ✅ COMPLETE | `f9ce4e5` |
 | 1 | Calibration baseline audit (classwise-ECE infra + measure existing predictors) | ~6h | 2026-05-12 | ✅ COMPLETE | `94e63fc` |
 | 2 | Replace isotonic with `LogisticLogitCalibrator` (Ojeda Step 3) | ~6h | 2026-05-15 | ✅ COMPLETE | `234c54e` |
-| 3 | Two-timescale `BayesianUpdater` refactor + σ_s calibration via Held criterion C on 2010–2024 int. results | ~16h | 2026-05-22 *(checkpoint)* | ✅ Layer-1 COMPLETE | _pending_ |
-| 4 | League-strength normalization layer (Shelopugin Table V/VI seed + `CompositionBlender` wiring) | ~12h | 2026-05-29 | ⏳ **NEXT** | — |
-| 5 | Pre-lock backtest on WC 2018, Euro 2024, Copa 2024 + gate verification | ~12h | 2026-06-05 | ⏳ pending | — |
-| 6 | LOCK — locked tournament-evaluator predictions for WC2026 (commits to `locked_predictions/`) | ~3h | **2026-06-08 HARD** | ⏳ pending | — |
+| 3 | Two-timescale `BayesianUpdater` refactor + σ_s calibration via Held criterion C on 2010–2024 int. results | ~16h | 2026-05-22 *(checkpoint)* | ✅ Layer-1 COMPLETE | `21bfe0e` |
+| 4 | League-strength normalization layer (Shelopugin Table V/VI seed + `CompositionBlender` wiring) | ~12h | 2026-05-29 | ✅ Layer-1 COMPLETE | `b1c3db0` |
+| 5 | Pre-lock backtest on WC 2018, Euro 2024, Copa 2024 + gate verification | ~12h | 2026-06-05 | ✅ Layer-1 COMPLETE | `3edb5d8` |
+| 6 | LOCK — locked tournament-evaluator predictions for WC2026 (commits to `locked_predictions/`) | ~3h | **2026-06-08 HARD** | ✅ Layer-1 COMPLETE | _pending_ |
 
 ### Per-phase structure-first deliverables
 
@@ -178,9 +178,9 @@ Each phase ships in two layers. Layer 1 (structural) MUST close before the deadl
 | 1 | `CalibrationReport` Pydantic model + `classwise_ece`/`bin_fill_check` + `CalibrationAudit` harness + `gate_status()` + 27 tests | Audit run on real walk-forward backtest output | Conclusions 1, 4, 6 | ✅ commit `94e63fc` |
 | 2 | `LogisticLogitCalibrator` (fit p_cal=σ(α+β·logit(p_raw)) per class via L-BFGS-B MLE; binary + multiclass; identity fallback for n<50; persistence) + `_IsotonicCalibrator` shim + 20 tests | Side-by-side vs isotonic on real validation set (Phase 5 backtest) | Conclusion 1 | ✅ commit `234c54e` |
 | 3 | `BayesianUpdater.between_window_step()` + `within_tournament_step()` + `within_match_step()` (Gamma-Poisson) with synthetic state tests; `scripts/seed_international_history.py` skeleton + parquet schema | σ_s sweep via Held criterion C on real 2010–2024 fixtures (queued) | Conclusions 5, 7 | ✅ Layer-1 COMPLETE — 29 tests + 1 xfail Layer-2 |
-| 4 | League-strength lookup table (Shelopugin Table V/VI YAML) + `apply_league_adjustment()` + parametric tests covering Premier-2118 → Brazil-1868 case + `CompositionBlender` consumption with mock rates | Full E2E swap-in once `ClubFormLoader` returns real per-league data | Conclusion 3 | ⏳ pending |
-| 5 | Backtest harness + gate-evaluation script with synthetic `CalibrationReport` fixtures verifying gate logic (ECE/Brier thresholds correctly fail/pass mock data) | Real run on WC 2018 / Euro 2024 / Copa 2024 historical fixtures | Conclusions 1, 2 | ⏳ pending |
-| 6 | Lock JSON schema + emitter writing to `locked_predictions/` with `calibration_status` field (`pass` / `marginal` / `below-gate` / `coverage-partial`) | Operator runs the full pipeline against WC2026 fixtures and commits the JSON | n/a | ⏳ pending |
+| 4 | League-strength lookup table (Shelopugin Table V/VI YAML) + `apply_league_adjustment()` + parametric tests covering Premier-2118 → Brazil-1868 case + `CompositionBlender` consumption with mock rates | Full E2E swap-in once `ClubFormLoader` returns real per-league data + α empirical recalibration via real transfer outcomes | Conclusion 3 | ✅ Layer-1 COMPLETE — `derive_multiplier_from_glicko()` + 9 Shelopugin-grounded entries + 22 tests |
+| 5 | `lock_gate.py` (`LockDecision` Pydantic + `evaluate_lock` aggregator with worst-case status propagation, structural-only / coverage-partial / no-reports escape hatches, `allow_below_gate` operator override) + `scripts/backtest_int_tournaments.py` Layer-1 harness (`BacktestSnapshot` / `FixturePrediction` / `PredictorProtocol` / `run_backtest_layer1` / `aggregate_to_lock_decision`) + 38 tests | Real run on WC 2018 / Euro 2024 / Copa 2024 historical fixtures via Layer-2 wiring | Conclusions 1, 2 | ✅ Layer-1 COMPLETE — 38 tests + 1 xfail Layer-2 |
+| 6 | `lock_emitter.py` (`LockJSON` + `FixtureLockedPredictions` Pydantic with SHA-256 `content_hash` + `emit_lock_json` with `force=True` slip-plan opt-in + `verify_lock_json` tamper detection) + `locked_predictions/world_cup_2026/.gitkeep` directory + 30 tests | Operator runs the full pipeline against WC2026 fixtures and commits the JSON | n/a | ✅ Layer-1 COMPLETE — 30 tests passing |
 
 **Result if data does not arrive in time:** Layer 1 ships for all 6 phases. The spike branch is structurally complete. The lock JSON ships with `calibration_status: "structural-only"` and all queued Layer-2 validations remain `xfail` with `# requires-real-data` markers. Post-tournament scoring still grades the predictions honestly because the predictors themselves are unchanged.
 
@@ -272,6 +272,16 @@ For graduation to v1.0 Phase 6 (post-WC decision):
 | 2026-05-08 | Phase 3 decay model = Held log-rate random walk (not exponential effective-sample-size decay) | Operator chose the realist over the easy path. Δvar = days · σ_s² · μ² makes σ_s dimensionless ("fractional volatility per day"), so a single value works across goals/corners/shots scales. Backward-compat preserved via `n_prior_eff = mean / var` derivation that recovers pre-Phase-3 blend at default initialization |
 | 2026-05-08 | `competition_weight` scales obs but not n_matches_played | Bayesian evidence (obs_weight_total) reflects Held weighting (WC = 4× evidence units) while match-count semantics for player-events / minutes-bookkeeping stay literal. Two counters with different physical meanings |
 | 2026-05-08 | `_blend()` formula stays intact; n_prior_eff derived per-metric on demand | Avoids breaking 14 legacy bayesian_updater tests + the 631-test suite. Variance-driven shrinkage emerges naturally from the property derivation rather than a formula rewrite |
+| 2026-05-08 | Phase 4 default α=0.001/Glicko-pt for `exp(α·ΔR)` league strength multiplier | Reverse-engineered from operator's pre-Phase-4 multiplier table (median of α implied across 7 Shelopugin-overlapping leagues). Premier=2118.8 → mult 1.0; Brazil=1868.4 (250 pt gap) → mult 0.78 — matches operator's existing intuition while grounding the formula in published Glicko-2 ratings |
+| 2026-05-08 | `glicko_rating: float \| None` on LeagueStrength entries (not required) | Shelopugin Table V/VI covers top-tier European + South American leagues; outside sample (MLS, Saudi, J1, K League, Süper Lig, Greek, Belgian Pro) leaves it null and keeps operator-tuned multiplier. UEFA competitions also null (no domestic-league rating) |
+| 2026-05-08 | YAML-vs-formula deviations >5% emit warning, not error | Operator may have empirical reason to override `exp(α·ΔR)` (e.g., league experienced calibre shift between 2023 and now). Warning surfaces overrides for review; loading still succeeds |
+| 2026-05-08 | Phase 5 lock decision = per-predictor verdicts, NOT a single global pass/fail | SYNTHESIS Conclusion 1: 3 corrections compose multiplicatively. Different predictors may pass different markets; lock JSON surfaces the breakdown so operator can keep one predictor's good markets while rejecting another's. Aggregate `calibration_status` is worst-case across predictors but per-predictor verdicts are preserved verbatim |
+| 2026-05-08 | 4 escape hatches for honest reporting | `structural-only` (Layer-1 ship before data), `no-reports` (empty input), `coverage-partial` (< 90% fixture coverage), `allow_below_gate` (operator override demotes aggregate to marginal but preserves per-predictor below-gate verdict). Every hatch records its provenance in `operator_overrides` |
+| 2026-05-08 | Coverage gate runs FIRST before status propagation | If data is sparse (<90% coverage), the calibration claim is uninterpretable regardless of what the few reports say. Returning `coverage-partial` early avoids producing a false 'pass' that the operator might trust |
+| 2026-05-08 | `gate_status()` lives on `CalibrationReport`, aggregation lives on `LockDecision` | Single-report status logic (Phase 1) is orthogonal to multi-report aggregation (Phase 5). Keeps the precedence rule (`below-gate > unreliable-bins > marginal > pass`) testable in isolation |
+| 2026-05-08 | Phase 6 lock JSON is tamper-evident via SHA-256 `content_hash` over canonical-form payload | Post-tournament scoring needs proof that the predictions weren't edited after lock. SHA-256 over sort_keys + ISO-8601 datetimes + excluding the hash field itself; cosmetic re-indenting still verifies, any data change fails. `verify_lock_json()` returns `(lock, is_valid)` — operator decides what to do if invalid |
+| 2026-05-08 | `emit_lock_json` defaults safe (force=False); below-gate emit requires `force=True` + `forced_emit_reason` | Spike R-08 slip plan: lock anyway with explicit calibration_status flag if gates miss by 2026-06-08. But default must REJECT non-passing decisions to avoid accidentally locking below-gate. Symmetric with Phase 5's `allow_below_gate`: both register the override in operator_overrides / forced_emit_reason for audit trail |
+| 2026-05-08 | Schema version constant `LOCK_SCHEMA_VERSION = "1.0"` with anchor test | Bump on breaking changes; loaders dispatch by version. Anchor test in `test_schema_version_anchor` prevents accidental silent changes — both must update together |
 | 2026-05-08 | League-strength multipliers seeded from Shelopugin (2023) Table V/VI lookup | Premier-2118 vs Brazil-1868 (~250 pt gap) is empirically validated and stable; rebuilding the rating system is out of scope |
 | 2026-05-08 | Synthesis Phases 5–8 (SysID, NB corners, Cemek, prod backtest) deferred to v1.0 Phase 6 | Two-pronged placement decision; keeps spike scope minimal and respects v1.0 roadmap integrity |
 
