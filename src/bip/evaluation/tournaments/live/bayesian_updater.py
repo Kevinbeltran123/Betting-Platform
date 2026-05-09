@@ -95,6 +95,10 @@ class TournamentMatchResult:
     away_shots: int | None = None
     home_sot: int | None = None
     away_sot: int | None = None
+    # Expected goals (sum of shot.statsbomb_xg over the match). When present,
+    # the updater accumulates a parallel xG rate used by xG-blended predictors.
+    home_xg: float | None = None
+    away_xg: float | None = None
 
     # Player events — api_football_ids.
     injured_home: tuple[int, ...] = field(default_factory=tuple)
@@ -193,6 +197,15 @@ class BayesianUpdater:
                 days_elapsed * sigma_sq * (ts.prior_shots_for ** 2)
             ts.prior_var_sot_for = (ts.prior_var_sot_for or 0.0) + \
                 days_elapsed * sigma_sq * (ts.prior_sot_for ** 2)
+            # xG decays with the same fractional volatility — international
+            # team xG and goals share the same generative timescale (form
+            # changes coach + roster, both metrics shift together).
+            if ts.prior_xg_for is not None:
+                ts.prior_var_xg_for = (ts.prior_var_xg_for or 0.0) + \
+                    days_elapsed * sigma_sq * (ts.prior_xg_for ** 2)
+            if ts.prior_xg_against is not None:
+                ts.prior_var_xg_against = (ts.prior_var_xg_against or 0.0) + \
+                    days_elapsed * sigma_sq * (ts.prior_xg_against ** 2)
 
     # ── timescale 2: between matches inside a tournament ────────────────────
 
@@ -326,6 +339,15 @@ class BayesianUpdater:
         sot = result.home_sot if is_home else result.away_sot
         if sot is not None:
             ts.obs_sot_for += sot * weight
+
+        # xG (optional) — parallel rate updated alongside goals. Both for
+        # this team's offense (xg_for) and conceded (xg_against from opp).
+        xg_for = result.home_xg if is_home else result.away_xg
+        xg_against = result.away_xg if is_home else result.home_xg
+        if xg_for is not None:
+            ts.obs_xg_for += float(xg_for) * weight
+        if xg_against is not None:
+            ts.obs_xg_against += float(xg_against) * weight
 
         ts.n_matches_played += 1
         ts.obs_weight_total += weight

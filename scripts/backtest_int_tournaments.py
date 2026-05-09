@@ -95,6 +95,11 @@ class BacktestSnapshot:
     # Optional per-team corner counts (for corners O/U markets)
     observed_home_corners: int | None = None
     observed_away_corners: int | None = None
+    # Optional per-team xG totals (forward-information signal — see
+    # `aggregate_xg_per_team` in seed_statsbomb_tournaments.py). Predictors
+    # using xG-blended rates consume these; predictors that don't, ignore.
+    observed_home_xg: float | None = None
+    observed_away_xg: float | None = None
     # Optional ISO date string for between-window decay computation
     match_date: str | None = None
 

@@ -42,6 +42,13 @@ class TeamLiveState:
     prior_corners_against: float
     prior_shots_for: float
     prior_sot_for: float
+    # xG priors (Phase 5 Layer-2 Option-2). Default initialised to the
+    # goals priors when None — the Gamma-Poisson updater on xG keeps a
+    # second rate per team, blended with goals at predict time. Backward-
+    # compat: states saved before xG-tracking deserialize fine because
+    # `__post_init__` derives missing fields from goals priors.
+    prior_xg_for: float | None = None
+    prior_xg_against: float | None = None
 
     # Explicit Bayesian variance per prior (Phase 3 — Held random walk).
     # Default = mean / n_prior, which makes the Bayesian blend equivalent
@@ -55,6 +62,8 @@ class TeamLiveState:
     prior_var_corners_against: float | None = None
     prior_var_shots_for: float | None = None
     prior_var_sot_for: float | None = None
+    prior_var_xg_for: float | None = None
+    prior_var_xg_against: float | None = None
 
     # Running sums of tournament observations (add to after each match).
     obs_goals_for: float = 0.0
@@ -63,6 +72,8 @@ class TeamLiveState:
     obs_corners_against: float = 0.0
     obs_shots_for: float = 0.0
     obs_sot_for: float = 0.0
+    obs_xg_for: float = 0.0
+    obs_xg_against: float = 0.0
     n_matches_played: int = 0
 
     # Sum of competition_weight over completed matches. With default weight
@@ -96,6 +107,20 @@ class TeamLiveState:
             self.prior_var_shots_for = self._init_var(self.prior_shots_for)
         if self.prior_var_sot_for is None:
             self.prior_var_sot_for = self._init_var(self.prior_sot_for)
+
+        # xG priors default to goals priors (Poisson with same rate, before
+        # any observations). This keeps xG-blended predictions identical to
+        # goals-only at cold start. Phase 0.5 Understat could provide
+        # team-specific xG priors in future, but for international teams the
+        # international-cohort baseline is the same for both metrics.
+        if self.prior_xg_for is None:
+            self.prior_xg_for = self.prior_goals_for
+        if self.prior_xg_against is None:
+            self.prior_xg_against = self.prior_goals_against
+        if self.prior_var_xg_for is None:
+            self.prior_var_xg_for = self._init_var(self.prior_xg_for)
+        if self.prior_var_xg_against is None:
+            self.prior_var_xg_against = self._init_var(self.prior_xg_against)
 
         # Backward-compat: states saved before Phase 3 lack obs_weight_total.
         # Reconstruct it from n_matches_played (default weight 1.0 each).
@@ -135,6 +160,14 @@ class TeamLiveState:
     def n_prior_eff_sot_for(self) -> float:
         return _n_prior_eff(self.prior_sot_for, self.prior_var_sot_for)
 
+    @property
+    def n_prior_eff_xg_for(self) -> float:
+        return _n_prior_eff(self.prior_xg_for, self.prior_var_xg_for)
+
+    @property
+    def n_prior_eff_xg_against(self) -> float:
+        return _n_prior_eff(self.prior_xg_against, self.prior_var_xg_against)
+
     # ── computed estimates ─────────────────────────────────────────
 
     @property
@@ -166,6 +199,16 @@ class TeamLiveState:
     def lambda_sot_for(self) -> float:
         return _blend(self.prior_sot_for, self.obs_sot_for,
                       self.obs_weight_total, self.n_prior_eff_sot_for)
+
+    @property
+    def lambda_xg_for(self) -> float:
+        return _blend(self.prior_xg_for, self.obs_xg_for,
+                      self.obs_weight_total, self.n_prior_eff_xg_for)
+
+    @property
+    def lambda_xg_against(self) -> float:
+        return _blend(self.prior_xg_against, self.obs_xg_against,
+                      self.obs_weight_total, self.n_prior_eff_xg_against)
 
     def suspension_risk_ids(self) -> list[int]:
         """Players with exactly 1 yellow — one more triggers suspension."""

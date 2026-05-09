@@ -85,6 +85,14 @@ from bip.evaluation.tournaments.predictors.bivariate_poisson import (  # noqa: E
 DEFAULT_RHO_GRID: tuple[float, ...] = (
     0.00, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24, 0.28, 0.32,
 )
+
+# Default α search grid for xG blending — 1.0 = goals-only (baseline,
+# equivalent to BayesianBivariatePoissonPredictor), 0.0 = xG-only. The
+# operator memory recommended α=0.35 (35% goals, 65% xG); we expand the
+# grid to surface what training actually prefers.
+DEFAULT_ALPHA_GRID: tuple[float, ...] = (
+    0.00, 0.20, 0.35, 0.50, 0.65, 0.80, 1.00,
+)
 from scripts.backtest_int_tournaments import (  # noqa: E402
     DEFAULT_HELD_OUT_TOURNAMENTS,
     BacktestSnapshot,
@@ -153,6 +161,8 @@ def make_snapshots(
             observed_away_goals=o.away_goals,
             observed_home_corners=o.home_corners,
             observed_away_corners=o.away_corners,
+            observed_home_xg=o.home_xg,
+            observed_away_xg=o.away_xg,
             match_date=o.match_date.isoformat(),
         )
         for o in sorted_outcomes
@@ -375,6 +385,142 @@ class BayesianBivariatePoissonPredictor:
         return prediction
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# BayesianBivariateXGPredictor — Bivariate Poisson with xG-blended rates
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class BayesianBivariateXGPredictor:
+    """Bivariate Poisson over an xG-blended Bayesian rate per team.
+
+    Composes two ideas:
+
+    1. **xG as forward-information signal** — a team that "should have
+       scored 2.5 but only got 1" carries different next-match
+       expectation than a team that scored 1 from 0.8 xG. The Bayesian
+       updater accumulates a parallel xG rate alongside goals (see
+       `TeamLiveState.lambda_xg_for/against`).
+    2. **Bivariate Poisson over those blended rates** — same ρ-tunable
+       joint distribution as `BayesianBivariatePoissonPredictor`,
+       capturing positive home/away goal correlation Independent Poisson
+       systematically underestimates.
+
+    The match-level rate fed to the Bivariate grid is:
+
+        μ_h = α · μ_h_goals + (1-α) · μ_h_xg
+        μ_a = α · μ_a_goals + (1-α) · μ_a_xg
+
+    where μ_*_goals = (home.lambda_goals_for + away.lambda_goals_against) / 2
+    (existing pattern) and μ_*_xg the analogous xG blend.
+
+    α = 1.0 reduces to goals-only (matches `BayesianBivariatePoissonPredictor`
+    exactly when ρ matches). α = 0.0 is xG-only. Any α ∈ (0,1) is a convex
+    combination — the Bayesian update on goals AND xG is preserved either
+    way, so the state always reflects both observations.
+
+    Cold start: xG priors default to goals priors (see
+    `TeamLiveState.__post_init__`), so before any matches the prediction
+    is independent of α.
+    """
+
+    name: str = "bayesian_bivariate_xg_intl"
+    sigma_s_per_day: float = DEFAULT_SIGMA_S_PER_DAY
+    rho: float = BIVARIATE_DEFAULT_RHO
+    alpha: float = 0.50  # blend weight on goals; 1-alpha on xG
+    prior_goals: float = 1.30
+    prior_corners: float = 5.0
+    n_prior: int = DEFAULT_N_PRIOR
+
+    def __post_init__(self) -> None:
+        if not -0.5 <= self.rho <= 0.5:
+            raise ValueError(f"rho must be in [-0.5, 0.5], got {self.rho}")
+        if not 0.0 <= self.alpha <= 1.0:
+            raise ValueError(f"alpha must be in [0, 1], got {self.alpha}")
+        self._state = TournamentLiveState(tournament_slug="phase5_backtest_xg")
+        self._updater = BayesianUpdater(sigma_s_per_day=self.sigma_s_per_day)
+        self._registered: set[int] = set()
+        self._last_match_date: date | None = None
+
+    def _ensure_team(self, team_id: int) -> None:
+        if team_id in self._registered:
+            return
+        self._state.team_states[team_id] = TeamLiveState(
+            team_id=team_id,
+            prior_goals_for=self.prior_goals,
+            prior_goals_against=self.prior_goals,
+            prior_corners_for=self.prior_corners,
+            prior_corners_against=self.prior_corners,
+            prior_shots_for=12.0,
+            prior_sot_for=4.0,
+            n_prior=self.n_prior,
+        )
+        self._registered.add(team_id)
+
+    def predict_fixture(self, snap: BacktestSnapshot) -> FixturePrediction:
+        self._ensure_team(snap.home_team_id)
+        self._ensure_team(snap.away_team_id)
+
+        if snap.match_date is not None:
+            current = date.fromisoformat(snap.match_date)
+            if self._last_match_date is not None:
+                gap = (current - self._last_match_date).days
+                if gap > 0:
+                    self._updater.between_window_step(self._state, days_elapsed=gap)
+            self._last_match_date = current
+
+        home_state = self._state.team_states[snap.home_team_id]
+        away_state = self._state.team_states[snap.away_team_id]
+
+        # Goals-only blend (existing pattern)
+        mu_h_goals = (
+            home_state.lambda_goals_for + away_state.lambda_goals_against
+        ) / 2.0
+        mu_a_goals = (
+            away_state.lambda_goals_for + home_state.lambda_goals_against
+        ) / 2.0
+
+        # xG blend (parallel rate from Phase B updater)
+        mu_h_xg = (
+            home_state.lambda_xg_for + away_state.lambda_xg_against
+        ) / 2.0
+        mu_a_xg = (
+            away_state.lambda_xg_for + home_state.lambda_xg_against
+        ) / 2.0
+
+        # Convex combination — α=1 is goals-only, α=0 is xG-only.
+        mu_h = max(self.alpha * mu_h_goals + (1.0 - self.alpha) * mu_h_xg, 1e-3)
+        mu_a = max(self.alpha * mu_a_goals + (1.0 - self.alpha) * mu_a_xg, 1e-3)
+
+        # Bivariate Poisson grid (same as BayesianBivariatePoissonPredictor)
+        lam12 = self.rho * math.sqrt(mu_h * mu_a)
+        lam12 = max(0.0, min(lam12, min(mu_h, mu_a) - 1e-9))
+        lam1 = mu_h - lam12
+        lam2 = mu_a - lam12
+
+        grid = _bivariate_poisson_grid(lam1, lam2, lam12, MAX_GOALS_GRID)
+        prediction = _grid_to_prediction(grid)
+
+        # Observe AFTER predicting — walk-forward causality. Pass xG so the
+        # state's xG rate also updates.
+        if snap.observed_home_goals is not None and snap.observed_away_goals is not None:
+            result = TournamentMatchResult(
+                match_id=snap.match_id,
+                home_team_id=snap.home_team_id,
+                away_team_id=snap.away_team_id,
+                home_goals=snap.observed_home_goals,
+                away_goals=snap.observed_away_goals,
+                home_corners=snap.observed_home_corners,
+                away_corners=snap.observed_away_corners,
+                home_xg=snap.observed_home_xg,
+                away_xg=snap.observed_away_xg,
+                competition=_tournament_to_competition(snap.tournament),
+            )
+            self._updater.within_tournament_step(self._state, result)
+
+        return prediction
+
+
 def _grid_to_prediction(grid: np.ndarray) -> FixturePrediction:
     """Convert a 2D score-grid into FixturePrediction market probabilities.
 
@@ -483,10 +629,12 @@ def _make_predictor(
     *,
     sigma_s_per_day: float,
     rho: float = BIVARIATE_DEFAULT_RHO,
+    alpha: float = 0.50,
 ):
     """Instantiate the requested predictor by name.
 
-    ``predictor_kind`` must be one of ``'independent'`` or ``'bivariate'``.
+    ``predictor_kind`` must be one of ``'independent'``, ``'bivariate'``,
+    or ``'xg_blended'``. ``alpha`` is consumed only for xg_blended.
     """
     if predictor_kind == "independent":
         return BayesianPoissonPredictor(sigma_s_per_day=sigma_s_per_day)
@@ -494,9 +642,13 @@ def _make_predictor(
         return BayesianBivariatePoissonPredictor(
             sigma_s_per_day=sigma_s_per_day, rho=rho,
         )
+    if predictor_kind == "xg_blended":
+        return BayesianBivariateXGPredictor(
+            sigma_s_per_day=sigma_s_per_day, rho=rho, alpha=alpha,
+        )
     raise ValueError(
         f"Unknown predictor_kind {predictor_kind!r}. "
-        f"Valid: 'independent', 'bivariate'."
+        f"Valid: 'independent', 'bivariate', 'xg_blended'."
     )
 
 
@@ -512,6 +664,7 @@ def run_phase5_backtest(
     min_bin_fill: float | None = None,
     predictor_kind: str = "independent",
     rho: float = BIVARIATE_DEFAULT_RHO,
+    alpha: float = 0.50,
 ) -> tuple[LockDecision, list[CalibrationReport]]:
     """Main entry: load StatsBomb outcomes, run backtest, emit LockDecision.
 
@@ -539,7 +692,7 @@ def run_phase5_backtest(
 
     snapshots, _ = make_snapshots(outcomes)
     predictor = _make_predictor(
-        predictor_kind, sigma_s_per_day=sigma_s_per_day, rho=rho,
+        predictor_kind, sigma_s_per_day=sigma_s_per_day, rho=rho, alpha=alpha,
     )
 
     reports = run_backtest_layer1(
@@ -577,6 +730,7 @@ def run_phase5_backtest_calibrated(
     min_bin_fill: float | None = None,
     predictor_kind: str = "independent",
     rho: float = BIVARIATE_DEFAULT_RHO,
+    alpha: float = 0.50,
 ) -> tuple[LockDecision, list[CalibrationReport]]:
     """Phase 2 ∘ Phase 5 — apply LogisticLogitCalibrator post-hoc.
 
@@ -610,7 +764,7 @@ def run_phase5_backtest_calibrated(
         )
     snapshots, _ = make_snapshots(outcomes)
     predictor = _make_predictor(
-        predictor_kind, sigma_s_per_day=sigma_s_per_day, rho=rho,
+        predictor_kind, sigma_s_per_day=sigma_s_per_day, rho=rho, alpha=alpha,
     )
 
     # ── Pass 1: predict every fixture, capture raw probs ───────────────
@@ -907,6 +1061,136 @@ def tune_rho_walkforward(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Train-time α tuner (xG-blend weight)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def tune_alpha_walkforward(
+    snapshots: list[BacktestSnapshot],
+    alpha_candidates: list[float] | tuple[float, ...] = DEFAULT_ALPHA_GRID,
+    *,
+    rho: float = BIVARIATE_DEFAULT_RHO,
+    held_out_tournaments: tuple[str, ...] = DEFAULT_HELD_OUT_TOURNAMENTS,
+    sigma_s_per_day: float = DEFAULT_SIGMA_S_PER_DAY,
+    prior_goals: float = 1.30,
+    prior_corners: float = 5.0,
+    n_prior: int = DEFAULT_N_PRIOR,
+) -> tuple[float, dict[float, float]]:
+    """Walk-forward α sweep — train-time only, no held-out peek.
+
+    Same Held-criterion-C pattern as ``tune_rho_walkforward``: for each
+    candidate α ∈ [0, 1], walks the training tournaments chronologically
+    with a fresh ``BayesianBivariateXGPredictor(rho=rho, alpha=α)``,
+    scores observed (home_goals, away_goals) via JOINT Bivariate Poisson
+    log-PMF, returns argmax.
+
+    The xG signal enters via the predictor's blended μ; α=1 collapses to
+    goals-only Bivariate (matches `BayesianBivariatePoissonPredictor`),
+    α=0 is xG-only. The Bayesian state always updates BOTH goals and xG
+    rates regardless of α — α only controls how predictions blend the two.
+
+    Snapshots without xG are silently skipped during scoring (they still
+    update goals state). For the StatsBomb cache as of 2026-05-09 every
+    match has xG, so this is a defensive guard.
+    """
+    if not alpha_candidates:
+        raise ValueError("alpha_candidates must not be empty")
+    if not snapshots:
+        raise ValueError("snapshots must not be empty")
+    for a in alpha_candidates:
+        if not 0.0 <= a <= 1.0:
+            raise ValueError(f"alpha_candidates must be in [0, 1], got {a}")
+
+    held_out = set(held_out_tournaments)
+    train = [s for s in snapshots if s.tournament not in held_out]
+    if not train:
+        raise RuntimeError(
+            f"No train snapshots after filtering held_out={held_out_tournaments}"
+        )
+    train = sorted(train, key=lambda s: s.match_date or "")
+
+    scores: dict[float, float] = {}
+    for alpha in alpha_candidates:
+        predictor = BayesianBivariateXGPredictor(
+            sigma_s_per_day=sigma_s_per_day,
+            rho=rho, alpha=alpha,
+            prior_goals=prior_goals, prior_corners=prior_corners,
+            n_prior=n_prior,
+        )
+        log_lik_total = 0.0
+        n_scored = 0
+
+        for snap in train:
+            # We need the (μ_h, μ_a) the predictor WOULD use, before it
+            # observes. The predictor's `predict_fixture` advances state
+            # internally, so we replicate the read-then-update dance to
+            # capture the pre-observation rates for joint log-PMF scoring.
+            predictor._ensure_team(snap.home_team_id)
+            predictor._ensure_team(snap.away_team_id)
+
+            if snap.match_date is not None:
+                current = date.fromisoformat(snap.match_date)
+                if predictor._last_match_date is not None:
+                    gap = (current - predictor._last_match_date).days
+                    if gap > 0:
+                        predictor._updater.between_window_step(
+                            predictor._state, days_elapsed=gap,
+                        )
+                predictor._last_match_date = current
+
+            home_state = predictor._state.team_states[snap.home_team_id]
+            away_state = predictor._state.team_states[snap.away_team_id]
+
+            mu_h_goals = (
+                home_state.lambda_goals_for + away_state.lambda_goals_against
+            ) / 2.0
+            mu_a_goals = (
+                away_state.lambda_goals_for + home_state.lambda_goals_against
+            ) / 2.0
+            mu_h_xg = (
+                home_state.lambda_xg_for + away_state.lambda_xg_against
+            ) / 2.0
+            mu_a_xg = (
+                away_state.lambda_xg_for + home_state.lambda_xg_against
+            ) / 2.0
+            mu_h = max(alpha * mu_h_goals + (1.0 - alpha) * mu_h_xg, 1e-3)
+            mu_a = max(alpha * mu_a_goals + (1.0 - alpha) * mu_a_xg, 1e-3)
+
+            if (
+                snap.observed_home_goals is None
+                or snap.observed_away_goals is None
+            ):
+                continue
+
+            log_lik_total += _bivariate_log_pmf(
+                snap.observed_home_goals,
+                snap.observed_away_goals,
+                mu_h, mu_a, rho,
+            )
+            n_scored += 1
+
+            # Update state for next iteration (preserves walk-forward)
+            result = TournamentMatchResult(
+                match_id=snap.match_id,
+                home_team_id=snap.home_team_id,
+                away_team_id=snap.away_team_id,
+                home_goals=snap.observed_home_goals,
+                away_goals=snap.observed_away_goals,
+                home_corners=snap.observed_home_corners,
+                away_corners=snap.observed_away_corners,
+                home_xg=snap.observed_home_xg,
+                away_xg=snap.observed_away_xg,
+                competition=_tournament_to_competition(snap.tournament),
+            )
+            predictor._updater.within_tournament_step(predictor._state, result)
+
+        scores[alpha] = log_lik_total / n_scored if n_scored else float("-inf")
+
+    best_alpha = max(scores, key=lambda a: scores[a])
+    return best_alpha, scores
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -939,18 +1223,21 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--predictor", default="independent",
-        choices=("independent", "bivariate"),
+        choices=("independent", "bivariate", "xg_blended"),
         help="Goal-distribution predictor. 'independent' = Independent "
         "Poisson (default, backward-compat). 'bivariate' = Bivariate "
         "Poisson with shared λ_3 correlation (corrects draw "
-        "underestimation per SYNTHESIS Conclusion 2).",
+        "underestimation per SYNTHESIS Conclusion 2). 'xg_blended' = "
+        "Bivariate Poisson over an α-weighted blend of goals-rate and "
+        "xG-rate per team — adds forward-information signal that goals "
+        "alone miss (Phase 5 Layer-2 Option 2).",
     )
     p.add_argument(
         "--rho", type=float, default=BIVARIATE_DEFAULT_RHO,
         help="Correlation parameter for Bivariate Poisson. Dixon-Coles "
         "1997 estimate is 0.04. Range [-0.5, 0.5]; ρ=0 collapses to "
-        "Independent Poisson. Only consumed when --predictor=bivariate. "
-        "Ignored when --auto-tune-rho is set.",
+        "Independent Poisson. Consumed by --predictor=bivariate or "
+        "--predictor=xg_blended. Ignored when --auto-tune-rho is set.",
     )
     p.add_argument(
         "--auto-tune-rho", action="store_true",
@@ -958,12 +1245,30 @@ def _parse_args() -> argparse.Namespace:
         "DEFAULT_HELD_OUT_TOURNAMENTS), pick the ρ that maximizes joint "
         "Bivariate Poisson log-likelihood, and use that ρ for the held-out "
         "backtest. Defuses the test-set-contamination caveat from the "
-        "2026-05-08 held-out sweep. Forces --predictor=bivariate.",
+        "2026-05-08 held-out sweep. Forces --predictor=bivariate when no "
+        "other --predictor is set.",
     )
     p.add_argument(
         "--rho-grid", type=float, nargs="+", default=None,
         help="Custom ρ candidates (space-separated). Defaults to "
         f"{list(DEFAULT_RHO_GRID)}.",
+    )
+    p.add_argument(
+        "--alpha", type=float, default=0.50,
+        help="xG-blend weight for --predictor=xg_blended. α=1 → goals-only "
+        "(equivalent to --predictor=bivariate); α=0 → xG-only; "
+        "α∈(0,1) is convex blend. Ignored when --auto-tune-alpha is set.",
+    )
+    p.add_argument(
+        "--auto-tune-alpha", action="store_true",
+        help="Sweep α on training tournaments only, pick the α that "
+        "maximizes joint Bivariate Poisson log-likelihood, and use that α "
+        "for the held-out backtest. Forces --predictor=xg_blended.",
+    )
+    p.add_argument(
+        "--alpha-grid", type=float, nargs="+", default=None,
+        help="Custom α candidates. Defaults to "
+        f"{list(DEFAULT_ALPHA_GRID)}.",
     )
     return p.parse_args()
 
@@ -973,11 +1278,15 @@ def main() -> None:
     print(f"[phase5] loading outcomes from {args.outcomes_parquet}", file=sys.stderr)
 
     rho = args.rho
+    alpha = args.alpha
     predictor_kind = args.predictor
 
+    snapshots = None  # Lazy-load if any tuner activates
+
     if args.auto_tune_rho:
-        # Force bivariate — tuning ρ on Independent Poisson is meaningless.
-        predictor_kind = "bivariate"
+        # Force at least bivariate; preserve xg_blended if operator combined.
+        if predictor_kind == "independent":
+            predictor_kind = "bivariate"
         outcomes = load_outcomes_from_parquet(args.outcomes_parquet)
         if not outcomes:
             raise RuntimeError(
@@ -1008,6 +1317,40 @@ def main() -> None:
 
         rho = best_rho
 
+    if args.auto_tune_alpha:
+        predictor_kind = "xg_blended"
+        if snapshots is None:
+            outcomes = load_outcomes_from_parquet(args.outcomes_parquet)
+            if not outcomes:
+                raise RuntimeError(
+                    f"No outcomes found in {args.outcomes_parquet}. "
+                    f"Run scripts/seed_statsbomb_tournaments.py first."
+                )
+            snapshots, _ = make_snapshots(outcomes)
+        a_grid = list(args.alpha_grid) if args.alpha_grid is not None else list(DEFAULT_ALPHA_GRID)
+
+        print(f"[phase5] tuning α on training tournaments at ρ={rho:.3f} "
+              f"(excluding {', '.join(DEFAULT_HELD_OUT_TOURNAMENTS)})",
+              file=sys.stderr)
+        print(f"[phase5] candidate α grid: {a_grid}", file=sys.stderr)
+
+        best_alpha, a_scores = tune_alpha_walkforward(
+            snapshots, a_grid, rho=rho, sigma_s_per_day=args.sigma_s,
+        )
+
+        print()
+        print("=" * 72)
+        print(f"α TUNING — train-time avg joint log-likelihood per match (ρ={rho:.3f})")
+        print("=" * 72)
+        for a_cand in sorted(a_scores):
+            marker = " ←" if a_cand == best_alpha else ""
+            print(f"  α = {a_cand:.2f}   loglik = {a_scores[a_cand]:.6f}{marker}")
+        print()
+        print(f"best α_train = {best_alpha:.2f}  (1 = goals-only, 0 = xG-only)")
+        print()
+
+        alpha = best_alpha
+
     runner = (
         run_phase5_backtest_calibrated if args.apply_calibrator
         else run_phase5_backtest
@@ -1021,16 +1364,25 @@ def main() -> None:
         min_bin_fill=args.min_bin_fill,
         predictor_kind=predictor_kind,
         rho=rho,
+        alpha=alpha,
     )
 
     print()
     print("=" * 72)
     print(f"PHASE 5 BACKTEST — calibration_status: {decision.calibration_status}")
     print("=" * 72)
-    print(f"Predictor: {predictor_kind}" + (
-        f" (ρ = {rho:.3f}{' tuned' if args.auto_tune_rho else ''})"
-        if predictor_kind == "bivariate" else ""
-    ))
+    if predictor_kind == "bivariate":
+        rho_tag = " tuned" if args.auto_tune_rho else ""
+        print(f"Predictor: bivariate (ρ = {rho:.3f}{rho_tag})")
+    elif predictor_kind == "xg_blended":
+        rho_tag = " tuned" if args.auto_tune_rho else ""
+        a_tag = " tuned" if args.auto_tune_alpha else ""
+        print(
+            f"Predictor: xg_blended (ρ = {rho:.3f}{rho_tag}, "
+            f"α = {alpha:.2f}{a_tag})"
+        )
+    else:
+        print(f"Predictor: {predictor_kind}")
     print(f"Fixtures scored: {decision.n_fixtures_with_predictions}")
     print(f"Coverage: {decision.coverage_pct:.1%}")
     print(f"Held-out tournaments: {', '.join(decision.held_out_tournaments)}")

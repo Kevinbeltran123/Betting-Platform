@@ -403,6 +403,140 @@ class TestTuneRhoWalkforward:
             tune_rho_walkforward([], [0.0, 0.04])
 
 
+# ── BayesianBivariateXGPredictor + α tuner (Fase C+D) ───────────────────────
+
+
+class TestBayesianBivariateXGPredictor:
+    def test_alpha_one_matches_goals_only_bivariate_at_cold_start(self):
+        """At α=1 with no observations yet, should match goals-only Bivariate."""
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import (
+            BayesianBivariatePoissonPredictor,
+            BayesianBivariateXGPredictor,
+        )
+
+        snap = BacktestSnapshot(
+            match_id="m1", tournament="wc_2018",
+            home_team_id=0, away_team_id=1,
+            observed_1x2=0, observed_total_goals=2, observed_btts=1,
+            observed_home_goals=1, observed_away_goals=1,
+            observed_home_xg=2.0, observed_away_xg=0.5,
+            match_date="2018-06-14",
+        )
+        biv = BayesianBivariatePoissonPredictor(rho=0.10).predict_fixture(snap)
+        xg_alpha_1 = BayesianBivariateXGPredictor(rho=0.10, alpha=1.0).predict_fixture(snap)
+        assert biv.p_home_win == pytest.approx(xg_alpha_1.p_home_win, abs=1e-9)
+        assert biv.p_draw == pytest.approx(xg_alpha_1.p_draw, abs=1e-9)
+        assert biv.p_btts == pytest.approx(xg_alpha_1.p_btts, abs=1e-9)
+
+    def test_invalid_alpha_rejected(self):
+        from scripts.run_phase5_backtest import BayesianBivariateXGPredictor
+
+        with pytest.raises(ValueError, match="alpha must be"):
+            BayesianBivariateXGPredictor(alpha=-0.1)
+        with pytest.raises(ValueError, match="alpha must be"):
+            BayesianBivariateXGPredictor(alpha=1.1)
+
+    def test_xg_observation_shifts_predictions(self):
+        """A team that played one match with xG > goals should have its
+        next prediction lifted vs a team where xG = goals."""
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import BayesianBivariateXGPredictor
+
+        # Team 0 played 1-0 with home_xg=2.5 (massively dominated)
+        m1 = BacktestSnapshot(
+            match_id="m1", tournament="wc_2018",
+            home_team_id=0, away_team_id=1,
+            observed_1x2=0, observed_total_goals=1, observed_btts=0,
+            observed_home_goals=1, observed_away_goals=0,
+            observed_home_xg=2.5, observed_away_xg=0.4,
+            match_date="2018-06-14",
+        )
+        # Same team plays again next round
+        m2 = BacktestSnapshot(
+            match_id="m2", tournament="wc_2018",
+            home_team_id=0, away_team_id=2,
+            observed_1x2=0, observed_total_goals=2, observed_btts=1,
+            observed_home_goals=1, observed_away_goals=1,
+            observed_home_xg=1.5, observed_away_xg=0.7,
+            match_date="2018-06-19",
+        )
+
+        # Goals-only predictor: only sees the 1-0 result
+        p_goals = BayesianBivariateXGPredictor(rho=0.04, alpha=1.0)
+        p_goals.predict_fixture(m1)
+        pred_goals = p_goals.predict_fixture(m2)
+
+        # xG-blended predictor: sees the 2.5 xG, should predict more confidently
+        # for team 0
+        p_xg = BayesianBivariateXGPredictor(rho=0.04, alpha=0.0)  # all xG
+        p_xg.predict_fixture(m1)
+        pred_xg = p_xg.predict_fixture(m2)
+
+        # xG-only predictor should weigh team 0 more strongly than goals-only
+        # (because xG=2.5 >> goals=1 for that match)
+        assert pred_xg.p_home_win > pred_goals.p_home_win
+
+
+class TestTuneAlphaWalkforward:
+    def test_returns_score_per_candidate(self):
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import tune_alpha_walkforward
+
+        train_snaps = [
+            BacktestSnapshot(
+                match_id=f"t{i}", tournament="wc_2018",
+                home_team_id=i % 4, away_team_id=(i + 1) % 4,
+                observed_1x2=0, observed_total_goals=2, observed_btts=1,
+                observed_home_goals=1, observed_away_goals=1,
+                observed_home_xg=1.5 + (i % 3) * 0.3,
+                observed_away_xg=1.0 + (i % 2) * 0.4,
+                match_date=f"2018-06-{(i % 28) + 1:02d}",
+            )
+            for i in range(20)
+        ]
+        candidates = [0.0, 0.5, 1.0]
+        best, scores = tune_alpha_walkforward(
+            train_snaps, candidates, rho=0.04,
+        )
+        assert set(scores.keys()) == set(candidates)
+        assert best in candidates
+
+    def test_invalid_alpha_in_grid_rejected(self):
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import tune_alpha_walkforward
+
+        snap = BacktestSnapshot(
+            match_id="m0", tournament="wc_2018",
+            home_team_id=0, away_team_id=1,
+            observed_1x2=0, observed_total_goals=1, observed_btts=0,
+            observed_home_goals=1, observed_away_goals=0,
+            observed_home_xg=1.0, observed_away_xg=0.5,
+            match_date="2018-06-14",
+        )
+        with pytest.raises(ValueError, match="alpha_candidates must be"):
+            tune_alpha_walkforward([snap], [0.5, 1.5])
+
+    def test_excludes_held_out(self):
+        """Snapshots only from held_out tournaments → tuner refuses."""
+        from scripts.backtest_int_tournaments import BacktestSnapshot
+        from scripts.run_phase5_backtest import tune_alpha_walkforward
+
+        snaps = [
+            BacktestSnapshot(
+                match_id=f"m{i}", tournament="copa_2024",
+                home_team_id=i % 4, away_team_id=(i + 1) % 4,
+                observed_1x2=0, observed_total_goals=1, observed_btts=0,
+                observed_home_goals=1, observed_away_goals=0,
+                observed_home_xg=1.0, observed_away_xg=0.5,
+                match_date=f"2024-06-{i + 1:02d}",
+            )
+            for i in range(8)
+        ]
+        with pytest.raises(RuntimeError, match="No train snapshots"):
+            tune_alpha_walkforward(snaps, [0.5], held_out_tournaments=("copa_2024",))
+
+
 class TestBayesianPoissonPredictor:
     def test_first_match_uses_priors(self):
         """Cold-start: with both teams unseen, prediction uses cohort priors

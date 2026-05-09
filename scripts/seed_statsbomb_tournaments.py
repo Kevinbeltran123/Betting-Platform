@@ -112,6 +112,15 @@ class StatsBombMatchOutcome:
     away_goals: int
     home_corners: int
     away_corners: int
+    # Expected goals — sum of `shot.statsbomb_xg` per team across the match.
+    # Forward-information signal: a team that "should have scored 2.5 but
+    # only scored 1" carries different next-match info than a team that
+    # scored 1 from 0.8 xG. None when no shots were observed (rare; usually
+    # extreme defensive matches).
+    home_xg: float | None = None
+    away_xg: float | None = None
+    home_shots: int | None = None
+    away_shots: int | None = None
 
     @property
     def total_goals(self) -> int:
@@ -205,6 +214,35 @@ def count_corners_per_team(events: list[dict]) -> dict[str, int]:
     return counts
 
 
+def aggregate_xg_per_team(events: list[dict]) -> tuple[dict[str, float], dict[str, int]]:
+    """Sum ``shot.statsbomb_xg`` per team and count shots.
+
+    StatsBomb encodes shot events with ``type.name == 'Shot'`` and the
+    expected-goal value at ``shot.statsbomb_xg``. Returns
+    ``(xg_per_team, shot_count_per_team)``.
+
+    Shots without xG (rare — usually own goals or missing data) contribute
+    to the shot count but not to xG. Penalty shootouts in event data are
+    already excluded by StatsBomb's ``period <= 4`` convention.
+    """
+    xg: dict[str, float] = {}
+    shots: dict[str, int] = {}
+    for ev in events:
+        if (ev.get("type") or {}).get("name") != "Shot":
+            continue
+        # Skip penalty-shootout events (period 5).
+        if ev.get("period", 0) > 4:
+            continue
+        team = (ev.get("team") or {}).get("name")
+        if not team:
+            continue
+        shots[team] = shots.get(team, 0) + 1
+        x = (ev.get("shot") or {}).get("statsbomb_xg")
+        if x is not None:
+            xg[team] = xg.get(team, 0.0) + float(x)
+    return xg, shots
+
+
 def aggregate_match_to_outcome(
     match_meta: dict,
     events: list[dict],
@@ -214,6 +252,7 @@ def aggregate_match_to_outcome(
     home_name = match_meta["home_team"]["home_team_name"]
     away_name = match_meta["away_team"]["away_team_name"]
     corners = count_corners_per_team(events)
+    xg, shots = aggregate_xg_per_team(events)
     return StatsBombMatchOutcome(
         match_id=int(match_meta["match_id"]),
         tournament_slug=tournament_slug,
@@ -224,6 +263,10 @@ def aggregate_match_to_outcome(
         away_goals=int(match_meta["away_score"]),
         home_corners=corners.get(home_name, 0),
         away_corners=corners.get(away_name, 0),
+        home_xg=xg.get(home_name),
+        away_xg=xg.get(away_name),
+        home_shots=shots.get(home_name),
+        away_shots=shots.get(away_name),
     )
 
 
@@ -285,6 +328,10 @@ def write_outcomes_to_parquet(
             "away_goals": [o.away_goals for o in outcomes],
             "home_corners": [o.home_corners for o in outcomes],
             "away_corners": [o.away_corners for o in outcomes],
+            "home_xg": [o.home_xg for o in outcomes],
+            "away_xg": [o.away_xg for o in outcomes],
+            "home_shots": [o.home_shots for o in outcomes],
+            "away_shots": [o.away_shots for o in outcomes],
         }
     )
     df.write_parquet(output)
@@ -293,10 +340,16 @@ def write_outcomes_to_parquet(
 def load_outcomes_from_parquet(
     path: Path = DEFAULT_OUTCOMES_PARQUET,
 ) -> list[StatsBombMatchOutcome]:
-    """Read back the cached outcomes Parquet (avoid re-downloading)."""
+    """Read back the cached outcomes Parquet (avoid re-downloading).
+
+    Tolerates older Parquets without xG columns — those rows return None
+    for xG / shots fields. Predictors that need xG should fall back to
+    a goals-only path when these are absent.
+    """
     import polars as pl
 
     df = pl.read_parquet(path)
+    has_xg = "home_xg" in df.columns
     return [
         StatsBombMatchOutcome(
             match_id=int(row["match_id"]),
@@ -308,6 +361,10 @@ def load_outcomes_from_parquet(
             away_goals=int(row["away_goals"]),
             home_corners=int(row["home_corners"]),
             away_corners=int(row["away_corners"]),
+            home_xg=(float(row["home_xg"]) if has_xg and row["home_xg"] is not None else None),
+            away_xg=(float(row["away_xg"]) if has_xg and row["away_xg"] is not None else None),
+            home_shots=(int(row["home_shots"]) if has_xg and row["home_shots"] is not None else None),
+            away_shots=(int(row["away_shots"]) if has_xg and row["away_shots"] is not None else None),
         )
         for row in df.iter_rows(named=True)
     ]
