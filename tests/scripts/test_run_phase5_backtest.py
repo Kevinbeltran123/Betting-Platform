@@ -291,3 +291,44 @@ class TestRealBacktestLayer2:
         run_phase5_backtest(output_path=out)
         loaded = LockDecision.from_json(out)
         assert loaded.held_out_tournaments == ("copa_2024", "euro_2024")
+
+    def test_calibrated_backtest_emits_two_predictor_verdicts(self, tmp_path):
+        """Phase 2 ∘ Phase 5: side-by-side raw vs calibrated."""
+        from scripts.run_phase5_backtest import run_phase5_backtest_calibrated
+
+        out = tmp_path / "lock_decision.json"
+        decision, reports = run_phase5_backtest_calibrated(output_path=out)
+
+        # Two predictors: raw + logit-calibrated, both with 3 markets each
+        names = {v.predictor_name for v in decision.predictor_verdicts}
+        assert "bayesian_poisson_raw" in names
+        assert "bayesian_poisson_logit_calibrated" in names
+        # Held-out scope: ~83 fixtures (Copa 2024 + Euro 2024)
+        assert decision.n_fixtures_with_predictions > 50
+        assert decision.n_fixtures_with_predictions < 100
+
+    def test_calibrated_backtest_calibrator_helps_at_least_one_market(self, tmp_path):
+        """The post-hoc calibrator should improve ECE on at least one
+        market vs the raw baseline. (Football data + small test set
+        means improvements are mixed; we only assert that the calibrator
+        is not strictly worse on every market.)"""
+        from scripts.run_phase5_backtest import run_phase5_backtest_calibrated
+
+        decision, _ = run_phase5_backtest_calibrated(output_path=None)
+        raw_v = next(
+            v for v in decision.predictor_verdicts
+            if v.predictor_name == "bayesian_poisson_raw"
+        )
+        cal_v = next(
+            v for v in decision.predictor_verdicts
+            if v.predictor_name == "bayesian_poisson_logit_calibrated"
+        )
+        # At least one market should have lower ECE after calibration
+        improved = sum(
+            1 for m in raw_v.market_classwise_ece
+            if cal_v.market_classwise_ece.get(m, 1.0) < raw_v.market_classwise_ece[m]
+        )
+        assert improved >= 1, (
+            f"Calibrator did not improve any market. raw={raw_v.market_classwise_ece}, "
+            f"cal={cal_v.market_classwise_ece}"
+        )

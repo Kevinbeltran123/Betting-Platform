@@ -132,6 +132,8 @@ def run_backtest_layer1(
     *,
     git_sha: str | None = None,
     progress_cb: Callable[[str, int], None] | None = None,
+    n_bins: int | None = None,
+    min_bin_fill: float | None = None,
 ) -> list[CalibrationReport]:
     """Replay snapshots through each predictor; return one report per (predictor, market).
 
@@ -142,12 +144,26 @@ def run_backtest_layer1(
 
     ``progress_cb(predictor_name, n_processed)`` is invoked once per snapshot
     if provided — for CLI progress bars when Layer-2 is wired.
+
+    ``n_bins`` and ``min_bin_fill`` override the audit's defaults — useful
+    when calibration on football data needs fewer bins or a lower bin-fill
+    threshold (probabilities concentrate in 0.40-0.60, making the default
+    20-bin / 80%-fill scheme empirically unreachable). Defaults preserve
+    Layer-1 test compatibility when not specified.
     """
     snapshots_list = list(snapshots)
     reports: list[CalibrationReport] = []
 
+    audit_kwargs: dict[str, object] = {}
+    if n_bins is not None:
+        audit_kwargs["n_bins"] = n_bins
+    if min_bin_fill is not None:
+        audit_kwargs["min_bin_fill"] = min_bin_fill
+
     for predictor in predictors:
-        audit = CalibrationAudit(predictor_name=predictor.name, git_sha=git_sha)
+        audit = CalibrationAudit(
+            predictor_name=predictor.name, git_sha=git_sha, **audit_kwargs
+        )
         for i, snap in enumerate(snapshots_list, start=1):
             pred = predictor.predict_fixture(snap)
             audit.record_1x2(
