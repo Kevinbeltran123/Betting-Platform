@@ -52,14 +52,22 @@ from bip.evaluation.tournaments.live.state import TournamentLiveState
 
 SUSPENSION_THRESHOLD = 2  # yellow cards needed to trigger suspension
 
-# Default σ_s prior — fractional volatility per day for between-window decay.
-# 0.005/day means a 100-day gap inflates each prior's std by ~5% of its mean,
-# i.e. var grows by 0.005² · 100 · μ² ≈ 0.0025 · μ². Held criterion C on
-# real 2010–2024 fixtures will refine this; the value is an informed prior
-# (Held found σ²=0.023 for league football → σ≈0.15 per match; nationals
-# are sparser so the fractional-per-day analogue is much smaller).
-# Sweep range for Layer-2 calibration: 0.001 – 0.020.
-DEFAULT_SIGMA_S_PER_DAY = 0.005
+# Default σ_s — fractional volatility per day for between-window decay.
+#
+# Calibrated 2026-05-08 via Held criterion C walk-forward sweep over 14,502
+# international matches (2010–2024) from the martj42/international_results
+# CC0 dataset. See ``scripts/seed_international_history.py`` for the
+# reproducible pipeline; full sweep results in the spike doc decisions log.
+#
+# Empirical finding: σ_s ∈ [0, 1e-4] all yield log-lik ≈ -1.5993 per goal
+# observation; σ_s ≥ 0.001 degrades by ~0.003 per observation; σ_s = 0.005
+# (the pre-calibration default) was 0.015 worse. The data says international
+# match priors are stable enough that random-walk noise hurts more than it
+# helps — international teams play ~10-15 matches/year with frequent
+# observation, so the prior weight is dominated by data after ~30 matches
+# regardless of σ. The mechanism is preserved at non-zero (defensible
+# against unusually long gaps) but minimised in magnitude.
+DEFAULT_SIGMA_S_PER_DAY = 0.0001
 
 
 @dataclass(frozen=True)

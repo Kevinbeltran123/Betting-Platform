@@ -9,9 +9,9 @@ branch: spike/national-team-tournament-evaluator
 companion_to: SPIKE-tournament-evaluator.md
 hard_deadline: 2026-06-08
 graduates_to: TBD (calibrated predictors merged into evaluator output OR Phase 6 v1.0 corners module)
-tests_passing: 751
-tests_xfail: 8
-commits_on_branch: 15
+tests_passing: 755
+tests_xfail: 7
+commits_on_branch: 16
 ---
 
 # Spike — WC2026 Calibration Lock
@@ -282,6 +282,9 @@ For graduation to v1.0 Phase 6 (post-WC decision):
 | 2026-05-08 | Phase 6 lock JSON is tamper-evident via SHA-256 `content_hash` over canonical-form payload | Post-tournament scoring needs proof that the predictions weren't edited after lock. SHA-256 over sort_keys + ISO-8601 datetimes + excluding the hash field itself; cosmetic re-indenting still verifies, any data change fails. `verify_lock_json()` returns `(lock, is_valid)` — operator decides what to do if invalid |
 | 2026-05-08 | `emit_lock_json` defaults safe (force=False); below-gate emit requires `force=True` + `forced_emit_reason` | Spike R-08 slip plan: lock anyway with explicit calibration_status flag if gates miss by 2026-06-08. But default must REJECT non-passing decisions to avoid accidentally locking below-gate. Symmetric with Phase 5's `allow_below_gate`: both register the override in operator_overrides / forced_emit_reason for audit trail |
 | 2026-05-08 | Schema version constant `LOCK_SCHEMA_VERSION = "1.0"` with anchor test | Bump on breaking changes; loaders dispatch by version. Anchor test in `test_schema_version_anchor` prevents accidental silent changes — both must update together |
+| 2026-05-08 | Phase 3 Layer-2 data source switched from API-Football to martj42/international_results CC0 CSV | Investigation showed martj42 has 49,329 matches 1872-2026 (incl. WC2026 fixtures), with date+teams+goals+tournament — exactly what Held criterion C needs. API-Football's value (team_ids, lineups) is not consumed by σ_s calibration. Saved API quota; richer coverage (14,502 matches in 2010-2024 vs ~6k expected from API-Football). Source: https://github.com/martj42/international_results |
+| 2026-05-08 | Empirical σ_s calibrated to 0.0001 (was 0.005 informed-prior) — Held criterion C walk-forward on 14,502 international matches | Sweep over [0, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 0.01, 0.02, 0.05]: log-likelihood per goal observation peaks at σ ≤ 1e-4 (-1.5993) and degrades monotonically as σ grows (-1.6143 at σ=0.005). Empirical finding: international match priors are stable enough that random-walk noise hurts more than it helps — international teams play 10-15 matches/year, prior weight is dominated by observations after ~30 matches regardless of σ. Mechanism preserved at non-zero (defensible against unusually long gaps like 4-year cycles) but minimised in magnitude |
+| 2026-05-08 | Phase 3 Layer-2 xfail removed; replaced with `TestRealDataLayer2` skipif-when-missing class | The xfail blanket gives way to honest tests that PASS when data is cached locally and SKIP otherwise. 4 new tests: CSV volume, competition mapping coverage, walkforward calibrator end-to-end, anchor on DEFAULT_SIGMA_S_PER_DAY ≤ 0.001 |
 | 2026-05-08 | League-strength multipliers seeded from Shelopugin (2023) Table V/VI lookup | Premier-2118 vs Brazil-1868 (~250 pt gap) is empirically validated and stable; rebuilding the rating system is out of scope |
 | 2026-05-08 | Synthesis Phases 5–8 (SysID, NB corners, Cemek, prod backtest) deferred to v1.0 Phase 6 | Two-pronged placement decision; keeps spike scope minimal and respects v1.0 roadmap integrity |
 
