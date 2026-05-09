@@ -1,11 +1,9 @@
 """GREEN tests for CORNERS-01 D-17b coverage logic."""
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import polars as pl
-import pytest
 
 
 class TestThresholdLogic:

@@ -9,9 +9,9 @@ branch: spike/national-team-tournament-evaluator
 companion_to: SPIKE-tournament-evaluator.md
 hard_deadline: 2026-06-08
 graduates_to: TBD (calibrated predictors merged into evaluator output OR Phase 6 v1.0 corners module)
-tests_passing: 755
-tests_xfail: 7
-commits_on_branch: 16
+tests_passing: 792
+tests_xfail: 6
+commits_on_branch: 17
 ---
 
 # Spike — WC2026 Calibration Lock
@@ -285,6 +285,9 @@ For graduation to v1.0 Phase 6 (post-WC decision):
 | 2026-05-08 | Phase 3 Layer-2 data source switched from API-Football to martj42/international_results CC0 CSV | Investigation showed martj42 has 49,329 matches 1872-2026 (incl. WC2026 fixtures), with date+teams+goals+tournament — exactly what Held criterion C needs. API-Football's value (team_ids, lineups) is not consumed by σ_s calibration. Saved API quota; richer coverage (14,502 matches in 2010-2024 vs ~6k expected from API-Football). Source: https://github.com/martj42/international_results |
 | 2026-05-08 | Empirical σ_s calibrated to 0.0001 (was 0.005 informed-prior) — Held criterion C walk-forward on 14,502 international matches | Sweep over [0, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 0.01, 0.02, 0.05]: log-likelihood per goal observation peaks at σ ≤ 1e-4 (-1.5993) and degrades monotonically as σ grows (-1.6143 at σ=0.005). Empirical finding: international match priors are stable enough that random-walk noise hurts more than it helps — international teams play 10-15 matches/year, prior weight is dominated by observations after ~30 matches regardless of σ. Mechanism preserved at non-zero (defensible against unusually long gaps like 4-year cycles) but minimised in magnitude |
 | 2026-05-08 | Phase 3 Layer-2 xfail removed; replaced with `TestRealDataLayer2` skipif-when-missing class | The xfail blanket gives way to honest tests that PASS when data is cached locally and SKIP otherwise. 4 new tests: CSV volume, competition mapping coverage, walkforward calibrator end-to-end, anchor on DEFAULT_SIGMA_S_PER_DAY ≤ 0.001 |
+| 2026-05-08 | Phase 5 Layer-2 backtest sourced from StatsBomb open-data (CC BY-NC), 314 matches across WC2018/2022, Euro2020/2024, Copa2024, AFCON2023 | StatsBomb has free event-level data with corner counts (corners as `Pass.type.name='Corner'`); covers the 6 modern men's international tournaments. License is non-commercial; internal model calibration is fair use. Source: https://github.com/statsbomb/open-data |
+| 2026-05-08 | Phase 5 backtest verdict on real data: `unreliable-bins` (1X2 ECE=0.0433, Brier=0.2138; BTTS ECE=0.0618, Brier=0.2531; OU2.5 ECE=0.0778, Brier=0.2511) | Honest empirical result: bin-fill check fails because football probabilities concentrate in 0.40-0.60 (Walsh & Joshi 2024 caveat noted in Phase 1 design). 1X2 calibration would PASS the gate; BTTS+OU2.5 calibration is below gate. The current Independent-Poisson predictor is below the lock-quality bar — improvements queued: Bivariate Poisson (corrects draw underestimation per SYNTHESIS Conclusion 2), LogisticLogitCalibrator post-hoc step (Phase 2 code), per-team initial priors from prior-tournament observations |
+| 2026-05-08 | Phase 5 Layer-2 xfail unblocked; replaced with `skipif-when-missing` integration test | The structural test (`test_real_historical_backtest_passes_or_fails_lock_honestly`) now runs end-to-end on the StatsBomb cache when present, asserting that the calibration_status is one of the four computed verdicts. The verdict's specific value is the operator's empirical concern, not a structural assertion |
 | 2026-05-08 | League-strength multipliers seeded from Shelopugin (2023) Table V/VI lookup | Premier-2118 vs Brazil-1868 (~250 pt gap) is empirically validated and stable; rebuilding the rating system is out of scope |
 | 2026-05-08 | Synthesis Phases 5–8 (SysID, NB corners, Cemek, prod backtest) deferred to v1.0 Phase 6 | Two-pronged placement decision; keeps spike scope minimal and respects v1.0 roadmap integrity |
 

@@ -71,8 +71,14 @@ class BacktestSnapshot:
 
     Layer-1 keeps the snapshot abstract — the predictor protocol takes it
     and returns a ``MatchPrediction``-like object exposing per-market
-    probabilities. Layer-2 will instantiate concrete snapshots from the
-    Parquet store with full BlendedRates + lineup data.
+    probabilities. Layer-2 instantiates concrete snapshots from the
+    StatsBomb Parquet store (see ``scripts/seed_statsbomb_tournaments.py``).
+
+    Phase 5 Layer-2 added the optional ``observed_home_goals`` and
+    ``observed_away_goals`` so stateful predictors (e.g.,
+    ``BayesianPoissonPredictor`` in ``scripts/run_phase5_backtest.py``)
+    can update their internal state after scoring. Defaults are None so
+    Layer-1 stub-predictor tests stay backward-compatible.
     """
 
     match_id: str
@@ -83,6 +89,14 @@ class BacktestSnapshot:
     observed_1x2: int  # 0=home win, 1=draw, 2=away win
     observed_total_goals: int
     observed_btts: int  # 0=no, 1=yes
+    # Optional split-goal observation (needed by stateful predictors)
+    observed_home_goals: int | None = None
+    observed_away_goals: int | None = None
+    # Optional per-team corner counts (for corners O/U markets)
+    observed_home_corners: int | None = None
+    observed_away_corners: int | None = None
+    # Optional ISO date string for between-window decay computation
+    match_date: str | None = None
 
 
 @dataclass(frozen=True)

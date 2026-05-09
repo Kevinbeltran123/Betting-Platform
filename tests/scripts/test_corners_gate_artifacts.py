@@ -3,9 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-
 PROBE_PATH = Path("scripts/corners_gate_probe.md")
 FINDINGS_PATH = Path("scripts/corners_gate_findings.md")
 

@@ -242,22 +242,37 @@ def test_default_held_out_tournaments_are_copa_and_euro_2024():
     assert DEFAULT_HELD_OUT_TOURNAMENTS == ("copa_2024", "euro_2024")
 
 
-# ── Layer-2 fence ───────────────────────────────────────────────────────────
+# ── Layer-2: real-data backtest unblocked via StatsBomb ingest ──────────────
 
 
-@pytest.mark.xfail(reason="requires-real-data: WC2018/Euro2024/Copa2024 Parquet store")
+def _statsbomb_data_available() -> bool:
+    from scripts.seed_statsbomb_tournaments import DEFAULT_OUTCOMES_PARQUET
+    return DEFAULT_OUTCOMES_PARQUET.exists()
+
+
+@pytest.mark.skipif(
+    not _statsbomb_data_available(),
+    reason=(
+        "Run `uv run python scripts/seed_statsbomb_tournaments.py` first "
+        "to seed the StatsBomb match-outcomes Parquet."
+    ),
+)
 def test_real_historical_backtest_passes_or_fails_lock_honestly():
-    """Layer-2: real backtest over WC 2018, Euro 2024, Copa 2024 fixtures.
+    """Layer-2: real backtest over the 6 modern men's StatsBomb tournaments.
 
-    Unblocked when:
-    1. scripts/seed_international_history.py has populated
-       data/cache/international_history.parquet, and
-    2. Production predictor adapters (BivariatePoisson, IndependentPoisson,
-       EloLogistic, corners_poisson) implement PredictorProtocol over
-       BlendedRates / lineup data.
+    Acceptance criterion: lock decision JSON emits a defensible
+    ``calibration_status`` that the operator can defend to post-tournament
+    reviewers. The ``calibration_status`` may be 'pass' / 'marginal' /
+    'unreliable-bins' / 'below-gate' — what matters is that the verdict
+    is computed honestly from real predictions vs real outcomes, not
+    that any particular verdict is achieved.
     """
-    raise NotImplementedError(
-        "Run after Layer-2 wiring; acceptance criterion: lock decision JSON "
-        "emits a defensible calibration_status that the operator can defend "
-        "to post-tournament reviewers."
+    from scripts.run_phase5_backtest import run_phase5_backtest
+
+    decision, _reports = run_phase5_backtest(output_path=None)
+    # Real backtest ran end-to-end; verdict is one of the calibrated-status
+    # values, not a meta-status like 'no-reports' or 'structural-only'.
+    assert decision.calibration_status in (
+        "pass", "marginal", "unreliable-bins", "below-gate"
     )
+    assert decision.n_fixtures_with_predictions > 250  # 6 tournaments × ~50
