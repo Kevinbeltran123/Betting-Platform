@@ -719,6 +719,22 @@ class LiveMatchPredictor:
             momentum_mult = max(0.85, min(1.15, 0.5 + 0.5 * momentum))
             lam_remaining *= momentum_mult
 
+        # ── Set-piece intensity (corners + crosses rolling) ─────────
+        # ~30% of all goals in top-5 leagues come from set-pieces
+        # (corners, free-kicks, throw-in deliveries that lead to crosses).
+        # When a team is generating set-pieces well above the league
+        # baseline in the last 15 min, their goal threat is elevated
+        # beyond what shots-rolling alone captures (the "siege" pattern:
+        # team deep in opp half winning corners but no shots yet).
+        # Skip automatically without trends.
+        if state.trends and state.minute >= 25:
+            sp = state.set_piece_intensity(side, window=15)
+            if sp != 1.0:
+                # Cap at [0.92, 1.10] — set-piece intensity is a smaller,
+                # more uncertain signal than direct shot momentum.
+                sp_mult = max(0.92, min(1.10, 0.7 + 0.3 * sp))
+                lam_remaining *= sp_mult
+
         return max(0.0, lam_remaining)
 
     def _double_chance(
@@ -897,12 +913,16 @@ class LiveMatchPredictor:
         """Total-cards (yellow + red) O/U via Poisson with a league prior.
 
         Cards depend heavily on referee disposition + game state (tight
-        match = more cards, blowout = fewer). We blend observed rate with
-        the league baseline to avoid over-fitting to early-game noise.
-
-        Engagement composite (tackles + interceptions + duels) modulates
-        the rate: high engagement = scrappy game = more cards. Low
-        engagement = open game = fewer cards.
+        match = more cards, blowout = fewer). λ_remaining is built from
+        three signals:
+          1. Match-average rate (cumulative cards ÷ match-minute,
+             regularised by league prior)
+          2. Engagement composite multiplier (cumulative
+             tackles+interceptions+duels vs expected for the minute)
+          3. Recent foul + yellow rolling rate from trends — captures
+             referee-state drift (a referee who started lenient and
+             tightened up, or vice versa) and late-game tactical-foul
+             clusters that the cumulative average smooths over.
         """
         cards_so_far = (
             state.yellow_card_count_home
@@ -911,7 +931,7 @@ class LiveMatchPredictor:
         )
         if cards_so_far > line:
             return {"over": 1.0, "under": 0.0}
-        # Effective minutes for rate estimation
+        # Match-average rate with league-prior regularisation
         effective_minutes = state.minute + CARDS_PRIOR_WEIGHT_MINUTES
         prior_cards = (
             DEFAULT_LEAGUE_CARDS_PRIOR
@@ -920,17 +940,44 @@ class LiveMatchPredictor:
         rate_per_min = (cards_so_far + prior_cards) / max(effective_minutes, 1.0)
         lam_remaining = rate_per_min * max(0, 90 - state.minute)
 
-        # Engagement multiplier — scrappy games book more cards. Top-5
-        # league avg engagement at minute 60 ≈ 80; >120 = high tempo.
+        # Engagement multiplier — scrappy games book more cards.
         if state.minute >= 30:
             total_eng = state.home_engagement + state.away_engagement
             expected_eng = (state.minute / 60.0) * 80.0
             if expected_eng > 0 and total_eng > 0:
                 eng_ratio = total_eng / expected_eng
-                # Cap multiplier at [0.85, 1.20] — engagement is one
-                # signal among many; don't let it dominate.
                 eng_mult = max(0.85, min(1.20, 0.5 + 0.5 * eng_ratio))
                 lam_remaining *= eng_mult
+
+        # Trend-aware adjustment from rolling fouls + yellows in last 15 min.
+        # When recent foul rate vs match-avg rate is materially > 1, game
+        # is heating up and λ_remaining should rise; cluster of recent
+        # yellows compounds (referee in card-happy mode).
+        if state.trends and state.minute >= 25:
+            recent_fouls = (
+                state.fouls_in_last_window("home", window=15)
+                + state.fouls_in_last_window("away", window=15)
+            )
+            cum_fouls = (
+                state._cumulative_at_minute("home", StatType.FOULS, state.minute)
+                + state._cumulative_at_minute("away", StatType.FOULS, state.minute)
+            )
+            avg_fouls_per_min = cum_fouls / state.minute if state.minute > 0 else 0
+            window_min = min(15, state.minute)
+            if avg_fouls_per_min > 0 and window_min >= 5:
+                recent_per_min = recent_fouls / float(window_min)
+                foul_ratio = recent_per_min / avg_fouls_per_min
+                # Cap at [0.85, 1.20] — fouls trend is real but bounded.
+                foul_mult = max(0.85, min(1.20, 0.6 + 0.4 * foul_ratio))
+                lam_remaining *= foul_mult
+            # Yellow-cluster bonus: 3+ yellows in last 15 min suggests
+            # the ref is now booking more freely → +10% λ.
+            recent_yellows = (
+                state.yellow_cards_in_last_window("home", window=15)
+                + state.yellow_cards_in_last_window("away", window=15)
+            )
+            if recent_yellows >= 3:
+                lam_remaining *= 1.10
 
         if lam_remaining <= 0:
             return {"over": 0.0, "under": 1.0}
@@ -1124,6 +1171,12 @@ class LiveMatchPredictor:
 
         Use Sportmonks OU 2.5 to back out λ via P(goals ≥ 3 | Poisson(λ)) =
         Sportmonks_yes. We solve numerically (binary search 0.5 → 6.0).
+
+        When trends data is available, apply a CROSS-TEAM momentum
+        multiplier: the joint home×away momentum_score captures whether
+        the match is in an open end-to-end phase (both teams pushing →
+        more goals) or scrappy (both teams cooling → fewer goals). Same
+        bound as the per-side momentum: [0.85, 1.15].
         """
         sm = state.sportmonks_prediction(PredictionType.OVER_UNDER_2_5_PROBABILITY)
         if not sm:
@@ -1143,7 +1196,23 @@ class LiveMatchPredictor:
                 lo = mid
             else:
                 hi = mid
-        return (lo + hi) / 2
+        lam = (lo + hi) / 2
+
+        # Cross-team momentum: if BOTH teams are accelerating (joint > 1.2)
+        # the match is open and total-λ should rise; if both are slowing
+        # (joint < 0.8) the match is scrappy and total-λ should fall.
+        # Joint product is the right composition because momentum is
+        # multiplicative (independent per-team rates), and a single hot
+        # team alone doesn't justify a total-goals lift.
+        if state.trends and state.minute >= 20:
+            home_m = state.momentum_score("home", window=5)
+            away_m = state.momentum_score("away", window=5)
+            joint = home_m * away_m
+            # Map joint product to multiplier: joint=1.0 → 1.0; joint=2.0 →
+            # 1.15 (cap); joint=0.5 → 0.85 (floor).
+            joint_mult = max(0.85, min(1.15, 0.6 + 0.4 * joint))
+            lam *= joint_mult
+        return lam
 
     def _team_to_score_remaining(
         self, state: LiveMatchState, side: str,

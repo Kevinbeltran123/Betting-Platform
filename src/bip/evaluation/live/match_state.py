@@ -333,64 +333,83 @@ class LiveMatchState:
                     best_value = float(v)
         return best_value
 
-    def shots_in_last_window(
-        self, side: str, *, window: int = 5,
+    def stat_in_last_window(
+        self, side: str, type_id: int, *, window: int = 5,
     ) -> int:
-        """Number of total shots in the last ``window`` match-minutes.
+        """Generic rolling-window count from cumulative trend records.
 
-        Uses ``Trend`` records (cumulative SHOTS_TOTAL per minute per side)
-        and computes the delta between current minute and ``minute - window``.
-        Returns 0 when no trends data is available — degrades gracefully
-        for leagues / matches that don't expose minute-by-minute trends.
+        Computes ``cumulative(type_id, side, minute) - cumulative(type_id,
+        side, minute-window)``. Returns 0 when no trends or when the stat
+        wasn't emitted for this fixture. All per-stat helpers below are
+        thin wrappers — keeps a single code path for the delta math.
         """
         if not self.trends:
             return 0
-        current = self._cumulative_at_minute(
-            side, StatType.SHOTS_TOTAL, self.minute,
-        )
+        current = self._cumulative_at_minute(side, type_id, self.minute)
         prior = self._cumulative_at_minute(
-            side, StatType.SHOTS_TOTAL, max(0, self.minute - window),
+            side, type_id, max(0, self.minute - window),
         )
         return max(0, int(round(current - prior)))
+
+    def shots_in_last_window(self, side: str, *, window: int = 5) -> int:
+        """Total shots in last ``window`` match-minutes (graceful: 0 when
+        no trends data — same as for the helpers below)."""
+        return self.stat_in_last_window(side, StatType.SHOTS_TOTAL, window=window)
 
     def dangerous_attacks_in_last_window(
         self, side: str, *, window: int = 5,
     ) -> int:
-        if not self.trends:
-            return 0
-        current = self._cumulative_at_minute(
-            side, StatType.DANGEROUS_ATTACKS, self.minute,
-        )
-        prior = self._cumulative_at_minute(
-            side, StatType.DANGEROUS_ATTACKS, max(0, self.minute - window),
-        )
-        return max(0, int(round(current - prior)))
+        return self.stat_in_last_window(side, StatType.DANGEROUS_ATTACKS, window=window)
 
-    def key_passes_in_last_window(
+    def key_passes_in_last_window(self, side: str, *, window: int = 5) -> int:
+        return self.stat_in_last_window(side, StatType.KEY_PASSES, window=window)
+
+    def corners_in_last_window(self, side: str, *, window: int = 5) -> int:
+        return self.stat_in_last_window(side, StatType.CORNERS, window=window)
+
+    def fouls_in_last_window(self, side: str, *, window: int = 5) -> int:
+        """Recent foul rate — drives cards-market λ when game tempo
+        becomes aggressive (referee state, late-game tactical fouls)."""
+        return self.stat_in_last_window(side, StatType.FOULS, window=window)
+
+    def yellow_cards_in_last_window(self, side: str, *, window: int = 5) -> int:
+        """Yellow-card cluster detection: 3+ yellows in 15 min often
+        signals a card-happy referee, raises P(more cards before FT)."""
+        return self.stat_in_last_window(side, StatType.YELLOW_CARDS, window=window)
+
+    def crosses_in_last_window(self, side: str, *, window: int = 5) -> int:
+        """Wing-attack pattern. Combined with corners, drives the
+        set-piece intensity signal (set-pieces account for ~30% of goals
+        in top-5 leagues)."""
+        return self.stat_in_last_window(side, StatType.TOTAL_CROSSES, window=window)
+
+    def shots_on_target_in_last_window(
         self, side: str, *, window: int = 5,
     ) -> int:
-        if not self.trends:
-            return 0
-        current = self._cumulative_at_minute(
-            side, StatType.KEY_PASSES, self.minute,
-        )
-        prior = self._cumulative_at_minute(
-            side, StatType.KEY_PASSES, max(0, self.minute - window),
-        )
-        return max(0, int(round(current - prior)))
+        return self.stat_in_last_window(side, StatType.SHOTS_ON_TARGET, window=window)
 
-    def corners_in_last_window(
-        self, side: str, *, window: int = 5,
-    ) -> int:
-        if not self.trends:
-            return 0
-        current = self._cumulative_at_minute(
-            side, StatType.CORNERS, self.minute,
+    def set_piece_intensity(self, side: str, *, window: int = 15) -> float:
+        """Combined corner + cross frequency in the last ``window`` min,
+        normalised against a league baseline (~5 set-pieces per side per
+        90 min). Returns ratio: > 1.0 = team generating set-pieces
+        above expected pace; < 1.0 below.
+
+        Returns 1.0 (neutral) when no trends or minute too low.
+        """
+        if not self.trends or self.minute < 20:
+            return 1.0
+        recent = (
+            self.corners_in_last_window(side, window=window)
+            + self.crosses_in_last_window(side, window=window)
         )
-        prior = self._cumulative_at_minute(
-            side, StatType.CORNERS, max(0, self.minute - window),
-        )
-        return max(0, int(round(current - prior)))
+        # League prior: ~5 corners + ~16 crosses = 21 set-pieces per
+        # team per 90. Per-minute rate ≈ 0.23.
+        expected_per_min = 0.23
+        actual_window_minutes = min(window, self.minute)
+        expected_recent = expected_per_min * actual_window_minutes
+        if expected_recent <= 0.0:
+            return 1.0
+        return recent / expected_recent
 
     def shot_acceleration(self, side: str) -> float:
         """Second-derivative of shot rate: shots in last 3 min vs shots in

@@ -1673,6 +1673,115 @@ class TestPhase1aBackoutBugs:
         # Pushing team gets bigger draw bump than flat team
         assert push_probs["draw"] > flat_probs["draw"] + 0.005
 
+    # ── Phase 8 — trends saturation (cards / cross-team / set-pieces) ──
+
+    def test_cards_lambda_lifted_by_recent_foul_cluster(self):
+        """Phase 8 (#A): rolling fouls in last 15 min materially above
+        match-avg foul rate → cards λ lifts via foul_mult. Compare two
+        states with same cumulative state but different recent foul
+        trajectories."""
+        from bip.evaluation.live.match_state import LiveMatchState
+        from bip.evaluation.live.predictor import MARKET_CARDS_TOTAL_3_5
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        # Common state: minute=60, 2 yellows total, density-met
+        base = _make_state(
+            minute=60, home_goals=1,
+            home_stats={
+                StatType.SHOTS_TOTAL: 8, StatType.KEY_PASSES: 4,
+                StatType.SHOTS_ON_TARGET: 3, StatType.CORNERS: 4,
+                StatType.TACKLES: 12, StatType.INTERCEPTIONS: 8,
+                StatType.DUELS_WON: 30, StatType.FOULS: 12,
+            },
+            away_stats={
+                StatType.SHOTS_TOTAL: 6, StatType.KEY_PASSES: 3,
+                StatType.SHOTS_ON_TARGET: 2, StatType.CORNERS: 3,
+                StatType.TACKLES: 10, StatType.INTERCEPTIONS: 7,
+                StatType.DUELS_WON: 28, StatType.FOULS: 10,
+            },
+            yellow_card_events=[(15, 10, 100), (35, 20, 200)],
+        )
+        # Trajectory A: fouls FLAT — match-avg holds
+        flat_trends = (
+            self._trends_for(10, type_id=StatType.FOULS,
+                             minute_value_pairs=[(45, 10), (55, 11), (60, 12)])
+            + self._trends_for(20, type_id=StatType.FOULS,
+                               minute_value_pairs=[(45, 8), (55, 9), (60, 10)])
+        )
+        # Trajectory B: foul SURGE — 8 fouls in last 15 min vs 14 cumulative
+        surge_trends = (
+            self._trends_for(10, type_id=StatType.FOULS,
+                             minute_value_pairs=[(45, 8), (55, 10), (60, 16)])
+            + self._trends_for(20, type_id=StatType.FOULS,
+                               minute_value_pairs=[(45, 6), (55, 8), (60, 14)])
+        )
+        flat_state = LiveMatchState(**{**base.__dict__, "trends": flat_trends})
+        surge_state = LiveMatchState(**{**base.__dict__, "trends": surge_trends})
+        predictor = LiveMatchPredictor()
+        flat_p = predictor.predict(flat_state).by_market.get(MARKET_CARDS_TOTAL_3_5)
+        surge_p = predictor.predict(surge_state).by_market.get(MARKET_CARDS_TOTAL_3_5)
+        assert flat_p is not None and surge_p is not None
+        # Surge state must have higher P(over 3.5)
+        assert surge_p["over"] > flat_p["over"] + 0.01
+
+    def test_cross_team_momentum_lifts_total_lambda(self):
+        """Phase 8 (#D): when BOTH teams' momentum_score > 1.2, the
+        joint product is high → _estimate_total_lambda lifts → OU 2.5
+        over probability lifts. Compare to flat-momentum baseline."""
+        from bip.evaluation.live.match_state import LiveMatchState
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        # Common base: 0-0 at minute 30, balanced sportmonks
+        base = _make_state(minute=30, home_goals=0, away_goals=0)
+        # Trajectory A: both teams flat (steady pace = momentum ~ 1.0)
+        flat = []
+        for tid in (StatType.SHOTS_TOTAL, StatType.DANGEROUS_ATTACKS, StatType.KEY_PASSES):
+            for team_id in (10, 20):
+                flat.extend(self._trends_for(
+                    team_id, type_id=tid,
+                    minute_value_pairs=[(15, 3), (25, 5), (30, 6)],
+                ))
+        # Trajectory B: both accelerating sharply (joint > 2.0)
+        surge = []
+        for tid, vals in [
+            (StatType.SHOTS_TOTAL, [(15, 1), (25, 2), (30, 8)]),
+            (StatType.DANGEROUS_ATTACKS, [(15, 5), (25, 10), (30, 30)]),
+            (StatType.KEY_PASSES, [(15, 1), (25, 2), (30, 6)]),
+        ]:
+            for team_id in (10, 20):
+                surge.extend(self._trends_for(team_id, type_id=tid,
+                                               minute_value_pairs=vals))
+        flat_state = LiveMatchState(**{**base.__dict__, "trends": flat})
+        surge_state = LiveMatchState(**{**base.__dict__, "trends": surge})
+        predictor = LiveMatchPredictor()
+        flat_ou = predictor.predict(flat_state).by_market[MARKET_OU_25]
+        surge_ou = predictor.predict(surge_state).by_market[MARKET_OU_25]
+        # Surge should give materially higher P(over 2.5)
+        assert surge_ou["over"] > flat_ou["over"] + 0.01
+
+    def test_set_piece_intensity_helper(self):
+        """Phase 8 (#F helper): combined corners + crosses rolling vs
+        league baseline. Returns ratio."""
+        from bip.evaluation.live.match_state import LiveMatchState
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        # Last 15 min: 3 corners + 8 crosses for home = 11 set-pieces
+        # League baseline: 0.23/min × 15 = 3.45 expected
+        # Ratio = 11/3.45 ≈ 3.19 (high pressure)
+        trends = (
+            self._trends_for(10, type_id=StatType.CORNERS,
+                             minute_value_pairs=[(15, 1), (30, 1), (45, 4)])
+            + self._trends_for(10, type_id=StatType.TOTAL_CROSSES,
+                               minute_value_pairs=[(15, 2), (30, 4), (45, 12)])
+        )
+        base = _make_state(minute=45, home_goals=0)
+        state = LiveMatchState(**{**base.__dict__, "trends": trends})
+        # Last 15 min (min 30-45): corners delta = 4-1 = 3; crosses delta = 12-4 = 8 → 11
+        sp = state.set_piece_intensity("home", window=15)
+        assert sp > 2.5  # high pressure
+
+    def test_set_piece_intensity_neutral_without_trends(self):
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        state = _make_state(minute=45, home_goals=0)
+        assert state.set_piece_intensity("home", window=15) == 1.0
+
     # ── Phase 6 — software completeness for backtest day ──────────────
 
     def test_stake_by_ci_scales_down_with_wide_interval(self):
