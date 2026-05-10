@@ -133,7 +133,7 @@ class LiveMatchState:
     # Substitution events (minute, team_id, player_in_id-or-None).
     # Manager-intent signal: triple-sub by 70' = pushing for goal;
     # lone defensive sub at 80' = locking the result.
-    substitution_events: list[tuple[int, int, int | None]] = field(default_factory=list)
+    substitution_events: list[tuple[int, int, int]] = field(default_factory=list)
 
     # Snapshot meta (best-effort; not always emitted by Sportmonks).
     snapshot_taken_at: datetime | None = None
@@ -969,7 +969,7 @@ def _extract_events(
     goal_events_detailed: list[tuple[int, int, int]] = []
     red_card_events: list[tuple[int, int]] = []
     yellow_card_events: list[tuple[int, int, int]] = []
-    substitution_events: list[tuple[int, int, int | None]] = []
+    substitution_events: list[tuple[int, int, int]] = []
     GOAL_TYPE_IDS = {EVENT_TYPE_GOAL, EVENT_TYPE_OWNGOAL, EVENT_TYPE_PENALTY_SCORED}
     RED_CARD_TYPE_IDS = {EVENT_TYPE_REDCARD, EVENT_TYPE_YELLOWREDCARD}
     for e in events:
@@ -987,7 +987,12 @@ def _extract_events(
         elif e.type_id == EVENT_TYPE_YELLOWCARD:
             yellow_card_events.append((minute, team, e.player_id or 0))
         elif e.type_id == EVENT_TYPE_SUBSTITUTION:
-            substitution_events.append((minute, team, e.related_player_id))
+            # ``or 0`` defends against the sort below: when two subs happen
+            # at the same minute on the same team (common in double-subs),
+            # tuple comparison falls through to the third element. If one
+            # is None and the other is int, Python raises TypeError. The
+            # 0 sentinel preserves "no related player" semantics safely.
+            substitution_events.append((minute, team, e.related_player_id or 0))
     goal_events.sort()
     goal_events_detailed.sort()
     red_card_events.sort()
