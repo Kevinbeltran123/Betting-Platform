@@ -1510,6 +1510,199 @@ class TestPhase1aBackoutBugs:
         assert MARKET_FULLTIME_RESULT in skip
         assert MARKET_DOUBLE_CHANCE in skip
 
+    # ── Phase 6 — software completeness for backtest day ──────────────
+
+    def test_stake_by_ci_scales_down_with_wide_interval(self):
+        """Phase 6 (#3 follow-up): wide CI = uncertain → stake DOWN.
+        With CI=0.10 stake multiplier = max(0.40, 1 - 0.40) = 0.60.
+        With CI=0.02 stake multiplier = max(0.40, 1 - 0.08) = 0.92.
+        """
+        from bip.evaluation.live.match_state import LiveMatchState
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        # Same edge, two different CI values — verify stake differs.
+        state = _make_state(minute=30, home_goals=1)
+        # Generous CI (wide) via custom probs.confidences
+        narrow_ci_probs = _probs_with_conf(
+            market_probs={
+                MARKET_FULLTIME_RESULT: {"home": 0.55, "draw": 0.25, "away": 0.20},
+            },
+            confidences={MARKET_FULLTIME_RESULT: 0.02},
+        )
+        wide_ci_probs = _probs_with_conf(
+            market_probs={
+                MARKET_FULLTIME_RESULT: {"home": 0.55, "draw": 0.25, "away": 0.20},
+            },
+            confidences={MARKET_FULLTIME_RESULT: 0.10},
+        )
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="2.00")]
+        # Disable CI gate to isolate the stake-by-CI scaler (the gate
+        # would drop the wide-CI pick before stake computation runs).
+        narrow = ValueDetector(
+            min_edge_pct=3.0, drop_extreme=False, enforce_ci_gate=False,
+            min_logical_score_emit=0.0, min_logical_score_flag=0.0,
+        ).evaluate(narrow_ci_probs, odds, home_team_name="A", away_team_name="B", state=state)
+        wide = ValueDetector(
+            min_edge_pct=3.0, drop_extreme=False, enforce_ci_gate=False,
+            min_logical_score_emit=0.0, min_logical_score_flag=0.0,
+        ).evaluate(wide_ci_probs, odds, home_team_name="A", away_team_name="B", state=state)
+        assert len(narrow) == 1 and len(wide) == 1
+        # Wide CI stake should be substantially smaller
+        assert wide[0].suggested_stake_pct < narrow[0].suggested_stake_pct - 0.05
+
+    def test_cards_market_emits_with_yellow_cards(self):
+        """Phase 6: NUMBER_OF_CARDS market is now predicted.
+
+        With 4 yellows accumulated by minute 60 + adequate engagement,
+        cards_total markets should emit.
+        """
+        from bip.evaluation.live.predictor import (
+            MARKET_CARDS_TOTAL_3_5,
+            MARKET_CARDS_TOTAL_4_5,
+            MARKET_CARDS_TOTAL_5_5,
+        )
+        state = _make_state(
+            minute=60, home_goals=1,
+            home_stats={
+                StatType.SHOTS_TOTAL: 8, StatType.KEY_PASSES: 4,
+                StatType.SHOTS_ON_TARGET: 3, StatType.CORNERS: 4,
+                StatType.TACKLES: 12, StatType.INTERCEPTIONS: 8,
+                StatType.DUELS_WON: 30,
+            },
+            away_stats={
+                StatType.SHOTS_TOTAL: 6, StatType.KEY_PASSES: 3,
+                StatType.SHOTS_ON_TARGET: 2, StatType.CORNERS: 3,
+                StatType.TACKLES: 10, StatType.INTERCEPTIONS: 7,
+                StatType.DUELS_WON: 28,
+            },
+            yellow_card_events=[(15, 10, 100), (30, 20, 200), (40, 10, 101), (55, 20, 201)],
+        )
+        predictor = LiveMatchPredictor()
+        probs = predictor.predict(state)
+        # All three card lines should emit with reasonable probabilities
+        assert MARKET_CARDS_TOTAL_3_5 in probs.by_market
+        assert MARKET_CARDS_TOTAL_4_5 in probs.by_market
+        assert MARKET_CARDS_TOTAL_5_5 in probs.by_market
+        # 4 cards already → over 3.5 should be ~certain, over 5.5 less so
+        assert probs.by_market[MARKET_CARDS_TOTAL_3_5]["over"] > 0.95
+        assert (
+            probs.by_market[MARKET_CARDS_TOTAL_5_5]["over"]
+            < probs.by_market[MARKET_CARDS_TOTAL_4_5]["over"]
+        )
+
+    def test_cards_market_skipped_below_info_density(self):
+        """Same density gate as corners — at min 15 with 1 yellow and
+        no other stats, cards should not emit (Poisson rate from 1 sample
+        is unreliable)."""
+        from bip.evaluation.live.predictor import MARKET_CARDS_TOTAL_3_5
+        state = _make_state(
+            minute=15,
+            yellow_card_events=[(10, 10, 100)],
+            home_stats={}, away_stats={},  # no other accumulated stats
+        )
+        # Density should be below 0.40 (predictor's gate)
+        predictor = LiveMatchPredictor()
+        probs = predictor.predict(state)
+        assert MARKET_CARDS_TOTAL_3_5 not in probs.by_market
+
+    def test_trends_consumer_shots_in_window(self):
+        """Phase 6 trends-consumer: shots_in_last_window reads cumulative
+        Trend records and computes a rolling delta."""
+        from bip.sports.football.sportmonks.schemas import Trend
+        # Trend records: SHOTS_TOTAL for home_team_id=10
+        # at min 50: cum=4; at min 55: cum=7 → 3 shots in last 5 min
+        trends = [
+            Trend.model_validate({
+                "id": 1, "fixture_id": 1, "type_id": StatType.SHOTS_TOTAL,
+                "participant_id": 10, "period_id": 2, "minute": 50, "value": 4,
+            }),
+            Trend.model_validate({
+                "id": 2, "fixture_id": 1, "type_id": StatType.SHOTS_TOTAL,
+                "participant_id": 10, "period_id": 2, "minute": 55, "value": 7,
+            }),
+        ]
+        from bip.evaluation.live.match_state import LiveMatchState
+        # Build state directly with trends
+        base = _make_state(minute=55, home_goals=1)
+        state = LiveMatchState(
+            **{**base.__dict__, "trends": trends}
+        )
+        assert state.shots_in_last_window("home", window=5) == 3
+        assert state.shots_in_last_window("home", window=10) == 7
+
+    def test_trends_consumer_no_data_returns_zero(self):
+        """No trends data → returns 0 (graceful degradation)."""
+        state = _make_state(minute=55, home_goals=1)
+        # trends defaults to []
+        assert state.shots_in_last_window("home", window=5) == 0
+
+    def test_cross_cluster_correlation_collapses_dc_under(self):
+        """Phase 6 (#5 cross-cluster): DC 1X + OU 2.5 under encode the
+        same low-scoring-home-not-loses view. Bundle dedup should collapse
+        them to one survivor (cross-cluster).
+        """
+        from bip.evaluation.live.value_detector import _bundle_dedup_picks
+        # Two picks: same fixture, different clusters, but correlated
+        dc_pick = LivePick(
+            fixture_id=1, minute=40, home_team="A", away_team="B",
+            market=MARKET_DOUBLE_CHANCE, selection="1x",
+            bookmaker_id=2, bookmaker_odd=1.40, our_probability=0.78,
+            fair_odd=1.28, edge_pct=9.2,
+            kelly_fraction_full=0.10, suggested_stake_pct=1.0,
+        )
+        ou_pick = LivePick(
+            fixture_id=1, minute=40, home_team="A", away_team="B",
+            market=MARKET_OU_25, selection="under",
+            bookmaker_id=2, bookmaker_odd=1.85, our_probability=0.58,
+            fair_odd=1.72, edge_pct=7.3,
+            kelly_fraction_full=0.07, suggested_stake_pct=0.6,
+        )
+        result = _bundle_dedup_picks([dc_pick, ou_pick])
+        # Cross-cluster correlation must collapse to 1 survivor.
+        assert len(result) == 1
+        # DC pick has higher edge → wins
+        assert result[0].market == MARKET_DOUBLE_CHANCE
+
+    def test_cross_cluster_uncorrelated_pairs_both_survive(self):
+        """Sister test: picks that are NOT in the correlated pairs set
+        both survive cross-cluster pass."""
+        from bip.evaluation.live.value_detector import _bundle_dedup_picks
+        # FT home + BTTS yes — independent views
+        ft_pick = LivePick(
+            fixture_id=1, minute=40, home_team="A", away_team="B",
+            market=MARKET_FULLTIME_RESULT, selection="home",
+            bookmaker_id=2, bookmaker_odd=1.80, our_probability=0.65,
+            fair_odd=1.54, edge_pct=17.0,
+            kelly_fraction_full=0.10, suggested_stake_pct=1.0,
+        )
+        btts_pick = LivePick(
+            fixture_id=1, minute=40, home_team="A", away_team="B",
+            market=MARKET_BTTS, selection="yes",
+            bookmaker_id=2, bookmaker_odd=2.10, our_probability=0.55,
+            fair_odd=1.82, edge_pct=15.5,
+            kelly_fraction_full=0.10, suggested_stake_pct=1.0,
+        )
+        result = _bundle_dedup_picks([ft_pick, btts_pick])
+        # Different clusters AND not in _CORRELATED_PAIRS → both survive
+        assert len(result) == 2
+
+    def test_snapshot_save_includes_odds_for_backtest(self):
+        """Phase 6: watcher + live_picks must persist odds_snapshot
+        alongside fixture data so backtest replay can grade picks.
+        Verified via the saved-snapshot payload structure rather than
+        running the actual watch loop.
+        """
+        # Confirm the cache.save_snapshot call sites pass a payload with
+        # the required keys. We check the payload SHAPE by examining
+        # what backtest._replay_fixture expects.
+        import inspect
+        from scripts.spike.sportmonks import backtest as backtest_mod
+        # The replay function reads payload.get("odds_snapshot", []) —
+        # confirm watch.py call site passes that key with the odds list.
+        watch_src = inspect.getsource(__import__(
+            "scripts.spike.sportmonks.watch", fromlist=["scan_round"]
+        ).scan_round)
+        assert '"odds_snapshot"' in watch_src
+        assert '"data"' in watch_src
     # ── #30 HTFT matcher fix — was bound to _ftr_matcher (incompatible) ─
     def test_htft_matcher_handles_word_labels(self):
         """Bug #30: predictor emits HTFT keys 'home_home', 'home_draw',

@@ -72,18 +72,24 @@ async def scan_one_fixture(
 ) -> list[LivePick]:
     """Pipeline for one in-play fixture: pull → state → predict → odds → value."""
     f = await client.get_fixture(fixture_id, includes=INCLUDES_LIVE)
-
-    # Persist raw payload (snapshot)
-    raw = f.model_dump(mode="json")
-    cache.save_snapshot(fixture_id, {"data": raw})
-
     snapshot_taken_at = datetime.now(timezone.utc)
     state = LiveMatchState.from_fixture(f, snapshot_taken_at=snapshot_taken_at)
     if not (state.is_live or state.is_half_time):
+        # Persist fixture-only for non-live (preserves FT snapshot for
+        # backtest's _derive_final_outcome step).
+        cache.save_snapshot(fixture_id, {"data": f.model_dump(mode="json")})
         return []
 
     probs = predictor.predict(state)
     odds = await client.get_inplay_odds_for_fixture(fixture_id)
+
+    # Persist fixture + odds together — required for backtest replay
+    # to grade picks against the actual odds present at capture time.
+    cache.save_snapshot(fixture_id, {
+        "data": f.model_dump(mode="json"),
+        "odds_snapshot": [o.model_dump(mode="json") for o in odds],
+        "snapshot_taken_at": snapshot_taken_at.isoformat(),
+    })
     # Pass state so sanity filters (red card, info-density, valuebet,
     # correct-score, blackout, stale-odd) all engage.
     picks = detector.evaluate(

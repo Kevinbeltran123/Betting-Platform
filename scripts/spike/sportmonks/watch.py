@@ -170,13 +170,16 @@ async def scan_round(
         for f in relevant:
             try:
                 full = await client.get_fixture(f.id, includes=INCLUDES)
-                cache.save_snapshot(f.id, {"data": full.model_dump(mode="json")})
-
                 snapshot_taken_at = datetime.now(timezone.utc)
                 state = LiveMatchState.from_fixture(
                     full, snapshot_taken_at=snapshot_taken_at,
                 )
                 if not (state.is_live or state.is_half_time):
+                    # Save fixture-only snapshot for non-live so the
+                    # final-state snapshot is preserved for backtest grading.
+                    cache.save_snapshot(
+                        f.id, {"data": full.model_dump(mode="json")},
+                    )
                     continue
 
                 # Resolve team form (cache hit is instant; miss triggers
@@ -197,6 +200,15 @@ async def scan_round(
 
                 probs = predictor.predict(state)
                 odds = await client.get_inplay_odds_for_fixture(f.id)
+                # Persist BOTH fixture + odds in one snapshot so backtest
+                # replay can grade picks against the actual odds visible
+                # at capture time. Previously snapshots had only fixture
+                # data → backtest never saw odds → all replay picks empty.
+                cache.save_snapshot(f.id, {
+                    "data": full.model_dump(mode="json"),
+                    "odds_snapshot": [o.model_dump(mode="json") for o in odds],
+                    "snapshot_taken_at": snapshot_taken_at.isoformat(),
+                })
 
                 # Per-snapshot drop logger — feeds pick_decisions table so
                 # gate_rejection_rates() has data. Emits/flags continue to

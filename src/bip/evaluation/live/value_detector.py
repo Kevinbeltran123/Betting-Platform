@@ -49,6 +49,9 @@ from bip.evaluation.live.predictor import (
     MARKET_BTTS,
     MARKET_BTTS_FIRST_HALF,
     MARKET_BTTS_SECOND_HALF,
+    MARKET_CARDS_TOTAL_3_5,
+    MARKET_CARDS_TOTAL_4_5,
+    MARKET_CARDS_TOTAL_5_5,
     MARKET_CORNERS_TOTAL_8_5,
     MARKET_CORNERS_TOTAL_9_5,
     MARKET_CORNERS_TOTAL_10_5,
@@ -184,6 +187,9 @@ _MARKET_BINDINGS: dict[str, tuple[int, SelectionMatcher]] = {
     MARKET_CORNERS_TOTAL_9_5: (MarketID.MATCH_CORNERS, _line_matcher_for(9.5)),
     MARKET_CORNERS_TOTAL_10_5: (MarketID.MATCH_CORNERS, _line_matcher_for(10.5)),
     MARKET_CORNERS_TOTAL_11_5: (MarketID.MATCH_CORNERS, _line_matcher_for(11.5)),
+    MARKET_CARDS_TOTAL_3_5: (MarketID.NUMBER_OF_CARDS, _line_matcher_for(3.5)),
+    MARKET_CARDS_TOTAL_4_5: (MarketID.NUMBER_OF_CARDS, _line_matcher_for(4.5)),
+    MARKET_CARDS_TOTAL_5_5: (MarketID.NUMBER_OF_CARDS, _line_matcher_for(5.5)),
 }
 
 
@@ -275,6 +281,9 @@ _CLUSTER_CORNERS = frozenset({
     MARKET_CORNERS_TOTAL_8_5, MARKET_CORNERS_TOTAL_9_5,
     MARKET_CORNERS_TOTAL_10_5, MARKET_CORNERS_TOTAL_11_5,
 })
+_CLUSTER_CARDS = frozenset({
+    MARKET_CARDS_TOTAL_3_5, MARKET_CARDS_TOTAL_4_5, MARKET_CARDS_TOTAL_5_5,
+})
 
 
 def _cluster_of(market: str) -> str:
@@ -286,6 +295,8 @@ def _cluster_of(market: str) -> str:
         return "btts"
     if market in _CLUSTER_CORNERS:
         return "corners"
+    if market in _CLUSTER_CARDS:
+        return "cards"
     return market  # singleton cluster
 
 
@@ -716,6 +727,15 @@ class ValueDetector:
                 # Size-down for suspect EV (B-G4 / size_consistency)
                 size_scale = components.get("size_consistency", 1.0)
                 stake_pct = stake_pct * size_scale
+
+                # Stake-by-CI: wider credibility-interval = less confident
+                # in our_probability = smaller stake. With CI=0.02 (floor):
+                # multiplier=0.92. With CI=0.10 (high disagreement): 0.60.
+                # Bounded at 0.40 minimum so we still stake something on
+                # qualified picks even with very wide intervals.
+                if ci > 0:
+                    ci_scale = max(0.40, 1.0 - 4.0 * ci)
+                    stake_pct = stake_pct * ci_scale
 
                 pick = LivePick(
                     fixture_id=probs.fixture_id,
@@ -1191,23 +1211,24 @@ def _agree(source_p: float, our_p: float, tol: float = 0.05) -> float:
 
 
 def _bundle_dedup_picks(picks: list[LivePick]) -> list[LivePick]:
-    """Collapse correlated cross-market picks per fixture (B-G5).
+    """Collapse correlated cross-market picks per fixture (B-G5 + #5b).
 
-    Picks within the same correlation cluster on the same fixture are
-    re-ranked; only the highest-quality one survives. Different fixtures
-    are independent. Singleton clusters pass through unchanged.
+    Two-pass strategy:
 
-    Ranking key (lexicographic, descending):
-      1. ``flagged_reason is None`` — clean picks always beat flagged.
-         Bug #14: previously a flagged 8% EV pick could displace a clean
-         5% EV pick because only edge mattered.
-      2. ``edge_pct × (1 − p × (1−p))`` — confidence-weighted edge. The
-         ``p × (1−p)`` term is variance; subtracting it from 1 rewards
-         confidence (peaks at p=0 or p=1). Multiplying by edge keeps
-         higher-edge picks ranked above lower-edge ones at similar
-         confidence. Bug #13: previously the term was ``p × (1−p)``
-         directly, which MAXIMIZED at p=0.5 — the worst case — making
-         coin-flip picks beat high-confidence picks of equal edge.
+    Pass 1 — INTRA-cluster dedup. Picks in the same correlation cluster
+    (1x2 / totals / btts / corners / cards) collapse to one survivor by
+    ``(clean_flag, confidence_weighted_edge)`` lexicographic ranking.
+
+    Pass 2 — CROSS-cluster correlation. Pairs of survivors from different
+    clusters can still encode the SAME underlying directional bet
+    (e.g., DC 1X + OU 2.5 under = "low-scoring home-not-loses"; BTTS no +
+    OU 2.5 under = "low-scoring shutout"). When the operator places both
+    they're effectively double-staking the same view. We collapse cross-
+    cluster correlated pairs to the higher-quality one using the same
+    ranking. The correlation matrix is intentionally conservative — only
+    pairs with clear directional overlap are flagged.
+
+    Different fixtures are always independent.
     """
     by_fixture: dict[int, list[LivePick]] = defaultdict(list)
     for p in picks:
@@ -1222,13 +1243,67 @@ def _bundle_dedup_picks(picks: list[LivePick]) -> list[LivePick]:
 
     out: list[LivePick] = []
     for fix_picks in by_fixture.values():
+        # ── Pass 1: intra-cluster dedup
         clusters: dict[str, list[LivePick]] = defaultdict(list)
         for p in fix_picks:
             clusters[_cluster_of(p.market)].append(p)
+        survivors: list[LivePick] = []
         for cluster_picks in clusters.values():
             if len(cluster_picks) == 1:
-                out.extend(cluster_picks)
+                survivors.extend(cluster_picks)
                 continue
-            best = max(cluster_picks, key=_rank)
-            out.append(best)
+            survivors.append(max(cluster_picks, key=_rank))
+
+        # ── Pass 2: cross-cluster correlation collapse
+        # Iteratively eliminate the WORSE of any correlated pair until
+        # no more pairs remain. O(n²) but n ≤ 5 in practice.
+        eliminated: set[int] = set()  # indices into ``survivors``
+        for i in range(len(survivors)):
+            if i in eliminated:
+                continue
+            for j in range(i + 1, len(survivors)):
+                if j in eliminated:
+                    continue
+                if _picks_strongly_correlated(survivors[i], survivors[j]):
+                    # Keep the higher-ranked, eliminate the other
+                    if _rank(survivors[i]) >= _rank(survivors[j]):
+                        eliminated.add(j)
+                    else:
+                        eliminated.add(i)
+                        break  # i was eliminated, no more j-comparisons
+        out.extend(p for k, p in enumerate(survivors) if k not in eliminated)
     return out
+
+
+# Cross-cluster correlation pairs — intentionally conservative. Each entry
+# is a frozenset of (market, selection) pairs; if two picks both match
+# any pair in this set, they're treated as the same directional bet.
+_CORRELATED_PAIRS: tuple[frozenset[tuple[str, str]], ...] = (
+    # "Low-scoring + home not-loses" view
+    frozenset({(MARKET_DOUBLE_CHANCE, "1x"), (MARKET_OU_25, "under")}),
+    frozenset({(MARKET_DOUBLE_CHANCE, "1x"), (MARKET_OU_15, "under")}),
+    # "Low-scoring + away not-loses" view
+    frozenset({(MARKET_DOUBLE_CHANCE, "x2"), (MARKET_OU_25, "under")}),
+    frozenset({(MARKET_DOUBLE_CHANCE, "x2"), (MARKET_OU_15, "under")}),
+    # "Low-scoring shutout" view (BTTS no + low totals all encode same)
+    frozenset({(MARKET_BTTS, "no"), (MARKET_OU_25, "under")}),
+    frozenset({(MARKET_BTTS, "no"), (MARKET_OU_15, "under")}),
+    # "Home wins comfortably" — FT home + DC 1X is double-encoded already
+    # (collapsed in pass 1 — same cluster). But FT home + Home OU 1.5 over
+    # are both bullish-home views from different angles.
+    frozenset({(MARKET_FULLTIME_RESULT, "home"), (MARKET_HOME_OU_15, "over")}),
+    frozenset({(MARKET_FULLTIME_RESULT, "away"), (MARKET_AWAY_OU_15, "over")}),
+    # Clean sheet + opp side fails-to-score (opposite framing, same bet)
+    frozenset({(MARKET_HOME_CLEAN_SHEET, "yes"), (MARKET_BTTS, "no")}),
+    frozenset({(MARKET_AWAY_CLEAN_SHEET, "yes"), (MARKET_BTTS, "no")}),
+)
+
+
+def _picks_strongly_correlated(a: LivePick, b: LivePick) -> bool:
+    """Return True if the two picks encode the same directional view.
+
+    Used by bundle_dedup to collapse cross-cluster correlated pairs.
+    Symmetrical: order of a/b doesn't matter.
+    """
+    pair = frozenset({(a.market, a.selection), (b.market, b.selection)})
+    return any(pair == cp for cp in _CORRELATED_PAIRS)

@@ -108,6 +108,12 @@ class LiveMatchState:
     # Sportmonks pre-built predictions, indexed by type_id
     sportmonks_predictions: dict[int, dict[str, Any]] = field(default_factory=dict)
 
+    # Minute-by-minute trend timeline (cumulative stat values per type×team).
+    # Sportmonks emits Trend records as (type_id, participant_id, minute, value).
+    # We store the raw list and compute rolling-window deltas on demand —
+    # avoids precomputing every (type, side, window) combination.
+    trends: list[Trend] = field(default_factory=list)
+
     # Goal-event timeline (minute, scoring_team_id) — sorted ascending
     goal_events: list[tuple[int, int]] = field(default_factory=list)
 
@@ -300,6 +306,65 @@ class LiveMatchState:
         )
 
     # ── Yellow-card / booked-player signals (B-29) ─────────────────────
+
+    # ── Trend-derived rolling-window signals ───────────────────────────
+
+    def _cumulative_at_minute(
+        self, side: str, type_id: int, target_minute: int,
+    ) -> float:
+        """Cumulative stat value at or before ``target_minute`` for one side.
+
+        Walks the ``trends`` list and returns the latest emitted value with
+        ``minute ≤ target_minute``. Returns 0.0 when no record exists —
+        which is also the correct semantic for "stat not yet accumulated."
+        """
+        pid = self.home_team_id if side == "home" else self.away_team_id
+        best_minute = -1
+        best_value = 0.0
+        for t in self.trends:
+            if t.type_id != type_id or t.participant_id != pid:
+                continue
+            if t.minute > target_minute:
+                continue
+            if t.minute > best_minute:
+                best_minute = t.minute
+                v = t.value
+                if v is not None:
+                    best_value = float(v)
+        return best_value
+
+    def shots_in_last_window(
+        self, side: str, *, window: int = 5,
+    ) -> int:
+        """Number of total shots in the last ``window`` match-minutes.
+
+        Uses ``Trend`` records (cumulative SHOTS_TOTAL per minute per side)
+        and computes the delta between current minute and ``minute - window``.
+        Returns 0 when no trends data is available — degrades gracefully
+        for leagues / matches that don't expose minute-by-minute trends.
+        """
+        if not self.trends:
+            return 0
+        current = self._cumulative_at_minute(
+            side, StatType.SHOTS_TOTAL, self.minute,
+        )
+        prior = self._cumulative_at_minute(
+            side, StatType.SHOTS_TOTAL, max(0, self.minute - window),
+        )
+        return max(0, int(round(current - prior)))
+
+    def dangerous_attacks_in_last_window(
+        self, side: str, *, window: int = 5,
+    ) -> int:
+        if not self.trends:
+            return 0
+        current = self._cumulative_at_minute(
+            side, StatType.DANGEROUS_ATTACKS, self.minute,
+        )
+        prior = self._cumulative_at_minute(
+            side, StatType.DANGEROUS_ATTACKS, max(0, self.minute - window),
+        )
+        return max(0, int(round(current - prior)))
 
     @property
     def yellow_card_count_home(self) -> int:
@@ -521,6 +586,14 @@ class LiveMatchState:
             fixture.events or [], home.id, away.id
         )
 
+        # Trends — minute-by-minute stat values per (type_id, side).
+        # Filter to the two participating teams to keep memory bounded.
+        team_ids = {home.id, away.id}
+        trends = [
+            t for t in (fixture.trends or [])
+            if t.participant_id in team_ids
+        ]
+
         return cls(
             fixture_id=fixture.id,
             home_team_id=home.id,
@@ -539,6 +612,7 @@ class LiveMatchState:
             home_pressure_recent=home_pressure,
             away_pressure_recent=away_pressure,
             sportmonks_predictions=predictions_by_type,
+            trends=trends,
             goal_events=goal_events,
             red_card_events=red_card_events,
             yellow_card_events=yellow_events,

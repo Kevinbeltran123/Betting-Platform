@@ -95,6 +95,9 @@ MARKET_CORNERS_TOTAL_8_5 = "corners_total_8_5"    # {over, under}
 MARKET_CORNERS_TOTAL_9_5 = "corners_total_9_5"
 MARKET_CORNERS_TOTAL_10_5 = "corners_total_10_5"
 MARKET_CORNERS_TOTAL_11_5 = "corners_total_11_5"
+MARKET_CARDS_TOTAL_3_5 = "cards_total_3_5"        # {over, under}
+MARKET_CARDS_TOTAL_4_5 = "cards_total_4_5"
+MARKET_CARDS_TOTAL_5_5 = "cards_total_5_5"
 
 # Tunables — all empirical, can be calibrated post-trial against real ROI
 PRESSURE_DIFF_TRIGGER = 25.0          # avg pressure diff (0-100) before we adjust
@@ -116,6 +119,11 @@ DEFAULT_LEAGUE_CORNERS_PRIOR = 10.4
 # Effective sample-size weight for the prior — at minute 0 we trust the
 # prior fully; by minute 60 we trust observed corner rate ~3:1.
 CORNERS_PRIOR_WEIGHT_MINUTES = 18.0
+
+# League-prior expected total cards (yellows + reds) per match.
+# Top-5 European average ~3.8 yellows + ~0.15 reds = 3.95.
+DEFAULT_LEAGUE_CARDS_PRIOR = 3.95
+CARDS_PRIOR_WEIGHT_MINUTES = 22.0
 
 # Killing-the-clock dampening: if a side is in clock-killing mode, scale
 # their goal-creation λ down by this fraction (4pp on overs).
@@ -334,6 +342,33 @@ class LiveMatchPredictor:
                     by_market[market] = co
                     sources[market] = "live_adjusted"
                     confidences[market] = 0.06
+
+        # 13. Cards totals (#255) — yellow_card_events + reds give us a
+        # rate; engagement composite (tackles + interceptions + duels) and
+        # fouls feed the per-minute card rate. Same density-gate as
+        # corners — an isolated yellow at min 10 isn't a Poisson basis.
+        total_cards_so_far = (
+            state.yellow_card_count_home
+            + state.yellow_card_count_away
+            + len(state.red_card_events)
+        )
+        if (
+            state.minute >= 15
+            and total_cards_so_far > 0
+            and state.informational_density >= self.info_density_threshold
+        ):
+            for line, market in (
+                (3.5, MARKET_CARDS_TOTAL_3_5),
+                (4.5, MARKET_CARDS_TOTAL_4_5),
+                (5.5, MARKET_CARDS_TOTAL_5_5),
+            ):
+                ca = self._cards_total(state, line=line)
+                if ca:
+                    by_market[market] = ca
+                    sources[market] = "live_adjusted"
+                    # Wider CI than corners — cards are noisier (depend
+                    # heavily on referee + game state).
+                    confidences[market] = 0.08
 
         kind = "live" if state.is_live or state.is_half_time else "pre_match"
         return MarketProbabilities(
@@ -648,6 +683,26 @@ class LiveMatchPredictor:
                 # Soften: only half of ratio diff reaches λ
                 lam_remaining *= 0.5 + 0.5 * ratio_capped
 
+        # ── Trends-derived momentum (rolling 5-min shot rate vs match avg) ──
+        # Cumulative xG-proxy is slow-moving; trends give us "is the team
+        # accelerating RIGHT NOW?" A team with 3 shots in the last 5 min vs
+        # match-average 0.4 shots/min is actively pushing — boost λ_remaining.
+        # Skip when no trends data exists (gracefully degrades for leagues
+        # without minute-by-minute coverage).
+        if state.minute >= 20 and state.trends:
+            recent_shots = state.shots_in_last_window(side, window=5)
+            current_total = state._cumulative_at_minute(
+                side, StatType.SHOTS_TOTAL, state.minute,
+            )
+            avg_shots_per_min = current_total / state.minute if state.minute > 0 else 0.0
+            if avg_shots_per_min > 0.0 and recent_shots > 0:
+                recent_rate = recent_shots / 5.0
+                ratio = recent_rate / avg_shots_per_min
+                # Cap at [0.85, 1.15] — momentum is real but bounded.
+                # Even a hot team rarely sustains 1.5× their match avg.
+                momentum_mult = max(0.85, min(1.15, 0.7 + 0.3 * ratio))
+                lam_remaining *= momentum_mult
+
         return max(0.0, lam_remaining)
 
     def _double_chance(
@@ -789,6 +844,53 @@ class LiveMatchPredictor:
         if lam_remaining <= 0:
             return {"over": 0.0, "under": 1.0}
         needed = max(0, math.ceil(line) - corners_so_far)
+        p_over = 1.0 - _poisson_cdf(needed - 1, lam_remaining)
+        return {"over": _clip_scalar(p_over), "under": _clip_scalar(1 - p_over)}
+
+    def _cards_total(
+        self, state: LiveMatchState, *, line: float,
+    ) -> dict[str, float] | None:
+        """Total-cards (yellow + red) O/U via Poisson with a league prior.
+
+        Cards depend heavily on referee disposition + game state (tight
+        match = more cards, blowout = fewer). We blend observed rate with
+        the league baseline to avoid over-fitting to early-game noise.
+
+        Engagement composite (tackles + interceptions + duels) modulates
+        the rate: high engagement = scrappy game = more cards. Low
+        engagement = open game = fewer cards.
+        """
+        cards_so_far = (
+            state.yellow_card_count_home
+            + state.yellow_card_count_away
+            + len(state.red_card_events)
+        )
+        if cards_so_far > line:
+            return {"over": 1.0, "under": 0.0}
+        # Effective minutes for rate estimation
+        effective_minutes = state.minute + CARDS_PRIOR_WEIGHT_MINUTES
+        prior_cards = (
+            DEFAULT_LEAGUE_CARDS_PRIOR
+            * (CARDS_PRIOR_WEIGHT_MINUTES / 90.0)
+        )
+        rate_per_min = (cards_so_far + prior_cards) / max(effective_minutes, 1.0)
+        lam_remaining = rate_per_min * max(0, 90 - state.minute)
+
+        # Engagement multiplier — scrappy games book more cards. Top-5
+        # league avg engagement at minute 60 ≈ 80; >120 = high tempo.
+        if state.minute >= 30:
+            total_eng = state.home_engagement + state.away_engagement
+            expected_eng = (state.minute / 60.0) * 80.0
+            if expected_eng > 0 and total_eng > 0:
+                eng_ratio = total_eng / expected_eng
+                # Cap multiplier at [0.85, 1.20] — engagement is one
+                # signal among many; don't let it dominate.
+                eng_mult = max(0.85, min(1.20, 0.5 + 0.5 * eng_ratio))
+                lam_remaining *= eng_mult
+
+        if lam_remaining <= 0:
+            return {"over": 0.0, "under": 1.0}
+        needed = max(0, math.ceil(line) - cards_so_far)
         p_over = 1.0 - _poisson_cdf(needed - 1, lam_remaining)
         return {"over": _clip_scalar(p_over), "under": _clip_scalar(1 - p_over)}
 
