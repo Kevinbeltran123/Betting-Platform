@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS picks (
     market_description TEXT,
     snapshot_kind TEXT NOT NULL,
     emitted_at TEXT NOT NULL,           -- ISO 8601 UTC
+    flagged_reason TEXT,                -- sanity filter trip (NULL = clean)
     -- Outcome columns, populated post-match
     status TEXT NOT NULL DEFAULT 'pending',  -- pending | won | lost | void | unknown
     settled_at TEXT,
@@ -62,7 +63,21 @@ CREATE TABLE IF NOT EXISTS picks (
 CREATE INDEX IF NOT EXISTS idx_picks_status ON picks (status);
 CREATE INDEX IF NOT EXISTS idx_picks_fixture ON picks (fixture_id);
 CREATE INDEX IF NOT EXISTS idx_picks_emitted_at ON picks (emitted_at);
+CREATE INDEX IF NOT EXISTS idx_picks_flagged ON picks (flagged_reason);
 """
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after initial release.
+
+    SQLite ALTER TABLE ADD COLUMN is idempotent in spirit but doesn't
+    have IF NOT EXISTS. We use PRAGMA table_info to detect.
+    """
+    existing_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(picks)")
+    }
+    if "flagged_reason" not in existing_cols:
+        conn.execute("ALTER TABLE picks ADD COLUMN flagged_reason TEXT")
 
 
 @dataclass(frozen=True)
@@ -87,6 +102,7 @@ class TrackedPick:
     emitted_at: str
     status: str
     profit_units: float | None
+    flagged_reason: str | None = None
     market_description: str | None = None
 
 
@@ -106,6 +122,7 @@ class PickTracker:
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            _migrate_schema(conn)
 
     # ── insert / update ─────────────────────────────────────────────────
 
@@ -126,8 +143,8 @@ class PickTracker:
                         bookmaker_id, minute, minute_bucket, bookmaker_odd,
                         our_probability, fair_odd, edge_pct, kelly_fraction_full,
                         suggested_stake_pct, market_description, snapshot_kind,
-                        emitted_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        emitted_at, flagged_reason
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         pick.fixture_id, pick.home_team, pick.away_team,
@@ -136,6 +153,7 @@ class PickTracker:
                         pick.our_probability, pick.fair_odd, pick.edge_pct,
                         pick.kelly_fraction_full, pick.suggested_stake_pct,
                         pick.market_description, pick.snapshot_kind, now_iso,
+                        pick.flagged_reason,
                     ),
                 )
                 return cursor.lastrowid, True
@@ -254,6 +272,7 @@ class PickTracker:
 
 
 def _row_to_tracked(row: sqlite3.Row) -> TrackedPick:
+    keys = row.keys()
     return TrackedPick(
         id=row["id"], fixture_id=row["fixture_id"],
         home_team=row["home_team"], away_team=row["away_team"],
@@ -269,5 +288,6 @@ def _row_to_tracked(row: sqlite3.Row) -> TrackedPick:
         emitted_at=row["emitted_at"],
         status=row["status"],
         profit_units=row["profit_units"],
+        flagged_reason=row["flagged_reason"] if "flagged_reason" in keys else None,
         market_description=row["market_description"],
     )

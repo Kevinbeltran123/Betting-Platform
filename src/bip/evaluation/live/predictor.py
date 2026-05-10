@@ -320,6 +320,33 @@ class LiveMatchPredictor:
 
         return _normalise(_clip(adj))
 
+    @staticmethod
+    def _scaled_red_card_penalty(remaining: int) -> float:
+        """Penalty fraction (0-1) applied to affected team's λ.
+
+        Larger when more time remains because the team must play down
+        a man for longer; smaller when red card is late + likely to
+        result in defensive shell rather than goal-rate collapse.
+        """
+        if remaining >= 45:
+            return 0.40
+        if remaining >= 30:
+            return 0.35
+        if remaining >= 15:
+            return 0.25
+        return 0.15
+
+    @staticmethod
+    def _scaled_red_card_boost(remaining: int) -> float:
+        """Boost fraction (0-1) applied to opposing team's λ."""
+        if remaining >= 45:
+            return 0.18
+        if remaining >= 30:
+            return 0.14
+        if remaining >= 15:
+            return 0.10
+        return 0.05
+
     def _team_lambda_remaining(
         self, state: LiveMatchState, *, side: str,
     ) -> float | None:
@@ -352,7 +379,15 @@ class LiveMatchPredictor:
         if not state.is_live:
             return lam_remaining
 
-        # ── Red-card adjustment ───────────────────────────────────────
+        # ── Red-card adjustment (scaled by remaining minutes) ─────────
+        # Empirical effect: a red card with 30+ minutes left typically
+        # halves the affected team's xG-per-minute (Mengual & Forrest
+        # 2002 + later EPL data). Our penalty scales with how much time
+        # the team has to play down a man:
+        #   ≥45 min remaining → -40%
+        #   30-45 min        → -35%
+        #   15-30 min        → -25%
+        #   < 15 min         → -15% (defensive setup, less impact)
         red_min_self = (
             state.red_card_minute_home if side == "home"
             else state.red_card_minute_away
@@ -362,10 +397,13 @@ class LiveMatchPredictor:
             else state.red_card_minute_home
         )
         if red_min_self is not None and red_min_self <= state.minute:
-            # Team has already played down a man for some time
-            lam_remaining *= (1.0 - self.red_card_penalty)
+            time_a_man_down = max(0, 90 - state.minute)
+            penalty = self._scaled_red_card_penalty(time_a_man_down)
+            lam_remaining *= (1.0 - penalty)
         if red_min_opp is not None and red_min_opp <= state.minute:
-            lam_remaining *= (1.0 + self.red_card_boost)
+            time_opp_a_man_down = max(0, 90 - state.minute)
+            boost = self._scaled_red_card_boost(time_opp_a_man_down)
+            lam_remaining *= (1.0 + boost)
 
         # ── Live xG signal: actual creation vs minute-prorated expectation ──
         if state.minute >= 15:  # too noisy in opening minutes

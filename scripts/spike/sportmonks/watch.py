@@ -157,6 +157,7 @@ async def scan_round(
                     probs, odds,
                     home_team_name=state.home_team_name,
                     away_team_name=state.away_team_name,
+                    state=state,  # enables sanity filters
                 )
 
                 for pick in picks:
@@ -169,6 +170,7 @@ async def scan_round(
                     n_new += 1
 
                     title, body = render_pick_alert(pick)
+                    flag_str = f"  ⚠ FLAGGED: {pick.flagged_reason}" if pick.flagged_reason else ""
                     log_path.parent.mkdir(parents=True, exist_ok=True)
                     with log_path.open("a") as f_log:
                         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -179,19 +181,23 @@ async def scan_round(
                             f"{pick.market}/{pick.selection} @ {pick.bookmaker_odd:.2f}  "
                             f"P={pick.our_probability:.3f}  "
                             f"stake={pick.suggested_stake_pct:.2f}%  "
-                            f"id={pick_id}\n"
+                            f"id={pick_id}{flag_str}\n"
                         )
+                    icon = "⚠️" if pick.flagged_reason else "🚨"
                     print(
-                        f"\n🚨 NEW PICK: +{pick.edge_pct:5.2f}%  "
+                        f"\n{icon} NEW PICK: +{pick.edge_pct:5.2f}%  "
                         f"{state.home_team_name} vs {state.away_team_name} "
                         f"(min {pick.minute})  "
                         f"{pick.market}/{pick.selection} @ {pick.bookmaker_odd:.2f}  "
-                        f"stake={pick.suggested_stake_pct:.2f}%  id={pick_id}"
+                        f"stake={pick.suggested_stake_pct:.2f}%  id={pick_id}{flag_str}"
                     )
-                    if notify:
-                        macos_notify(title, body)
-                    if beep:
-                        terminal_beep()
+                    # Only send proactive notifications for clean picks; flagged
+                    # picks log silently — operator must check the report.
+                    if not pick.flagged_reason:
+                        if notify:
+                            macos_notify(title, body)
+                        if beep:
+                            terminal_beep()
 
             except Exception as exc:  # noqa: BLE001
                 logger.warning("scan_failed fixture=%d err=%s", f.id, exc)

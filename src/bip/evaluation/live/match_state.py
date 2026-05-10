@@ -406,15 +406,26 @@ def _index_predictions(preds: list[Prediction]) -> dict[int, dict[str, Any]]:
 
 
 def _extract_events(events, home_id: int, away_id: int):
-    """Pull goals + red cards from event list. Sportmonks event type_ids:
-    14 = goal, 16 = penalty goal (variants), 19 = red card.
-    The exact type_ids vary slightly; we match by minute presence and
-    participant_id, ignoring unknown types.
+    """Pull goals + red cards from event list.
+
+    Sportmonks v3 event type_ids (verified 2026-05-09 against /core/types):
+    - 14 = GOAL
+    - 15 = OWNGOAL (counts for opposing team statistically — but here we
+           track which team scored vs conceded; an own goal still credits
+           the team whose net got hit, which is the opposing side. We
+           include 15 so the model knows "the other team has scored"
+           via score events; goal_events records the minute regardless.)
+    - 16 = PENALTY (scored from the spot)
+    - 17 = MISSED_PENALTY (NOT a goal — was excluded incorrectly before)
+    - 18 = SUBSTITUTION (was incorrectly bucketed as goal before — fixed)
+    - 19 = YELLOWCARD (was incorrectly bucketed as red card before — fixed)
+    - 20 = REDCARD (straight red)
+    - 21 = YELLOWREDCARD (second yellow → red, treated as red card)
     """
     goal_events: list[tuple[int, int]] = []
     red_card_events: list[tuple[int, int]] = []
-    GOAL_TYPE_IDS = {14, 15, 16, 17, 18}  # goal variants
-    RED_CARD_TYPE_IDS = {19, 20, 21}      # red / yellow-red variants
+    GOAL_TYPE_IDS = {14, 15, 16}    # goal, own goal, penalty scored
+    RED_CARD_TYPE_IDS = {20, 21}    # straight red, yellow-red
     for e in events:
         minute = e.minute
         team = e.participant_id
