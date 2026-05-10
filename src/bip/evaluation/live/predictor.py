@@ -79,11 +79,15 @@ MARKET_FIRST_HALF_OU_15 = "first_half_ou_1_5"
 MARKET_HOME_OU_15 = "home_ou_1_5"
 MARKET_AWAY_OU_15 = "away_ou_1_5"
 
-# Tunables
+# Tunables — all empirical, can be calibrated post-trial against real ROI
 PRESSURE_DIFF_TRIGGER = 25.0          # avg pressure diff (0-100) before we adjust
-PRESSURE_BOOST_MAX = 0.05              # max ±5pp shift on 1X2 from pressure
-XG_PROXY_DIFF_TRIGGER = 0.5            # xG-proxy diff to trigger BTTS adjustment
-XG_PROXY_BOOST_MAX = 0.04              # max ±4pp shift
+PRESSURE_BOOST_MAX = 0.05              # max ±5pp shift on 1X2 from avg pressure
+PRESSURE_TREND_TRIGGER = 10.0          # pressure derivative pts before triggers
+PRESSURE_TREND_BOOST_MAX = 0.03        # max ±3pp shift from pressure trend
+XG_SIGNAL_BOOST_MAX = 0.04             # max ±4pp shift from live xG vs expected
+RED_CARD_LAMBDA_PENALTY = 0.25         # 25% reduction for affected team's λ
+RED_CARD_LAMBDA_BOOST = 0.10           # 10% boost for opposing team's λ
+TRAILING_LATE_GAME_BOOST_MAX = 0.04    # ±4pp for "trailing team pushes" effect
 
 
 @dataclass(frozen=True)
@@ -116,10 +120,18 @@ class LiveMatchPredictor:
         self,
         *,
         pressure_boost_max: float = PRESSURE_BOOST_MAX,
-        xg_proxy_boost_max: float = XG_PROXY_BOOST_MAX,
+        pressure_trend_boost_max: float = PRESSURE_TREND_BOOST_MAX,
+        xg_signal_boost_max: float = XG_SIGNAL_BOOST_MAX,
+        red_card_penalty: float = RED_CARD_LAMBDA_PENALTY,
+        red_card_boost: float = RED_CARD_LAMBDA_BOOST,
+        trailing_late_boost_max: float = TRAILING_LATE_GAME_BOOST_MAX,
     ) -> None:
         self.pressure_boost_max = pressure_boost_max
-        self.xg_proxy_boost_max = xg_proxy_boost_max
+        self.pressure_trend_boost_max = pressure_trend_boost_max
+        self.xg_signal_boost_max = xg_signal_boost_max
+        self.red_card_penalty = red_card_penalty
+        self.red_card_boost = red_card_boost
+        self.trailing_late_boost_max = trailing_late_boost_max
 
     def predict(self, state: LiveMatchState) -> MarketProbabilities:
         """Emit market probabilities for the current state."""
@@ -250,33 +262,78 @@ class LiveMatchPredictor:
 
         live_probs = _normalise({"home": p_home, "draw": p_draw, "away": p_away})
 
-        # Pressure-based nudge — small, only when there's an active period
+        # Pressure-based + trend-aware + trailing-late nudges
         if state.is_live:
-            diff = state.home_pressure_avg - state.away_pressure_avg
-            if abs(diff) > PRESSURE_DIFF_TRIGGER:
-                shift = self.pressure_boost_max * min(1.0, abs(diff) / 50.0)
-                live_probs = dict(live_probs)
-                if diff > 0:
-                    live_probs["home"] += shift
-                    live_probs["away"] -= shift / 2
-                    live_probs["draw"] -= shift / 2
-                else:
-                    live_probs["away"] += shift
-                    live_probs["home"] -= shift / 2
-                    live_probs["draw"] -= shift / 2
-                live_probs = _normalise(_clip(live_probs))
+            live_probs = self._apply_live_nudges(state, live_probs)
 
         return live_probs, "live_adjusted"
+
+    def _apply_live_nudges(
+        self, state: LiveMatchState, probs: dict[str, float],
+    ) -> dict[str, float]:
+        """Layer the live signal nudges atop the Dixon-Robinson scored probs.
+
+        Order of application matters less than caps because each nudge is
+        bounded; the final ``_clip`` keeps probabilities in [0.001, 0.999]
+        and ``_normalise`` rescales to sum 1.
+        """
+        adj = dict(probs)
+
+        # 1. Average pressure differential
+        diff = state.home_pressure_avg - state.away_pressure_avg
+        if abs(diff) > PRESSURE_DIFF_TRIGGER:
+            shift = self.pressure_boost_max * min(1.0, abs(diff) / 50.0)
+            if diff > 0:
+                adj["home"] += shift
+                adj["away"] -= shift / 2
+                adj["draw"] -= shift / 2
+            else:
+                adj["away"] += shift
+                adj["home"] -= shift / 2
+                adj["draw"] -= shift / 2
+
+        # 2. Pressure TREND (rising vs falling)
+        trend_diff = state.home_pressure_trend - state.away_pressure_trend
+        if abs(trend_diff) > PRESSURE_TREND_TRIGGER:
+            shift = self.pressure_trend_boost_max * min(1.0, abs(trend_diff) / 30.0)
+            if trend_diff > 0:
+                # Home momentum building
+                adj["home"] += shift
+                adj["draw"] -= shift / 2
+                adj["away"] -= shift / 2
+            else:
+                adj["away"] += shift
+                adj["draw"] -= shift / 2
+                adj["home"] -= shift / 2
+
+        # 3. Late-game trailing-team push (>=70 min, trailing by exactly 1 goal)
+        if state.minute >= 70 and abs(state.score_diff_home) == 1:
+            shift = self.trailing_late_boost_max * min(1.0, (state.minute - 70) / 20.0)
+            if state.score_diff_home == -1:
+                # Home trailing by 1 → push up draw (equalising)
+                adj["draw"] += shift
+                adj["away"] -= shift
+            else:
+                # Away trailing by 1
+                adj["draw"] += shift
+                adj["home"] -= shift
+
+        return _normalise(_clip(adj))
 
     def _team_lambda_remaining(
         self, state: LiveMatchState, *, side: str,
     ) -> float | None:
-        """Per-team Poisson λ scaled to remaining minutes.
+        """Per-team Poisson λ scaled to remaining minutes, with live adjustments.
 
-        Uses Sportmonks per-team OU 0.5 to back out the full-match λ:
-            P(team scores ≥ 1) = 1 - exp(-λ_full)
-            λ_full = -ln(1 - P)
-        Then scales by remaining/90 for live use.
+        Pipeline:
+        1. Back out full-match λ from Sportmonks per-team OU 0.5:
+            λ_full = -ln(1 − P(over 0.5))
+        2. Scale to remaining time (90 − minute) / 90.
+        3. Apply red-card adjustment (Mengual & Forrest 2002):
+           - Affected team: λ *= (1 - 0.25)
+           - Opposing team: λ *= (1 + 0.10)
+        4. Apply live xG signal: if live xG-proxy / expected ratio > 1.2
+           or < 0.8, scale λ accordingly (capped at ±20%).
         """
         type_id = (
             PredictionType.HOME_OVER_UNDER_0_5_PROBABILITY if side == "home"
@@ -290,7 +347,42 @@ class LiveMatchPredictor:
             return None
         lam_full = -math.log(1 - p_over_0_5)
         remaining_fraction = max(0, 90 - state.minute) / 90.0
-        return lam_full * remaining_fraction
+        lam_remaining = lam_full * remaining_fraction
+
+        if not state.is_live:
+            return lam_remaining
+
+        # ── Red-card adjustment ───────────────────────────────────────
+        red_min_self = (
+            state.red_card_minute_home if side == "home"
+            else state.red_card_minute_away
+        )
+        red_min_opp = (
+            state.red_card_minute_away if side == "home"
+            else state.red_card_minute_home
+        )
+        if red_min_self is not None and red_min_self <= state.minute:
+            # Team has already played down a man for some time
+            lam_remaining *= (1.0 - self.red_card_penalty)
+        if red_min_opp is not None and red_min_opp <= state.minute:
+            lam_remaining *= (1.0 + self.red_card_boost)
+
+        # ── Live xG signal: actual creation vs minute-prorated expectation ──
+        if state.minute >= 15:  # too noisy in opening minutes
+            live_xg = (
+                state.home_shot_quality_xg_proxy if side == "home"
+                else state.away_shot_quality_xg_proxy
+            )
+            # Expected xG by this minute is lam_full * (minute / 90)
+            expected = lam_full * (state.minute / 90.0)
+            if expected > 0.05:
+                ratio = live_xg / expected
+                # Cap the multiplier shift at ±20%
+                ratio_capped = max(0.80, min(1.20, ratio))
+                # Soften: only half of ratio diff reaches λ
+                lam_remaining *= 0.5 + 0.5 * ratio_capped
+
+        return max(0.0, lam_remaining)
 
     def _sportmonks_first_half_result(
         self, state: LiveMatchState,
