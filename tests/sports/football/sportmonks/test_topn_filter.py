@@ -24,6 +24,7 @@ from scripts.spike.sportmonks.topn_filter import (
     GLOBAL_PRIOR_ROI,
     KEEP_COND,
     KEEP_UNCOND,
+    LOGICAL_COMPONENT_KEYS,
     ODD_CEIL,
     ODD_FLOOR,
     SIGNAL_COLUMNS,
@@ -33,6 +34,7 @@ from scripts.spike.sportmonks.topn_filter import (
     compute_market_priors_from_db,
     dedup_picks,
     enrich_with_signals,
+    explode_logical_components,
     f1_market_whitelist,
     f2_placement_window,
     f3_edge_floor,
@@ -41,6 +43,8 @@ from scripts.spike.sportmonks.topn_filter import (
     load_cached_priors,
     logical_kernel,
     odd_kernel,
+    parse_logical_components,
+    placement_schedule,
     score,
     shrunk_roi,
     time_kernel,
@@ -779,3 +783,114 @@ class TestComparison:
         assert result["b"]["name"] == "strict"
         # B has tighter cap so should have ≤ A
         assert result["b"]["n"] <= result["a"]["n"]
+
+
+# ── Logical components decomposition (Lote A.2) ───────────────────────
+
+
+class TestLogicalComponents:
+
+    def test_parse_happy_path(self):
+        s = ('{"consilience": 0.65, "informational_content": 1.0, '
+             '"liquidity": 1.0, "odds_credibility": 0.63, '
+             '"size_consistency": 0.5}')
+        out = parse_logical_components(s)
+        assert out["consilience"] == 0.65
+        assert out["informational_content"] == 1.0
+        assert out["odds_credibility"] == pytest.approx(0.63)
+        assert out["size_consistency"] == 0.5
+
+    def test_parse_none_returns_all_none(self):
+        out = parse_logical_components(None)
+        assert all(v is None for v in out.values())
+        assert set(out.keys()) == set(LOGICAL_COMPONENT_KEYS)
+
+    def test_parse_invalid_json_returns_all_none(self):
+        out = parse_logical_components("not json")
+        assert all(v is None for v in out.values())
+
+    def test_parse_missing_keys_default_to_none(self):
+        # Older snapshot might lack size_consistency
+        s = '{"consilience": 0.5, "informational_content": 0.9}'
+        out = parse_logical_components(s)
+        assert out["consilience"] == 0.5
+        assert out["informational_content"] == 0.9
+        assert out["liquidity"] is None
+        assert out["odds_credibility"] is None
+        assert out["size_consistency"] is None
+
+    def test_explode_adds_lc_columns(self):
+        rows = [
+            _make_pick(pick_id=1) | {"logical_components_json":
+                '{"consilience": 0.65, "informational_content": 1.0, '
+                '"liquidity": 1.0, "odds_credibility": 0.63, '
+                '"size_consistency": 0.5}'},
+        ]
+        df = pl.from_dicts(rows, infer_schema_length=None)
+        out = explode_logical_components(df)
+        for k in LOGICAL_COMPONENT_KEYS:
+            assert f"lc_{k}" in out.columns
+        assert out.row(0, named=True)["lc_consilience"] == 0.65
+
+    def test_explode_no_op_when_column_missing(self):
+        df = _df(_make_pick())
+        # _make_pick doesn't add logical_components_json
+        out = explode_logical_components(df)
+        # Same shape (no new cols)
+        assert "lc_consilience" not in out.columns
+
+
+# ── Placement schedule (Lote A.3) ─────────────────────────────────────
+
+
+class TestPlacementSchedule:
+
+    def _pick_at(self, ts: str, **kw) -> dict:
+        p = _make_pick(**kw)
+        p["emitted_at"] = ts
+        return p
+
+    def test_groups_by_15min_window(self):
+        picks = [
+            self._pick_at("2026-05-10T13:00:00+00:00", pick_id=1),
+            self._pick_at("2026-05-10T13:14:30+00:00", pick_id=2),  # same window
+            self._pick_at("2026-05-10T13:15:00+00:00", pick_id=3),  # new window
+            self._pick_at("2026-05-10T13:45:00+00:00", pick_id=4),  # third window
+        ]
+        df = _df(*picks)
+        sched = placement_schedule(df, window_minutes=15)
+        assert len(sched) == 3
+        assert sched[0]["n_picks"] == 2
+        assert sched[1]["n_picks"] == 1
+        assert sched[2]["n_picks"] == 1
+
+    def test_picks_carry_blurb_fields(self):
+        picks = [self._pick_at("2026-05-10T13:00:00+00:00",
+                                pick_id=1, market="ou_3_5",
+                                selection="under", bookmaker_odd=1.80)]
+        df = _df(*picks)
+        sched = placement_schedule(df, window_minutes=15)
+        first = sched[0]["picks"][0]
+        assert first["market"] == "ou_3_5"
+        assert first["selection"] == "under"
+        assert first["odd"] == 1.80
+        assert "fixture" in first
+
+    def test_empty_or_missing_emitted_at(self):
+        # Without emitted_at column → empty schedule
+        rows = [_make_pick()]
+        for r in rows:
+            r.pop("emitted_at", None)
+        df = pl.from_dicts(rows, infer_schema_length=None)
+        assert placement_schedule(df) == []
+
+    def test_chronological_order(self):
+        picks = [
+            self._pick_at("2026-05-10T15:00:00+00:00", pick_id=1),  # latest
+            self._pick_at("2026-05-10T13:00:00+00:00", pick_id=2),  # earliest
+            self._pick_at("2026-05-10T14:00:00+00:00", pick_id=3),  # middle
+        ]
+        df = _df(*picks)
+        sched = placement_schedule(df, window_minutes=15)
+        starts = [w["window_start"] for w in sched]
+        assert starts == sorted(starts)

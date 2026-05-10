@@ -275,14 +275,75 @@ def calibrated_edge(edge_pct: float) -> float:
 # ── Loading & enrichment ───────────────────────────────────────────────
 
 
+LOGICAL_COMPONENT_KEYS: tuple[str, ...] = (
+    "consilience",
+    "informational_content",
+    "liquidity",
+    "odds_credibility",
+    "size_consistency",
+)
+"""The 5 sub-scores that combine into ``logical_score``.
+
+Day-1 verification: all 100 sampled picks have these exact 5 keys. Order
+here is the display order for the decomposition table.
+"""
+
+
+def parse_logical_components(json_str: str | None) -> dict[str, float | None]:
+    """Parse a single logical_components_json string into a dict.
+
+    Returns a dict with all 5 LOGICAL_COMPONENT_KEYS — missing keys map
+    to None. Returns dict of Nones if input is null/invalid (no-op for
+    rows where the watcher didn't record decomposition).
+    """
+    if json_str is None:
+        return {k: None for k in LOGICAL_COMPONENT_KEYS}
+    try:
+        parsed = json.loads(json_str)
+    except (TypeError, json.JSONDecodeError):
+        return {k: None for k in LOGICAL_COMPONENT_KEYS}
+    return {k: parsed.get(k) for k in LOGICAL_COMPONENT_KEYS}
+
+
+def explode_logical_components(df: pl.DataFrame) -> pl.DataFrame:
+    """Add one column per logical component (prefixed ``lc_``).
+
+    No-op if ``logical_components_json`` is missing. Useful when the operator
+    wants to inspect WHICH dimension dragged a flagged pick — e.g. high
+    edge but odds_credibility=0.40 means the bookmaker odd looks suspicious
+    relative to fair value. The 5 columns are: lc_consilience,
+    lc_informational_content, lc_liquidity, lc_odds_credibility,
+    lc_size_consistency.
+    """
+    if df.is_empty() or "logical_components_json" not in df.columns:
+        return df
+    parsed = [
+        parse_logical_components(j)
+        for j in df.get_column("logical_components_json").to_list()
+    ]
+    new_cols = {
+        f"lc_{k}": [row[k] for row in parsed]
+        for k in LOGICAL_COMPONENT_KEYS
+    }
+    return df.with_columns([
+        pl.Series(name, vals, dtype=pl.Float64)
+        for name, vals in new_cols.items()
+    ])
+
+
 def load_picks(db_path: Path = DEFAULT_DB_PATH) -> pl.DataFrame:
-    """Read picks table from SQLite into Polars."""
+    """Read picks table from SQLite into Polars, with logical components exploded.
+
+    The ``logical_components_json`` column is preserved verbatim AND parsed
+    into 5 ``lc_*`` columns for downstream filtering and reporting.
+    """
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = [dict(r) for r in conn.execute("SELECT * FROM picks")]
     if not rows:
         return pl.DataFrame()
-    return pl.from_dicts(rows, infer_schema_length=None)
+    df = pl.from_dicts(rows, infer_schema_length=None)
+    return explode_logical_components(df)
 
 
 def enrich_with_league(
@@ -730,6 +791,66 @@ def top_n(
     return sorted_df[selected_idx]
 
 
+# ── Placement schedule (wall-clock grouping) ───────────────────────────
+
+
+def placement_schedule(
+    top: pl.DataFrame, window_minutes: int = 15,
+) -> list[dict[str, object]]:
+    """Group picks into wall-clock windows of ``window_minutes`` for placement.
+
+    Returns one dict per window (chronologically ordered):
+      {
+        "window_start": datetime,   # UTC, floor of emission times in window
+        "window_end": datetime,
+        "n_picks": int,
+        "picks": [ {fixture, market, selection, odd, edge, score}, ... ]
+      }
+
+    Operator use case: instead of "pick at minute 30", the operator sees
+    "13:30-13:44 UTC: 5 picks ready to place". Empty if Top-N has no
+    ``emitted_at`` column.
+    """
+    if top.is_empty() or "emitted_at" not in top.columns:
+        return []
+
+    ts_series = top.get_column("emitted_at").str.to_datetime(
+        time_zone="UTC", strict=False,
+    )
+    enriched = top.with_columns(ts_series.alias("_ts"))
+
+    # Floor each timestamp to the start of its window
+    floored = enriched.with_columns(
+        pl.col("_ts").dt.truncate(f"{window_minutes}m").alias("_window_start"),
+    )
+
+    schedule: list[dict[str, object]] = []
+    for window_start, group in floored.sort("_ts").group_by(
+        "_window_start", maintain_order=True,
+    ):
+        # window_start comes back as a tuple (group key)
+        ws = window_start[0] if isinstance(window_start, tuple) else window_start
+        picks = []
+        for row in group.iter_rows(named=True):
+            picks.append({
+                "fixture": f"{row.get('home_team', '?')} vs {row.get('away_team', '?')}",
+                "market": row["market"],
+                "selection": row["selection"],
+                "minute": row["minute"],
+                "odd": row["bookmaker_odd"],
+                "edge_pct": row.get("edge_pct"),
+                "score": row.get("score"),
+            })
+        from datetime import timedelta as _td
+        schedule.append({
+            "window_start": ws,
+            "window_end": ws + _td(minutes=window_minutes),
+            "n_picks": len(picks),
+            "picks": picks,
+        })
+    return schedule
+
+
 # ── Reporting ───────────────────────────────────────────────────────────
 
 
@@ -813,27 +934,96 @@ def render_topn_report(
             lines.append(f"| {row['market']} | {row['len']} |")
         lines.append("")
 
-        # The actual picks
+        # The actual picks (with Kelly + suggested stake for placement sizing)
         lines.append(f"### Top-{top.height} picks (sorted by score)\n")
         cols_show = [
             "fixture_id", "home_team", "away_team", "market", "selection",
             "minute", "bookmaker_odd", "edge_pct", "logical_score",
+            "kelly_fraction_full", "suggested_stake_pct",
             "score", "status", "profit_units",
         ]
         cols_show = [c for c in cols_show if c in top.columns]
-        lines.append("| " + " | ".join(cols_show) + " |")
+        # Friendlier column labels for the percentage-style fields
+        col_labels = {
+            "kelly_fraction_full": "kelly_full",
+            "suggested_stake_pct": "stake_%",
+        }
+        header_cells = [col_labels.get(c, c) for c in cols_show]
+        lines.append("| " + " | ".join(header_cells) + " |")
         lines.append("|" + "|".join(["---"] * len(cols_show)) + "|")
         for row in top.iter_rows(named=True):
             cells = []
             for c in cols_show:
                 v = row[c]
                 if isinstance(v, float):
-                    cells.append(f"{v:+.3f}" if c in ("score", "profit_units")
-                                 else f"{v:.2f}")
+                    if c == "kelly_fraction_full":
+                        cells.append(f"{v:.3f}")  # raw fraction (e.g. 0.283)
+                    elif c == "suggested_stake_pct":
+                        cells.append(f"{v:.2f}%")  # already in pct form
+                    elif c in ("score", "profit_units"):
+                        cells.append(f"{v:+.3f}")
+                    else:
+                        cells.append(f"{v:.2f}")
                 else:
                     cells.append(str(v) if v is not None else "—")
             lines.append("| " + " | ".join(cells) + " |")
         lines.append("")
+
+        # Logical components decomposition — per §1 of Lote A. When a pick
+        # has high edge but low logical_score, the operator wants to see
+        # WHICH dimension dragged it down (e.g. odds_credibility=0.40).
+        lc_cols_present = [f"lc_{k}" for k in LOGICAL_COMPONENT_KEYS
+                           if f"lc_{k}" in top.columns]
+        if lc_cols_present:
+            lines.append("### Logical components decomposition\n")
+            lines.append(
+                "_Each component scores 0-1; the cascade flags picks where "
+                "the geometric mean is below 0.70. Low values pinpoint which "
+                "dimension is dragging the consilience score._\n"
+            )
+            id_col = "id" if "id" in top.columns else "fixture_id"
+            short = [c.removeprefix("lc_") for c in lc_cols_present]
+            lines.append("| " + id_col + " | logical_score | "
+                         + " | ".join(short) + " |")
+            lines.append("|" + "|".join(["---"] * (len(lc_cols_present) + 2)) + "|")
+            for row in top.iter_rows(named=True):
+                cells = [str(row.get(id_col, "—"))]
+                ls = row.get("logical_score")
+                cells.append(f"{ls:.2f}" if ls is not None else "—")
+                for c in lc_cols_present:
+                    v = row.get(c)
+                    cells.append(f"{v:.2f}" if v is not None else "—")
+                lines.append("| " + " | ".join(cells) + " |")
+            lines.append("")
+
+        # Placement schedule — wall-clock grouping for operator's Betano runs
+        schedule = placement_schedule(top, window_minutes=15)
+        if schedule:
+            lines.append("### Placement schedule (wall-clock UTC, 15-min windows)\n")
+            lines.append(
+                "_Operator open Betano at the start of each window; place "
+                "all picks listed before the window closes. Multiple picks "
+                "in one window means dense attention; isolated picks mean "
+                "you can step away._\n"
+            )
+            lines.append("| Window (UTC) | n | Picks |")
+            lines.append("|---|---|---|")
+            for win in schedule:
+                ws = win["window_start"].strftime("%H:%M")
+                we = win["window_end"].strftime("%H:%M")
+                pick_blurbs = [
+                    f"{p['fixture']} — {p['market']}/{p['selection']} "
+                    f"@ {p['odd']:.2f} (edge {p['edge_pct']:.0f}%)"
+                    if p.get("edge_pct") is not None
+                    else f"{p['fixture']} — {p['market']}/{p['selection']} "
+                         f"@ {p['odd']:.2f}"
+                    for p in win["picks"]
+                ]
+                lines.append(
+                    f"| {ws} - {we} | {win['n_picks']} | "
+                    + "<br>".join(pick_blurbs) + " |"
+                )
+            lines.append("")
 
         # Diagnostic block (per §3 criterion 6) — shows momentum/info_density
         # alongside each pick so the operator can verify the model's edge is
