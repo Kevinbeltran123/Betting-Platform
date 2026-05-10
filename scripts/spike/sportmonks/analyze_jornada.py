@@ -30,11 +30,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sqlite3
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -42,6 +40,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from bip.evaluation.live.grading import (  # noqa: E402
+    FinalOutcome,
+    derive_final_outcome_from_state,
+    grade_pick,
+)
 from bip.evaluation.live.match_state import LiveMatchState  # noqa: E402
 from bip.evaluation.live.pick_tracker import (  # noqa: E402
     DEFAULT_DB_PATH,
@@ -54,81 +57,12 @@ from bip.sports.football.sportmonks.cache import (  # noqa: E402
 from bip.sports.football.sportmonks.schemas import Fixture  # noqa: E402
 
 
-# ── Outcome derivation (mirrors backtest._derive_final_outcome) ──────────
-
-
-@dataclass(frozen=True)
-class FinalOutcome:
-    fixture_id: int
-    league_id: int | None
-    home_goals: int
-    away_goals: int
-    home_goals_first_half: int
-    away_goals_first_half: int
-    total_cards: int
-    total_corners: int
-    is_finished: bool
-
-    @property
-    def fulltime_result(self) -> str:
-        if self.home_goals > self.away_goals:
-            return "home"
-        if self.home_goals == self.away_goals:
-            return "draw"
-        return "away"
-
-    @property
-    def first_half_result(self) -> str:
-        if self.home_goals_first_half > self.away_goals_first_half:
-            return "home"
-        if self.home_goals_first_half == self.away_goals_first_half:
-            return "draw"
-        return "away"
-
-    @property
-    def total_goals(self) -> int:
-        return self.home_goals + self.away_goals
-
-    @property
-    def total_goals_first_half(self) -> int:
-        return self.home_goals_first_half + self.away_goals_first_half
-
-    @property
-    def total_goals_second_half(self) -> int:
-        return self.total_goals - self.total_goals_first_half
-
-    @property
-    def home_goals_second_half(self) -> int:
-        return self.home_goals - self.home_goals_first_half
-
-    @property
-    def away_goals_second_half(self) -> int:
-        return self.away_goals - self.away_goals_first_half
-
-    @property
-    def btts(self) -> bool:
-        return self.home_goals > 0 and self.away_goals > 0
-
-    @property
-    def btts_first_half(self) -> bool:
-        return (
-            self.home_goals_first_half > 0
-            and self.away_goals_first_half > 0
-        )
-
-    @property
-    def btts_second_half(self) -> bool:
-        return (
-            self.home_goals_second_half > 0
-            and self.away_goals_second_half > 0
-        )
-
-
 def _derive_final_outcome(cache: SportmonksCache, fixture_id: int) -> FinalOutcome | None:
     """Walk the fixture's snapshots and extract the final state.
 
-    Returns None when no snapshot has is_finished=True (match incomplete
-    or capture stopped before FT).
+    Delegates to ``derive_final_outcome_from_state`` once we've found a
+    finished snapshot. Returns None when no snapshot has is_finished=True
+    (match incomplete or capture stopped before FT).
     """
     paths = cache.list_snapshots(fixture_id)
     if not paths:
@@ -147,120 +81,10 @@ def _derive_final_outcome(cache: SportmonksCache, fixture_id: int) -> FinalOutco
             state = LiveMatchState.from_fixture(fixture)
         except Exception:
             continue
-        if not state.is_finished:
-            continue
-        # Found FT snapshot — extract everything
-        home_1h = sum(
-            1 for minute, team in state.goal_events
-            if minute <= 45 and team == state.home_team_id
-        )
-        away_1h = sum(
-            1 for minute, team in state.goal_events
-            if minute <= 45 and team == state.away_team_id
-        )
-        total_cards = (
-            len(state.yellow_card_events) + len(state.red_card_events)
-        )
-        total_corners = state.home_corners + state.away_corners
-        return FinalOutcome(
-            fixture_id=fixture_id,
-            league_id=fixture.league_id,
-            home_goals=state.home_goals,
-            away_goals=state.away_goals,
-            home_goals_first_half=home_1h,
-            away_goals_first_half=away_1h,
-            total_cards=total_cards,
-            total_corners=total_corners,
-            is_finished=True,
-        )
+        outcome = derive_final_outcome_from_state(state, fixture)
+        if outcome is not None:
+            return outcome
     return None
-
-
-def _grade_pick(market: str, selection: str, outcome: FinalOutcome) -> bool | None:
-    """Return True if the pick won, False if lost, None if ungradable."""
-    if market == "fulltime_result":
-        return selection == outcome.fulltime_result
-    if market == "first_half_result":
-        return selection == outcome.first_half_result
-    if market == "double_chance":
-        ft = outcome.fulltime_result
-        return (
-            (selection == "1x" and ft in ("home", "draw"))
-            or (selection == "x2" and ft in ("draw", "away"))
-            or (selection == "12" and ft in ("home", "away"))
-        )
-    if market == "draw_no_bet":
-        ft = outcome.fulltime_result
-        if ft == "draw":
-            return None  # void
-        return selection == ft
-    if market == "btts":
-        return (selection == "yes") == outcome.btts
-    if market == "btts_first_half":
-        return (selection == "yes") == outcome.btts_first_half
-    if market == "btts_second_half":
-        return (selection == "yes") == outcome.btts_second_half
-    if market in ("home_clean_sheet", "away_clean_sheet"):
-        opp_goals = (
-            outcome.away_goals if market == "home_clean_sheet"
-            else outcome.home_goals
-        )
-        return (selection == "yes") == (opp_goals == 0)
-    if market == "team_to_score_first":
-        if not outcome.is_finished:
-            return None
-        # Find first goal in event timeline — we don't have it directly here,
-        # but home_1h/away_1h gives us hint. For full support we'd need
-        # goal_events sorted; outcome doesn't carry them.
-        # Approximation: if home_goals > 0 and away_goals == 0, home scored first
-        # for sure. Otherwise we can't tell from outcome alone.
-        if outcome.home_goals == 0 and outcome.away_goals == 0:
-            return selection == "none"
-        if outcome.home_goals > 0 and outcome.away_goals == 0:
-            return selection == "home"
-        if outcome.away_goals > 0 and outcome.home_goals == 0:
-            return selection == "away"
-        return None  # both scored — order unknown without event timeline
-    if market.startswith("ou_"):
-        line = float(market.split("_")[1] + "." + market.split("_")[2])
-        if selection == "over":
-            return outcome.total_goals > line
-        if selection == "under":
-            return outcome.total_goals < line + 1
-        return None
-    if market.startswith("first_half_ou_"):
-        line = float(market.split("_")[3] + "." + market.split("_")[4])
-        if selection == "over":
-            return outcome.total_goals_first_half > line
-        if selection == "under":
-            return outcome.total_goals_first_half < line + 1
-        return None
-    if market in ("home_ou_1_5", "away_ou_1_5"):
-        team_goals = (
-            outcome.home_goals if market == "home_ou_1_5"
-            else outcome.away_goals
-        )
-        if selection == "over":
-            return team_goals > 1.5
-        if selection == "under":
-            return team_goals < 1.5
-        return None
-    if market.startswith("corners_total_"):
-        # corners_total_8_5 → 8.5
-        parts = market.split("_")
-        line = float(parts[2] + "." + parts[3])
-        if selection == "over":
-            return outcome.total_corners > line
-        if selection == "under":
-            return outcome.total_corners < line + 1
-    if market.startswith("cards_total_"):
-        parts = market.split("_")
-        line = float(parts[2] + "." + parts[3])
-        if selection == "over":
-            return outcome.total_cards > line
-        if selection == "under":
-            return outcome.total_cards < line + 1
-    return None  # market we don't grade
 
 
 # ── Grading pass ─────────────────────────────────────────────────────────
@@ -288,7 +112,7 @@ def grade_pending_picks(
         outcome = outcomes[fid]
         if outcome is None:
             continue  # match not finished → leave pending
-        won = _grade_pick(row["market"], row["selection"], outcome)
+        won = grade_pick(row["market"], row["selection"], outcome)
         if won is None:
             tracker.update_outcome(row["id"], status="void", profit_units=0.0)
             n_graded += 1
@@ -452,7 +276,14 @@ def gate_rejection_summary(tracker: PickTracker) -> list[dict]:
 
 
 def per_league_breakdown(rows, cache: SportmonksCache) -> list[dict]:
-    """Map picks to leagues via fixture snapshots, aggregate ROI."""
+    """Map picks to leagues via fixture snapshots, aggregate ROI.
+
+    Walks ALL snapshots looking for one with fixture data — the first
+    snapshot is sometimes ``prematch_odds_and_valuebets`` (saved before
+    the first in-play scan) which lacks the ``data`` field. Previous
+    implementation read paths[:1] only and bucketed everything as
+    "unknown" when that race condition fired.
+    """
     fixture_to_league: dict[int, int | None] = {}
     by_league: dict[int | None, dict] = defaultdict(
         lambda: {"n": 0, "won": 0, "profit": 0.0, "fixtures": set()}
@@ -464,12 +295,17 @@ def per_league_breakdown(rows, cache: SportmonksCache) -> list[dict]:
         if fid not in fixture_to_league:
             paths = cache.list_snapshots(fid)
             league_id = None
-            for p in paths[:1]:  # first snapshot has league_id
+            for p in paths:
                 try:
                     payload = json.loads(p.read_text())
-                    league_id = (payload.get("data") or {}).get("league_id")
                 except (OSError, json.JSONDecodeError):
                     continue
+                # Prefer "data" (parsed Fixture) but fall through to "raw"
+                # (full Sportmonks payload) — both carry league_id at top level.
+                data = payload.get("data") or payload.get("raw")
+                if data and data.get("league_id"):
+                    league_id = data["league_id"]
+                    break
             fixture_to_league[fid] = league_id
         league_id = fixture_to_league[fid]
         b = by_league[league_id]

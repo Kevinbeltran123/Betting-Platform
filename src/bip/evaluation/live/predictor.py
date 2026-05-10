@@ -1022,15 +1022,30 @@ class LiveMatchPredictor:
         if not state.is_live and not state.is_half_time:
             return _normalise({"yes": base_yes, "no": base_no})
 
+        # CASE 1: BOTH teams scoreless — need BOTH to score in remaining time.
+        # Bug discovered 2026-05-10: previous code fell into the "one team
+        # scored" branch for the 0-0 case and computed P(home scores)
+        # alone, dramatically over-stating P(BTTS yes). Real win rate on
+        # those picks: 1/33 (3%). Fix: joint probability, treating teams
+        # as independent (same independence assumption Phase 5 BTTS-2H uses).
+        if state.home_goals == 0 and state.away_goals == 0:
+            home_p = self._team_to_score_remaining(state, "home")
+            away_p = self._team_to_score_remaining(state, "away")
+            if home_p is None or away_p is None:
+                return _normalise({"yes": base_yes, "no": base_no})
+            yes = home_p * away_p
+            return _normalise({"yes": yes, "no": 1.0 - yes})
+
+        # CASE 2: exactly ONE team has scored — BTTS-yes depends on the
+        # OTHER team scoring in remaining time. Existing logic, unchanged.
         if state.home_goals == 0 or state.away_goals == 0:
-            # Need the other team to score in the remaining minutes
-            # Use Dixon-Robinson scaling on Sportmonks per-team OU 0.5
             need_team = "away" if state.home_goals > 0 else "home"
             scoring_prob = self._team_to_score_remaining(state, need_team)
             if scoring_prob is None:
                 return _normalise({"yes": base_yes, "no": base_no})
             return _normalise({"yes": scoring_prob, "no": 1 - scoring_prob})
-        # Both already scored → BTTS yes is certain
+
+        # CASE 3: BOTH already scored → BTTS yes is certain.
         return {"yes": 1.0, "no": 0.0}
 
     def _btts_first_half(self, state: LiveMatchState) -> dict[str, float] | None:

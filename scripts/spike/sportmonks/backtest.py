@@ -55,6 +55,11 @@ from bip.evaluation.live import (  # noqa: E402
     LiveMatchState,
     ValueDetector,
 )
+from bip.evaluation.live.grading import (  # noqa: E402
+    FinalOutcome,
+    derive_final_outcome_from_state,
+    grade_pick,
+)
 from bip.evaluation.live.value_detector import LivePick  # noqa: E402
 from bip.sports.football.sportmonks.cache import (  # noqa: E402
     DEFAULT_CACHE_ROOT,
@@ -66,123 +71,30 @@ logger = logging.getLogger(__name__)
 
 
 # ── Outcome derivation ──────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class FinalOutcome:
-    home_goals: int
-    away_goals: int
-    home_goals_first_half: int
-    away_goals_first_half: int
-    is_finished: bool
-
-    @property
-    def fulltime_result(self) -> str:
-        if self.home_goals > self.away_goals:
-            return "home"
-        if self.home_goals == self.away_goals:
-            return "draw"
-        return "away"
-
-    @property
-    def first_half_result(self) -> str:
-        if self.home_goals_first_half > self.away_goals_first_half:
-            return "home"
-        if self.home_goals_first_half == self.away_goals_first_half:
-            return "draw"
-        return "away"
-
-    @property
-    def total_goals(self) -> int:
-        return self.home_goals + self.away_goals
-
-    @property
-    def total_goals_first_half(self) -> int:
-        return self.home_goals_first_half + self.away_goals_first_half
-
-    @property
-    def btts(self) -> bool:
-        return self.home_goals > 0 and self.away_goals > 0
+# Delegates to the shared grading module — see
+# ``src/bip/evaluation/live/grading.py`` for the FinalOutcome dataclass +
+# grade_pick implementation. This eliminates the prior duplication where
+# backtest had its own (incomplete) grader silently reporting 0/0 ROI for
+# markets it didn't know how to grade (draw_no_bet, btts_second_half,
+# cards_total_*, etc.). All callers now share one source of truth.
 
 
 def _derive_final_outcome(last_snapshot: Fixture) -> FinalOutcome | None:
-    """Pull final score + first-half score from the LAST snapshot of a match.
+    """Pull final outcome from the LAST snapshot of a match.
 
-    Returns None when the match isn't actually finished (still in play
-    when capture stopped).
+    Wraps ``derive_final_outcome_from_state`` for backtest's existing
+    callsite shape. Returns None when the match isn't finished.
     """
     state = LiveMatchState.from_fixture(last_snapshot)
-    if not state.is_finished:
-        return None
-
-    # First-half goals: count goal_events with minute ≤ 45
-    home_1h = sum(
-        1 for minute, team in state.goal_events
-        if minute <= 45 and team == state.home_team_id
-    )
-    away_1h = sum(
-        1 for minute, team in state.goal_events
-        if minute <= 45 and team == state.away_team_id
-    )
-
-    return FinalOutcome(
-        home_goals=state.home_goals,
-        away_goals=state.away_goals,
-        home_goals_first_half=home_1h,
-        away_goals_first_half=away_1h,
-        is_finished=True,
-    )
+    return derive_final_outcome_from_state(state, last_snapshot)
 
 
 def _outcome_for_pick(pick: LivePick, outcome: FinalOutcome) -> bool | None:
-    """Did the pick win? Returns None when we can't grade it."""
-    market = pick.market
-    selection = pick.selection
+    """Did the pick win? Returns None when ungradable / void.
 
-    if market == "fulltime_result":
-        return selection == outcome.fulltime_result
-    if market == "first_half_result":
-        return selection == outcome.first_half_result
-    if market == "double_chance":
-        ft = outcome.fulltime_result
-        return (
-            (selection == "1x" and ft in ("home", "draw")) or
-            (selection == "x2" and ft in ("draw", "away")) or
-            (selection == "12" and ft in ("home", "away"))
-        )
-    if market == "btts":
-        return (selection == "yes") == outcome.btts
-    if market == "btts_first_half":
-        return (selection == "yes") == (
-            outcome.home_goals_first_half > 0
-            and outcome.away_goals_first_half > 0
-        )
-    if market.startswith("ou_"):
-        # ou_2_5 → line 2.5
-        line = float(market.split("_")[1] + "." + market.split("_")[2])
-        if selection == "over":
-            return outcome.total_goals > line
-        if selection == "under":
-            return outcome.total_goals < line + 1  # under means ≤ floor(line)
-        return None
-    if market.startswith("first_half_ou_"):
-        line = float(market.split("_")[3] + "." + market.split("_")[4])
-        if selection == "over":
-            return outcome.total_goals_first_half > line
-        if selection == "under":
-            return outcome.total_goals_first_half < line + 1
-        return None
-    if market in ("home_ou_1_5", "away_ou_1_5"):
-        team_goals = (
-            outcome.home_goals if market == "home_ou_1_5"
-            else outcome.away_goals
-        )
-        if selection == "over":
-            return team_goals > 1.5
-        if selection == "under":
-            return team_goals < 1.5
-        return None
-    return None
+    Thin wrapper over the shared ``grade_pick`` for callsite continuity.
+    """
+    return grade_pick(pick.market, pick.selection, outcome)
 
 
 # ── Replay engine ───────────────────────────────────────────────────────────
@@ -209,9 +121,23 @@ def _replay_fixture(
     if len(snap_paths) < 2:
         return []  # Need at least 2 snapshots (one early + final)
 
+    # Filter out non-fixture-data snapshots (prematch_odds, etc.) — these
+    # carry only "prematch_odds" / "sm_valuebets" without a "data" key.
+    fixture_paths = []
+    for p in snap_paths:
+        try:
+            payload = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (payload.get("data") or payload.get("raw")):
+            fixture_paths.append((p, payload))
+    if len(fixture_paths) < 2:
+        return []
+
     # Last snapshot's payload to derive final outcome
-    last_payload = json.loads(snap_paths[-1].read_text())
-    last_fixture = Fixture.model_validate(last_payload.get("data", last_payload))
+    last_payload = fixture_paths[-1][1]
+    last_record = last_payload.get("data") or last_payload.get("raw")
+    last_fixture = Fixture.model_validate(last_record)
     outcome = _derive_final_outcome(last_fixture)
     if outcome is None:
         # Match never finished in our captures
@@ -221,9 +147,10 @@ def _replay_fixture(
     home_team_name = ""
     away_team_name = ""
 
-    for path in snap_paths[:-1]:  # don't replay the final snapshot
-        payload = json.loads(path.read_text())
-        record = payload.get("data", payload)
+    for path, payload in fixture_paths[:-1]:  # don't replay the final snapshot
+        record = payload.get("data") or payload.get("raw")
+        if record is None:
+            continue
         fixture = Fixture.model_validate(record)
         try:
             state = LiveMatchState.from_fixture(fixture)

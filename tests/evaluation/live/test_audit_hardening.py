@@ -1673,6 +1673,55 @@ class TestPhase1aBackoutBugs:
         # Pushing team gets bigger draw bump than flat team
         assert push_probs["draw"] > flat_probs["draw"] + 0.005
 
+    # ── Bug 3 (post-jornada audit) — BTTS yes over-predicted at 0-0 ──
+
+    def test_btts_yes_at_0_0_uses_joint_probability(self):
+        """Bug discovered 2026-05-10 jornada: BTTS yes hit 1/33 (3%)
+        because at 0-0 the predictor computed P(home scores) alone instead
+        of the joint P(both teams score). Result: P=0.65-0.75 reported,
+        true P ~0.30-0.40, picks fired against bookmaker odds at 1.7-2.0
+        and lost almost all.
+
+        Fix: joint probability assuming independence — matches the
+        treatment in Phase 5 BTTS-2H derivation.
+        """
+        # 0-0 at min 25, both teams have ~70% per-team OU 0.5 prematch.
+        # λ_pre per team = -ln(0.30) ≈ 1.20
+        # λ_remaining (65 min left) ≈ 1.20 × 65/90 ≈ 0.87
+        # P(team scores) ≈ 1 - exp(-0.87) ≈ 0.58
+        # JOINT P(BTTS yes) ≈ 0.58 × 0.58 = 0.34   ← correct
+        # OLD BUG: returned 0.58 (single team) — over by ~70%.
+        state = _make_state(minute=25, home_goals=0, away_goals=0)
+        predictor = LiveMatchPredictor()
+        probs = predictor.predict(state).by_market[MARKET_BTTS]
+        # New behavior: joint product → P(yes) ≈ 0.34. Allow tolerance for
+        # the bivariate Poisson rho in the SM prior decoupling.
+        assert probs["yes"] < 0.45, (
+            f"BTTS yes at 0-0 should be joint-product (~0.34), got "
+            f"{probs['yes']:.3f}. Single-team bug regressed."
+        )
+        # And no should reflect the rest of the mass.
+        assert probs["no"] > 0.55
+
+    def test_btts_yes_at_1_0_unchanged(self):
+        """Sister test: when ONE team has scored, the existing logic
+        (P(other scores)) stays correct and is not affected by the fix."""
+        # 1-0 at min 25 — need away to score in 65 min. Sportmonks
+        # AWAY_OU_0_5 yes=70 → λ ≈ 1.20 → λ_remaining 0.87 → P ≈ 0.58
+        state = _make_state(minute=25, home_goals=1, away_goals=0)
+        predictor = LiveMatchPredictor()
+        probs = predictor.predict(state).by_market[MARKET_BTTS]
+        # Single-team scoring prob (correct in this case, NOT the buggy path)
+        assert 0.50 < probs["yes"] < 0.65
+
+    def test_btts_yes_both_scored_returns_one(self):
+        """Both teams already scored → yes is certain."""
+        state = _make_state(minute=70, home_goals=1, away_goals=1)
+        predictor = LiveMatchPredictor()
+        probs = predictor.predict(state).by_market[MARKET_BTTS]
+        assert probs["yes"] == 1.0
+        assert probs["no"] == 0.0
+
     # ── Phase 8 — trends saturation (cards / cross-team / set-pieces) ──
 
     def test_cards_lambda_lifted_by_recent_foul_cluster(self):
