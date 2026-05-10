@@ -1361,3 +1361,182 @@ class TestDiscoverPolicies:
                                              block_threshold=-0.10)
         block_keys = {(b["league_id"], b["market"]) for b in out["blocks"]}
         assert (999, "loser") in block_keys
+
+
+# ── Cross-fold validation (script #1) ─────────────────────────────────
+
+
+class TestCrossFoldValidate:
+
+    def _build_picks_with_timestamps(
+        self, n_per_half: int = 50, market: str = "ou_3_5",
+    ) -> pl.DataFrame:
+        """Build synthetic picks where early/late halves have different ROI.
+
+        Early picks (lower timestamps): all winners.
+        Late picks: half winners.
+        Window discovery on early should find a positive window; applying
+        on late should still help (since the market is generally positive).
+        """
+        from datetime import datetime as _dt, timedelta
+        base = _dt(2026, 5, 10, 13, 0, 0)
+        rows = []
+        for i in range(n_per_half):  # early
+            ts = (base + timedelta(seconds=i * 30)).isoformat() + "+00:00"
+            r = _make_pick(pick_id=i, fixture_id=i, market=market, minute=30,
+                           edge_pct=20.0, league_id=8,
+                           status="won", profit_units=0.80)
+            r["emitted_at"] = ts
+            rows.append(r)
+        for i in range(n_per_half):  # late
+            ts = (base + timedelta(hours=2, seconds=i * 30)).isoformat() + "+00:00"
+            status = "won" if i % 2 == 0 else "lost"
+            pl_units = 0.80 if status == "won" else -1.0
+            r = _make_pick(pick_id=1000 + i, fixture_id=1000 + i,
+                           market=market, minute=30, edge_pct=20.0,
+                           league_id=8, status=status, profit_units=pl_units)
+            r["emitted_at"] = ts
+            rows.append(r)
+        return _df(*rows)
+
+    def test_split_by_timestamp_median(self):
+        from scripts.spike.sportmonks.cross_fold_validate import (
+            _split_by_timestamp,
+        )
+        df = self._build_picks_with_timestamps(n_per_half=10)
+        early, late, split_ts = _split_by_timestamp(df)
+        # 20 total picks, median split → 10/10
+        assert early.height == 10
+        assert late.height == 10
+        # Split timestamp should be the 11th sorted
+        assert split_ts is not None
+
+    def test_split_explicit_at(self):
+        from scripts.spike.sportmonks.cross_fold_validate import (
+            _split_by_timestamp,
+        )
+        df = self._build_picks_with_timestamps(n_per_half=10)
+        early, late, ts = _split_by_timestamp(
+            df, split_at="2026-05-10T14:00:00+00:00",
+        )
+        # All early picks are at base + 0..5min, all late are base + 2h+
+        assert early.height == 10
+        assert late.height == 10
+        assert ts == "2026-05-10T14:00:00+00:00"
+
+    def test_split_missing_emitted_at_raises(self):
+        from scripts.spike.sportmonks.cross_fold_validate import (
+            _split_by_timestamp,
+        )
+        rows = [_make_pick()]  # no emitted_at by default
+        df = pl.from_dicts(rows, infer_schema_length=None)
+        with pytest.raises(ValueError, match="emitted_at"):
+            _split_by_timestamp(df)
+
+    def test_priors_from_df(self):
+        from scripts.spike.sportmonks.cross_fold_validate import (
+            _priors_from_df,
+        )
+        df = self._build_picks_with_timestamps(n_per_half=10)
+        priors = _priors_from_df(df, "market", min_n=5)
+        # ou_3_5 has 20 picks: 10 won @ +0.80, 10 with 5 won 5 lost = 0
+        # Total: (10 * 0.80 + 5 * 0.80 + 5 * -1.0) / 20 = 0.45
+        assert "ou_3_5" in priors
+        assert priors["ou_3_5"][1] == 20
+
+    def test_priors_below_min_n_excluded(self):
+        from scripts.spike.sportmonks.cross_fold_validate import (
+            _priors_from_df,
+        )
+        df = self._build_picks_with_timestamps(n_per_half=2)  # 4 total
+        priors = _priors_from_df(df, "market", min_n=5)
+        assert "ou_3_5" not in priors  # n=4 < min_n=5
+
+    @pytest.mark.parametrize("lift,overlap,expected", [
+        (+10.0, 0.50, "generalizes"),  # high lift, low overlap
+        (+10.0, 0.95, "no_consensus"),  # high lift, but overlap > 90%
+        (+1.0, 0.95, "neutral"),       # low lift, high overlap
+        (-10.0, 0.50, "overfit"),      # negative lift
+        (+3.0, 0.80, "no_consensus"),  # moderate lift, mid overlap
+    ])
+    def test_verdict_thresholds(self, lift, overlap, expected):
+        from scripts.spike.sportmonks.cross_fold_validate import _verdict
+        assert _verdict(lift, overlap) == expected
+
+
+# ── Precheck (script #2) ─────────────────────────────────────────────
+
+
+class TestPrecheck:
+
+    def test_precheck_runs_with_no_sources(self, tmp_path: Path):
+        from scripts.spike.sportmonks.precheck import precheck, render_report
+        state = precheck(
+            windows_yaml=tmp_path / "missing_w.yaml",
+            policy_yaml=tmp_path / "missing_p.yaml",
+            priors_cache=tmp_path / "missing_pr.parquet",
+            picks_db=tmp_path / "missing.db",
+            skip_edge_cal=True,
+        )
+        assert state["sources"]["windows_yaml_present"] is False
+        assert state["sources"]["policy_yaml_present"] is False
+        assert state["windows"] == {}
+        assert state["policy_blocks"] == []
+        # Render shouldn't crash
+        report = render_report(state)
+        assert "pre-flight" in report.lower()
+
+    def test_precheck_shows_intersection(self, tmp_path: Path):
+        from scripts.spike.sportmonks.precheck import precheck, render_report
+        import yaml
+        win_path = tmp_path / "windows.yaml"
+        win_path.write_text(yaml.safe_dump({
+            "markets": {
+                "btts_second_half": {"window": [20, 89], "n_total": 100},
+            }
+        }))
+        state = precheck(
+            windows_yaml=win_path,
+            policy_yaml=tmp_path / "missing_p.yaml",
+            priors_cache=tmp_path / "missing_pr.parquet",
+            picks_db=tmp_path / "missing.db",
+            skip_edge_cal=True,
+        )
+        assert state["windows"] == {"btts_second_half": (20, 89)}
+        report = render_report(state)
+        # Class default for btts_2h is [45, 70] — intersection [45, 70]
+        assert "[45, 70]" in report
+
+    def test_precheck_with_priors_cache(self, tmp_path: Path):
+        from scripts.spike.sportmonks.precheck import precheck, render_report
+        cache_path = tmp_path / "priors.parquet"
+        cache_priors(
+            {"ou_3_5": (0.50, 30)},
+            {301: (0.20, 100)},
+            cache_path,
+        )
+        state = precheck(
+            windows_yaml=tmp_path / "missing.yaml",
+            policy_yaml=tmp_path / "missing.yaml",
+            priors_cache=cache_path,
+            picks_db=tmp_path / "missing.db",
+            skip_edge_cal=True,
+        )
+        assert "ou_3_5" in state["market_priors"]
+        assert 301 in state["league_priors"]
+        report = render_report(state)
+        assert "+50.00%" in report  # ou_3_5 ROI
+
+    def test_precheck_includes_cascade_thresholds(self, tmp_path: Path):
+        from scripts.spike.sportmonks.precheck import precheck
+        state = precheck(
+            windows_yaml=tmp_path / "missing.yaml",
+            policy_yaml=tmp_path / "missing.yaml",
+            priors_cache=tmp_path / "missing.parquet",
+            picks_db=tmp_path / "missing.db",
+            skip_edge_cal=True,
+        )
+        thr = state["cascade_thresholds"]
+        assert "F1_keep_uncond" in thr
+        assert "F3_edge_floor_pct" in thr
+        assert thr["F4_odd_band"] == [ODD_FLOOR, ODD_CEIL]
