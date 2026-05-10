@@ -133,6 +133,18 @@ KILLING_CLOCK_LAMBDA_DAMP = 0.15
 BTTS_FIRST_HALF_FRACTION = 0.45
 BTTS_SECOND_HALF_FRACTION = 0.55
 
+# ── Team-form lift caps ─────────────────────────────────────────────────
+# When team form (last ~10 matches) diverges from the league baseline,
+# tilt pre-match priors proportionally — but BOUND the lift. Sportmonks's
+# pre-match prediction already implicitly absorbs season form; the
+# divergence-vs-baseline signal we add represents recent drift only.
+#
+# Cap multiplier at [0.7, 1.4]: a team scoring 1H 60% recently vs league
+# 42% gives ratio 1.43 → capped to 1.4× tilt. This prevents over-fitting
+# to small-sample form patterns when n_matches is in the 5-10 range.
+TEAM_FORM_LIFT_MIN = 0.7
+TEAM_FORM_LIFT_MAX = 1.4
+
 
 @dataclass(frozen=True)
 class MarketProbabilities:
@@ -734,6 +746,10 @@ class LiveMatchPredictor:
         if state.minute < 45 and not state.is_half_time:
             full_yes = _pct(sm.get("yes"))
             yes_2h = full_yes * BTTS_SECOND_HALF_FRACTION
+            yes_2h = self._apply_team_form_lift(
+                yes_2h, state, signal="second_half_goal_rate",
+                league_baseline=0.65 ** 2,  # league P(both teams score 2H)
+            )
             return _normalise({"yes": yes_2h, "no": 1.0 - yes_2h})
         # HT or 2H: P(both score in remaining time), agnostic to 1H goals.
         home_2h = self._team_score_in_remaining_uncond(state, "home")
@@ -741,6 +757,10 @@ class LiveMatchPredictor:
         if home_2h is None or away_2h is None:
             return None
         yes = home_2h * away_2h
+        yes = self._apply_team_form_lift(
+            yes, state, signal="second_half_goal_rate",
+            league_baseline=0.65 ** 2,
+        )
         return _normalise({"yes": yes, "no": 1.0 - yes})
 
     def _corners_total(
@@ -831,6 +851,17 @@ class LiveMatchPredictor:
             return None
         full_yes = _pct(sm.get("yes"))
         first_half_yes = full_yes * BTTS_FIRST_HALF_FRACTION
+
+        # Team-form lift: when both teams have a 1H-goal pattern that
+        # diverges from the league baseline (recent ~10 matches), tilt
+        # the BTTS-1H probability proportionally. This is the signal
+        # Sportmonks's pre-match prediction may NOT have captured if
+        # the team's recent pattern differs from their season aggregate
+        # (form-related drift, lineup changes, etc.).
+        first_half_yes = self._apply_team_form_lift(
+            first_half_yes, state, signal="first_half_goal_rate",
+            league_baseline=0.42 ** 2,  # league P(both teams score 1H)
+        )
         return _normalise({"yes": first_half_yes, "no": 1 - first_half_yes})
 
     def _ou_total(
@@ -997,6 +1028,45 @@ class LiveMatchPredictor:
         if lam_remaining <= 0:
             return 0.0
         return 1.0 - math.exp(-lam_remaining)
+
+    def _apply_team_form_lift(
+        self,
+        base_yes: float,
+        state: LiveMatchState,
+        *,
+        signal: str,
+        league_baseline: float,
+    ) -> float:
+        """Tilt a P(yes) probability by the joint home×away team-form ratio.
+
+        Returns the lifted probability, capped so the lift is bounded by
+        ``[TEAM_FORM_LIFT_MIN, TEAM_FORM_LIFT_MAX]``. When either side's
+        form is missing, returns ``base_yes`` unchanged — degrades
+        gracefully on cache misses or low-fixture-count teams.
+
+        ``signal`` is the attribute name on ``TeamForm`` to read (e.g.
+        ``"first_half_goal_rate"``, ``"second_half_goal_rate"``,
+        ``"late_goals_rate"``).
+
+        ``league_baseline`` is the joint baseline for the same signal.
+        For "both teams score in 1H": (league_1H_rate)² ≈ 0.18.
+        For "both teams score in 2H": (league_2H_rate)² ≈ 0.42.
+        """
+        h = state.home_team_form
+        a = state.away_team_form
+        if h is None or a is None:
+            return base_yes
+        try:
+            h_rate = float(getattr(h, signal))
+            a_rate = float(getattr(a, signal))
+        except (AttributeError, TypeError, ValueError):
+            return base_yes
+        joint_form = h_rate * a_rate
+        if league_baseline <= 0:
+            return base_yes
+        ratio = joint_form / league_baseline
+        ratio_capped = max(TEAM_FORM_LIFT_MIN, min(TEAM_FORM_LIFT_MAX, ratio))
+        return _clip_scalar(base_yes * ratio_capped)
 
     def _team_score_in_remaining_uncond(
         self, state: LiveMatchState, side: str,

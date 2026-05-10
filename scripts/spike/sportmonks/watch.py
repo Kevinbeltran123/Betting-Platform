@@ -44,6 +44,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+import dataclasses  # noqa: E402
+
 from bip.evaluation.live import (  # noqa: E402
     LiveMatchPredictor,
     LiveMatchState,
@@ -52,6 +54,10 @@ from bip.evaluation.live import (  # noqa: E402
 from bip.evaluation.live.pick_tracker import (  # noqa: E402
     DEFAULT_DB_PATH,
     PickTracker,
+)
+from bip.evaluation.live.team_form import (  # noqa: E402
+    DEFAULT_FORM_DB_PATH,
+    TeamFormCache,
 )
 from bip.evaluation.live.value_detector import LivePick  # noqa: E402
 from bip.sports.football.sportmonks.cache import (  # noqa: E402
@@ -133,6 +139,7 @@ async def scan_round(
     min_edge: float,
     leagues_allowlist: frozenset[int] | None = None,
     leagues_blocklist: frozenset[int] | None = None,
+    form_cache: TeamFormCache | None = None,
 ) -> tuple[int, int]:
     """One full scan round. Returns (picks_emitted, picks_new).
 
@@ -171,6 +178,22 @@ async def scan_round(
                 )
                 if not (state.is_live or state.is_half_time):
                     continue
+
+                # Resolve team form (cache hit is instant; miss triggers
+                # a single API call per team per ~18h). Failures degrade
+                # gracefully — predictor falls back to Sportmonks priors.
+                if form_cache is not None and state.season_id is not None:
+                    home_form = await form_cache.get_or_fetch(
+                        client, state.home_team_id, state.season_id,
+                    )
+                    away_form = await form_cache.get_or_fetch(
+                        client, state.away_team_id, state.season_id,
+                    )
+                    state = dataclasses.replace(
+                        state,
+                        home_team_form=home_form,
+                        away_team_form=away_form,
+                    )
 
                 probs = predictor.predict(state)
                 odds = await client.get_inplay_odds_for_fixture(f.id)
@@ -268,11 +291,18 @@ async def watch_loop(
     detector_kwargs: dict,
     leagues_allowlist: frozenset[int] | None = None,
     leagues_blocklist: frozenset[int] | None = None,
+    form_db_path: Path | None = None,
+    form_cache_enabled: bool = True,
 ) -> None:
     cache = SportmonksCache(root=cache_root)
     tracker = PickTracker(db_path=db_path)
     predictor = LiveMatchPredictor()
     detector = ValueDetector(min_edge_pct=min_edge, **detector_kwargs)
+    form_cache: TeamFormCache | None = None
+    if form_cache_enabled:
+        form_cache = TeamFormCache(
+            db_path=form_db_path or DEFAULT_FORM_DB_PATH,
+        )
 
     end = (datetime.now(timezone.utc).timestamp() + duration) if duration > 0 else None
     iteration = 0
@@ -294,6 +324,7 @@ async def watch_loop(
                 notify=notify, beep=beep, min_edge=min_edge,
                 leagues_allowlist=leagues_allowlist,
                 leagues_blocklist=leagues_blocklist,
+                form_cache=form_cache,
             )
             now = datetime.now(timezone.utc).strftime("%H:%M:%S")
             elapsed = datetime.now(timezone.utc).timestamp() - t0
@@ -359,6 +390,16 @@ def _parse_args() -> argparse.Namespace:
         help="Comma-separated Sportmonks league_ids to blacklist. Applied "
              "AFTER allowlist. Default: empty (no blocklist).",
     )
+    p.add_argument(
+        "--no-form-cache", action="store_true",
+        help="Disable team-form cache (predictor falls back to Sportmonks "
+             "priors). Default: enabled — pulls each team's last ~90 days "
+             "of fixtures on first sight, refreshes every 18h.",
+    )
+    p.add_argument(
+        "--form-db-path", type=Path, default=DEFAULT_FORM_DB_PATH,
+        help="SQLite path for team-form cache",
+    )
     p.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
     p.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     p.add_argument("--log-path", type=Path,
@@ -417,6 +458,10 @@ def main() -> int:
         print(f"   League allowlist: {sorted(leagues_allowlist)}")
     if leagues_blocklist:
         print(f"   League blocklist: {sorted(leagues_blocklist)}")
+    if not args.no_form_cache:
+        print(f"   Team-form cache: ON  ({args.form_db_path})")
+    else:
+        print("   Team-form cache: OFF")
     if not args.no_notify and platform.system() == "Darwin":
         print("   macOS notifications: ON")
     if args.beep:
@@ -432,6 +477,8 @@ def main() -> int:
         detector_kwargs=detector_kwargs,
         leagues_allowlist=leagues_allowlist,
         leagues_blocklist=leagues_blocklist,
+        form_db_path=args.form_db_path,
+        form_cache_enabled=not args.no_form_cache,
     ))
     return 0
 

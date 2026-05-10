@@ -1510,6 +1510,76 @@ class TestPhase1aBackoutBugs:
         assert MARKET_FULLTIME_RESULT in skip
         assert MARKET_DOUBLE_CHANCE in skip
 
+    # ── #30 HTFT matcher fix — was bound to _ftr_matcher (incompatible) ─
+    def test_htft_matcher_handles_word_labels(self):
+        """Bug #30: predictor emits HTFT keys 'home_home', 'home_draw',
+        etc. Before the fix, value_detector bound MARKET_HTFT to
+        _ftr_matcher which only knew '1','X','2','Home','Draw','Away'.
+        Result: HTFT odds NEVER matched → no picks emitted from HTFT
+        despite the predictor computing probabilities for it.
+        """
+        from bip.evaluation.live.value_detector import _htft_matcher
+
+        cases_word = [
+            ("Home/Home", "home_home"),
+            ("Home/Draw", "home_draw"),
+            ("Home/Away", "home_away"),
+            ("Draw/Home", "draw_home"),
+            ("Draw/Draw", "draw_draw"),
+            ("Draw/Away", "draw_away"),
+            ("Away/Home", "away_home"),
+            ("Away/Draw", "away_draw"),
+            ("Away/Away", "away_away"),
+        ]
+        for label, expected in cases_word:
+            o = _odd(market_id=MarketID.HALFTIME_FULLTIME, label=label, value="3.00")
+            assert _htft_matcher(o) == expected, f"failed {label}"
+
+    def test_htft_matcher_handles_numeric_labels(self):
+        """Sportmonks may emit '1/X/2' style instead of word labels."""
+        from bip.evaluation.live.value_detector import _htft_matcher
+        cases = [
+            ("1/1", "home_home"), ("1/X", "home_draw"), ("1/2", "home_away"),
+            ("X/1", "draw_home"), ("X/X", "draw_draw"), ("X/2", "draw_away"),
+            ("2/1", "away_home"), ("2/X", "away_draw"), ("2/2", "away_away"),
+        ]
+        for label, expected in cases:
+            o = _odd(market_id=MarketID.HALFTIME_FULLTIME, label=label, value="3.00")
+            assert _htft_matcher(o) == expected, f"failed {label}"
+
+    def test_htft_matcher_rejects_garbage(self):
+        from bip.evaluation.live.value_detector import _htft_matcher
+        for bad in ("", "Home", "Home-Home", "1", "Foo/Bar", "Home/Bar"):
+            o = _odd(market_id=MarketID.HALFTIME_FULLTIME, label=bad, value="3.00")
+            assert _htft_matcher(o) is None, f"should reject {bad!r}"
+
+    def test_htft_pick_actually_fires_against_odds_now(self):
+        """End-to-end: predictor emits HTFT prob → detector matches it
+        against an HTFT odd → pick generated. Before the fix, no HTFT
+        odd ever matched."""
+        state = _make_state(minute=20, home_goals=0)
+        # HTFT 9-cell prob, with one cell strongly weighted
+        probs = _probs_with_conf(market_probs={
+            "htft": {
+                "home_home": 0.50, "home_draw": 0.05, "home_away": 0.02,
+                "draw_home": 0.10, "draw_draw": 0.15, "draw_away": 0.05,
+                "away_home": 0.05, "away_draw": 0.05, "away_away": 0.03,
+            },
+        })
+        odds = [_odd(
+            market_id=MarketID.HALFTIME_FULLTIME, label="Home/Home", value="2.50",
+        )]
+        picks = ValueDetector(
+            min_edge_pct=3.0, enforce_ci_gate=False,
+            min_logical_score_emit=0.0, min_logical_score_flag=0.0,
+        ).evaluate(
+            probs, odds, home_team_name="A", away_team_name="B", state=state,
+        )
+        # Edge: 0.50 × 2.50 - 1 = 25% → above 3% min, pick must fire.
+        assert len(picks) == 1
+        assert picks[0].market == "htft"
+        assert picks[0].selection == "home_home"
+
     # ── #21 league_id filter (allowlist / blocklist parsing) ────────────
     def test_league_filter_cli_parsing(self):
         """Bug #21: league_id was stored on state but never used. Fix:

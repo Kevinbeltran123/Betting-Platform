@@ -38,6 +38,11 @@ from bip.sports.football.sportmonks.types import (
     StatType,
 )
 
+# Forward reference: ``TeamForm`` is imported lazily inside the dataclass to
+# avoid a circular import (team_form.py depends on this module's schemas).
+if False:  # pragma: no cover - typing only
+    from bip.evaluation.live.team_form import TeamForm
+
 
 # Stat IDs used as live "shot quality" signal — the proxy for live xG when
 # Sportmonks does not populate xGFixture for the league.
@@ -121,6 +126,15 @@ class LiveMatchState:
     # Snapshot meta (best-effort; not always emitted by Sportmonks).
     snapshot_taken_at: datetime | None = None
     league_id: int | None = None
+    season_id: int | None = None
+
+    # Recent-form signals (resolved by the watcher via ``TeamFormCache``).
+    # Either may be None when the team has too few completed fixtures or
+    # when the fetch failed. The predictor reads these in the goal-timing
+    # market emitters to tilt pre-match priors away from the league
+    # baseline when a team's recent pattern is materially different.
+    home_team_form: Any | None = None  # bip.evaluation.live.team_form.TeamForm
+    away_team_form: Any | None = None
 
     # ── derived signals ─────────────────────────────────────────────────
 
@@ -531,6 +545,7 @@ class LiveMatchState:
             substitution_events=sub_events,
             snapshot_taken_at=snapshot_taken_at,
             league_id=fixture.league_id,
+            season_id=fixture.season_id,
         )
 
 

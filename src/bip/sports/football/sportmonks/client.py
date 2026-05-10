@@ -282,6 +282,36 @@ class SportmonksClient:
                 out.append(f)
         return out
 
+    async def get_team_recent_fixtures(
+        self,
+        team_id: int,
+        *,
+        start_iso: str,
+        end_iso: str,
+        includes: Sequence[str] | None = None,
+    ) -> list[Fixture]:
+        """Fetch fixtures for one team in a date range.
+
+        Backbone for the ``team_form`` cache: pulls last N matches with
+        ``events`` + ``state`` includes so we can compute goal-timing
+        rates, BTTS rate, clean-sheet rate, and W/D/L form offline.
+
+        Sportmonks v3 endpoint:
+            GET /football/fixtures/between/{start}/{end}/{team_id}
+        """
+        params: dict[str, Any] = {"per_page": 100}
+        if includes:
+            params["include"] = INCLUDE_SEP.join(includes)
+        out: list[Fixture] = []
+        async for rec in self._paginate(
+            f"{self._base}/fixtures/between/{start_iso}/{end_iso}/{team_id}",
+            params=params,
+        ):
+            f = self._parse_record(rec, Fixture, ctx="team_recent")
+            if f is not None:
+                out.append(f)
+        return out
+
     # ── predictions ─────────────────────────────────────────────────────
 
     async def get_predictions_for_fixture(self, fixture_id: int) -> list[Prediction]:

@@ -102,6 +102,39 @@ def _yes_no_matcher(odd: Odd) -> str | None:
     return {"Yes": "yes", "No": "no"}.get(odd.label)
 
 
+def _htft_matcher(odd: Odd) -> str | None:
+    """Match Sportmonks HT/FT 9-cell labels to our internal keys.
+
+    Bug #30 (post-audit): the predictor has emitted HTFT probabilities
+    since the original implementation, but the value detector was bound
+    with ``_ftr_matcher`` — which only matches 1X2 single-outcome labels
+    ("1", "X", "2", "Home", "Draw", "Away"). HT/FT labels are 9 cells
+    formatted "first/second" (e.g., "Home/Home", "1/X", "Draw/Away").
+    Result: the system burned compute on HTFT probabilities for months
+    while NEVER actually picking against HTFT odds.
+
+    This matcher accepts both numeric ("1/1", "X/2") and word ("Home/Home",
+    "Draw/Away") variants and produces our internal keys
+    ``{home,draw,away}_{home,draw,away}`` (9 combinations).
+    """
+    label = odd.label or ""
+    if "/" not in label:
+        return None
+    parts = label.split("/", 1)
+    ht_raw = parts[0].strip()
+    ft_raw = parts[1].strip()
+    norm = {
+        "1": "home", "Home": "home", "home": "home",
+        "X": "draw", "Draw": "draw", "draw": "draw",
+        "2": "away", "Away": "away", "away": "away",
+    }
+    ht = norm.get(ht_raw)
+    ft = norm.get(ft_raw)
+    if ht is None or ft is None:
+        return None
+    return f"{ht}_{ft}"
+
+
 def _draw_no_bet_matcher(odd: Odd) -> str | None:
     return {"1": "home", "2": "away", "Home": "home", "Away": "away"}.get(odd.label)
 
@@ -132,7 +165,7 @@ _MARKET_BINDINGS: dict[str, tuple[int, SelectionMatcher]] = {
     MARKET_DOUBLE_CHANCE: (MarketID.DOUBLE_CHANCE, _double_chance_matcher),
     MARKET_DRAW_NO_BET: (MarketID.DRAW_NO_BET, _draw_no_bet_matcher),
     MARKET_FIRST_HALF_RESULT: (MarketID.HALF_TIME_RESULT, _ftr_matcher),
-    MARKET_HTFT: (MarketID.HALFTIME_FULLTIME, _ftr_matcher),
+    MARKET_HTFT: (MarketID.HALFTIME_FULLTIME, _htft_matcher),
     MARKET_BTTS: (MarketID.BOTH_TEAMS_TO_SCORE, _yes_no_matcher),
     MARKET_BTTS_FIRST_HALF: (MarketID.BTTS_FIRST_HALF, _yes_no_matcher),
     MARKET_BTTS_SECOND_HALF: (MarketID.BTTS_SECOND_HALF, _yes_no_matcher),
