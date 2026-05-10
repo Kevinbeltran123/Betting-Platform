@@ -117,6 +117,12 @@ class LiveMatchState:
     # Goal-event timeline (minute, scoring_team_id) — sorted ascending
     goal_events: list[tuple[int, int]] = field(default_factory=list)
 
+    # Goal-event timeline WITH player_id preserved (minute, team_id, player_id).
+    # Same goals as ``goal_events`` but with the scoring player attribution
+    # retained for retrospective analysis. ``player_id`` may be 0 when
+    # Sportmonks omits it (e.g., own goals attributed to whole team).
+    goal_events_detailed: list[tuple[int, int, int]] = field(default_factory=list)
+
     # Red-card events (minute, team_affected_id)
     red_card_events: list[tuple[int, int]] = field(default_factory=list)
 
@@ -735,7 +741,12 @@ class LiveMatchState:
         predictions_by_type = _index_predictions(fixture.predictions or [])
 
         # Events: extract goals + red cards + yellow cards + subs
-        goal_events, red_card_events, yellow_events, sub_events = _extract_events(
+        # The detailed goal stream preserves scorer player_id for retro
+        # analysis (which the predictor doesn't read but the snapshot does).
+        (
+            goal_events, red_card_events, yellow_events, sub_events,
+            goal_events_detailed,
+        ) = _extract_events(
             fixture.events or [], home.id, away.id
         )
 
@@ -767,6 +778,7 @@ class LiveMatchState:
             sportmonks_predictions=predictions_by_type,
             trends=trends,
             goal_events=goal_events,
+            goal_events_detailed=goal_events_detailed,
             red_card_events=red_card_events,
             yellow_card_events=yellow_events,
             substitution_events=sub_events,
@@ -945,12 +957,16 @@ def _extract_events(
         ``[(minute, team_affected_id), ...]`` sorted by minute. Combines
         straight-red and yellow→red into one stream.
     yellow_card_events
-        ``[(minute, team_id, player_id_or_0), ...]`` sorted. Used for
-        booked-player tracking and cards-market signal.
+        ``[(minute, team_id, player_id_or_0), ...]`` sorted.
     substitution_events
         ``[(minute, team_id, related_player_id_or_None), ...]`` sorted.
+    goal_events_detailed
+        ``[(minute, team_id, player_id_or_0), ...]`` — same goals as
+        ``goal_events`` but with scorer attribution preserved for
+        retrospective analysis.
     """
     goal_events: list[tuple[int, int]] = []
+    goal_events_detailed: list[tuple[int, int, int]] = []
     red_card_events: list[tuple[int, int]] = []
     yellow_card_events: list[tuple[int, int, int]] = []
     substitution_events: list[tuple[int, int, int | None]] = []
@@ -965,6 +981,7 @@ def _extract_events(
             continue
         if e.type_id in GOAL_TYPE_IDS:
             goal_events.append((minute, team))
+            goal_events_detailed.append((minute, team, e.player_id or 0))
         elif e.type_id in RED_CARD_TYPE_IDS:
             red_card_events.append((minute, team))
         elif e.type_id == EVENT_TYPE_YELLOWCARD:
@@ -972,7 +989,11 @@ def _extract_events(
         elif e.type_id == EVENT_TYPE_SUBSTITUTION:
             substitution_events.append((minute, team, e.related_player_id))
     goal_events.sort()
+    goal_events_detailed.sort()
     red_card_events.sort()
     yellow_card_events.sort()
     substitution_events.sort()
-    return goal_events, red_card_events, yellow_card_events, substitution_events
+    return (
+        goal_events, red_card_events, yellow_card_events,
+        substitution_events, goal_events_detailed,
+    )

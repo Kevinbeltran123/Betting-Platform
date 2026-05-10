@@ -73,9 +73,26 @@ logger = logging.getLogger(__name__)
 
 
 INCLUDES = [
+    # Core in-play state
     "participants", "state", "periods", "scores",
+    # Stats / model inputs
     "statistics", "predictions", "events", "trends", "pressure",
+    # Retrospective context — schema may not model these fully, but they
+    # land in the raw payload we save alongside the parsed Fixture.
+    "lineups",     # starting XI + bench (striker availability, etc.)
+    "league",      # league metadata (tier, season context)
+    "venue",       # ground / pitch (turf vs grass effects on goals)
+    "comments",    # narrative ("VAR check", "tactical fouls cluster")
+    "xGFixture",   # Sportmonks official xG (when league has it — vs our proxy)
+    "sidelined",   # season-long injuries / suspensions for context
+    "weatherreport",  # weather (rain affects goal/corner rates)
+    "metadata",    # per-participant location + fixture meta
 ]
+
+# Set of fixture state developer_names that signal the match has FINISHED.
+# When a fixture transitions from in-play to one of these, we want to
+# capture one final snapshot for backtest grading via _derive_final_outcome.
+_FINISHED_DEVELOPER_NAMES = frozenset({"FT", "AET", "FT_PEN", "FINISHED"})
 
 
 _stop_requested = False
@@ -140,18 +157,25 @@ async def scan_round(
     leagues_allowlist: frozenset[int] | None = None,
     leagues_blocklist: frozenset[int] | None = None,
     form_cache: TeamFormCache | None = None,
+    seen_fixtures: set[int] | None = None,
+    prematch_odds_seen: set[int] | None = None,
 ) -> tuple[int, int]:
     """One full scan round. Returns (picks_emitted, picks_new).
 
-    League quality filter (B-21): when ``leagues_allowlist`` is set, only
-    fixtures whose ``league_id`` is in the allowlist proceed. When
-    ``leagues_blocklist`` is set, fixtures from those leagues are skipped.
-    Both default to None (no filtering — preserves prior behaviour). The
-    allowlist takes precedence: if both are set, fixtures must pass
-    allowlist AND not appear in blocklist.
+    League quality filter: when ``leagues_allowlist`` is set, only fixtures
+    whose ``league_id`` is in the allowlist proceed. When ``leagues_blocklist``
+    is set, those leagues are skipped. Both default to None.
 
-    Filter is applied BEFORE the get_fixture call to save API quota on
-    leagues we never want picks from.
+    Captures three classes of data into the snapshot cache:
+      1. Per-round in-play snapshot (fixture + odds + raw payload)
+      2. One-time pre-match odds per fixture (CLV proxy baseline)
+      3. Final-state snapshot when a fixture exits the in-play list
+         (state transitions to FT/AET/FINISHED) — required for the
+         backtest framework's _derive_final_outcome step.
+
+    ``seen_fixtures`` and ``prematch_odds_seen`` are PERSISTENT across
+    rounds — the watcher loop owns the sets and passes them in. None →
+    no FT-pickup or prematch-once tracking.
     """
     n_emitted = 0
     n_new = 0
@@ -166,21 +190,94 @@ async def scan_round(
             relevant = [f for f in relevant if f.league_id in leagues_allowlist]
         if leagues_blocklist is not None:
             relevant = [f for f in relevant if f.league_id not in leagues_blocklist]
+        current_live_ids = {f.id for f in relevant}
+
+        # ── FT pickup pass ────────────────────────────────────────────
+        # Fixtures that were in-play in a previous round but disappeared
+        # from the in-play list NOW — likely transitioned to FT (state 5,
+        # which list_inplay_fixtures excludes). Capture one final snapshot
+        # so backtest._derive_final_outcome has an is_finished=True state.
+        if seen_fixtures is not None:
+            disappeared = seen_fixtures - current_live_ids
+            for fid in disappeared:
+                try:
+                    parsed, raw = await client.get_fixture_with_raw(
+                        fid, includes=INCLUDES,
+                    )
+                    final_taken_at = datetime.now(timezone.utc)
+                    cache.save_snapshot(fid, {
+                        "data": parsed.model_dump(mode="json"),
+                        "raw": raw,
+                        "snapshot_taken_at": final_taken_at.isoformat(),
+                        "snapshot_kind": "final_pickup",
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "ft_pickup_failed fixture=%d err=%s", fid, exc,
+                    )
+            seen_fixtures -= disappeared
 
         for f in relevant:
             try:
-                full = await client.get_fixture(f.id, includes=INCLUDES)
+                # Track for FT pickup next round
+                if seen_fixtures is not None:
+                    seen_fixtures.add(f.id)
+
+                full, raw = await client.get_fixture_with_raw(
+                    f.id, includes=INCLUDES,
+                )
                 snapshot_taken_at = datetime.now(timezone.utc)
                 state = LiveMatchState.from_fixture(
                     full, snapshot_taken_at=snapshot_taken_at,
                 )
                 if not (state.is_live or state.is_half_time):
-                    # Save fixture-only snapshot for non-live so the
-                    # final-state snapshot is preserved for backtest grading.
-                    cache.save_snapshot(
-                        f.id, {"data": full.model_dump(mode="json")},
-                    )
+                    # Capture full state + raw even when not live.
+                    cache.save_snapshot(f.id, {
+                        "data": full.model_dump(mode="json"),
+                        "raw": raw,
+                        "snapshot_taken_at": snapshot_taken_at.isoformat(),
+                    })
                     continue
+
+                # ── Pre-match odds + Sportmonks value-bets (one-time) ─
+                # CLV-proxy baseline + dedicated valuebets endpoint coverage.
+                # Both fetched ONCE per fixture per session.
+                if (
+                    prematch_odds_seen is not None
+                    and f.id not in prematch_odds_seen
+                ):
+                    snapshot_payload: dict = {
+                        "snapshot_kind": "prematch_odds_and_valuebets",
+                        "snapshot_taken_at": snapshot_taken_at.isoformat(),
+                    }
+                    try:
+                        prematch = await client.get_prematch_odds_for_fixture(f.id)
+                        if prematch:
+                            snapshot_payload["prematch_odds"] = [
+                                o.model_dump(mode="json") for o in prematch
+                            ]
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "prematch_odds_fetch_failed fixture=%d err=%s",
+                            f.id, exc,
+                        )
+                    try:
+                        valuebets = await client.get_value_bets_for_fixture(f.id)
+                        if valuebets:
+                            snapshot_payload["sm_valuebets"] = [
+                                vb.model_dump(mode="json") for vb in valuebets
+                            ]
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "valuebets_fetch_failed fixture=%d err=%s",
+                            f.id, exc,
+                        )
+                    if (
+                        "prematch_odds" in snapshot_payload
+                        or "sm_valuebets" in snapshot_payload
+                    ):
+                        cache.save_snapshot(f.id, snapshot_payload)
+                    prematch_odds_seen.add(f.id)
 
                 # Resolve team form (cache hit is instant; miss triggers
                 # a single API call per team per ~18h). Failures degrade
@@ -200,14 +297,28 @@ async def scan_round(
 
                 probs = predictor.predict(state)
                 odds = await client.get_inplay_odds_for_fixture(f.id)
-                # Persist BOTH fixture + odds in one snapshot so backtest
-                # replay can grade picks against the actual odds visible
-                # at capture time. Previously snapshots had only fixture
-                # data → backtest never saw odds → all replay picks empty.
+                # Persist fixture + odds + RAW payload in one snapshot. The
+                # raw payload preserves fields the Pydantic schema doesn't
+                # model (venue details, comments, lineup metadata) so
+                # post-jornada analysis has the full ground truth.
                 cache.save_snapshot(f.id, {
                     "data": full.model_dump(mode="json"),
+                    "raw": raw,
                     "odds_snapshot": [o.model_dump(mode="json") for o in odds],
                     "snapshot_taken_at": snapshot_taken_at.isoformat(),
+                    # Derived signals snapshot — useful for offline
+                    # correlation between trends-based features and outcomes.
+                    "derived": {
+                        "informational_density": state.informational_density,
+                        "home_momentum": state.momentum_score("home", window=5),
+                        "away_momentum": state.momentum_score("away", window=5),
+                        "home_shot_acceleration": state.shot_acceleration("home"),
+                        "away_shot_acceleration": state.shot_acceleration("away"),
+                        "home_set_piece_intensity": state.set_piece_intensity("home"),
+                        "away_set_piece_intensity": state.set_piece_intensity("away"),
+                        "home_killing_clock": state.is_killing_clock("home"),
+                        "away_killing_clock": state.is_killing_clock("away"),
+                    },
                 })
 
                 # Per-snapshot drop logger — feeds pick_decisions table so
@@ -315,6 +426,10 @@ async def watch_loop(
         form_cache = TeamFormCache(
             db_path=form_db_path or DEFAULT_FORM_DB_PATH,
         )
+    # Persistent across rounds: fixtures we've seen in-play (for FT pickup)
+    # and fixtures whose pre-match odds we've already captured (one-time).
+    seen_fixtures: set[int] = set()
+    prematch_odds_seen: set[int] = set()
 
     end = (datetime.now(timezone.utc).timestamp() + duration) if duration > 0 else None
     iteration = 0
@@ -337,6 +452,8 @@ async def watch_loop(
                 leagues_allowlist=leagues_allowlist,
                 leagues_blocklist=leagues_blocklist,
                 form_cache=form_cache,
+                seen_fixtures=seen_fixtures,
+                prematch_odds_seen=prematch_odds_seen,
             )
             now = datetime.now(timezone.utc).strftime("%H:%M:%S")
             elapsed = datetime.now(timezone.utc).timestamp() - t0
@@ -353,6 +470,31 @@ async def watch_loop(
                 await asyncio.sleep(sleep_for)
             except asyncio.CancelledError:
                 break
+
+    # Final-state pickup pass for any fixtures still tracked when the loop
+    # exits (Ctrl+C or duration reached). Last chance to capture FT data
+    # for matches whose final whistle landed during our last sleep cycle.
+    if seen_fixtures:
+        print(f"\n📦 Final-state pickup for {len(seen_fixtures)} tracked fixtures...")
+        try:
+            async with sportmonks_client_from_env() as client:
+                for fid in list(seen_fixtures):
+                    try:
+                        parsed, raw = await client.get_fixture_with_raw(
+                            fid, includes=INCLUDES,
+                        )
+                        cache.save_snapshot(fid, {
+                            "data": parsed.model_dump(mode="json"),
+                            "raw": raw,
+                            "snapshot_taken_at": datetime.now(timezone.utc).isoformat(),
+                            "snapshot_kind": "final_pickup_on_exit",
+                        })
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "exit_pickup_failed fixture=%d err=%s", fid, exc,
+                        )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("exit_pickup_loop_failed err=%s", exc)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -474,6 +616,23 @@ def main() -> int:
         print(f"   Team-form cache: ON  ({args.form_db_path})")
     else:
         print("   Team-form cache: OFF")
+
+    # Log Sportmonks subscription / quota info at start so we know our
+    # plan ceiling and can detect surprise rate-limit events post-run.
+    async def _log_subscription():
+        try:
+            async with sportmonks_client_from_env() as client:
+                info = await client.get_subscription_info()
+                print(f"   Subscription info: {info}")
+                # Persist to a file under reports/ for post-jornada audit.
+                sub_path = Path("reports/sportmonks_live/subscription_info.json")
+                sub_path.parent.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                sub_path.write_text(_json.dumps(info, indent=2, default=str))
+        except Exception as exc:  # noqa: BLE001
+            print(f"   ⚠ subscription_info_fetch_failed: {exc}")
+
+    asyncio.run(_log_subscription())
     if not args.no_notify and platform.system() == "Darwin":
         print("   macOS notifications: ON")
     if args.beep:

@@ -245,6 +245,29 @@ class SportmonksClient:
             raise SportmonksError(404, f"fixture {fixture_id} not found")
         return Fixture.model_validate(record)
 
+    async def get_fixture_with_raw(
+        self,
+        fixture_id: int,
+        *,
+        includes: Sequence[str] | None = None,
+    ) -> tuple[Fixture, dict[str, Any]]:
+        """Return both the parsed Fixture and the raw API record dict.
+
+        Use this in capture pipelines that need to preserve fields the
+        Pydantic schema doesn't model (venue details, comments, lineups
+        positional metadata, etc.) for retrospective offline analysis.
+        Single API call — cheaper than calling ``get_fixture`` and a
+        separate raw fetch.
+        """
+        params: dict[str, Any] = {}
+        if includes:
+            params["include"] = INCLUDE_SEP.join(includes)
+        body = await self._get(f"{self._base}/fixtures/{fixture_id}", params=params)
+        record = body.get("data")
+        if record is None:
+            raise SportmonksError(404, f"fixture {fixture_id} not found")
+        return Fixture.model_validate(record), record
+
     async def get_fixtures_by_date(
         self,
         date_iso: str,  # YYYY-MM-DD
