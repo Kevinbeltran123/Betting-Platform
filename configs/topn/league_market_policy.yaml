@@ -1,0 +1,78 @@
+generated_at: '2026-05-10T22:56:16.573975+00:00'
+thresholds:
+  min_cell_n: 10
+  block_threshold: -0.1
+  bonus_threshold: 0.25
+  bonus_multiplier: 1.2
+  k_market: 15
+  k_league: 15
+stats:
+  n_cells_total: 174
+  n_cells_eligible: 18
+  block_threshold: -0.1
+  bonus_threshold: 0.25
+blocks:
+- league_id: 208
+  market: btts
+  n: 12
+  won: 0
+  raw_roi: -1.0
+  shrunk_roi: -0.5698
+  reason: 0/12 won, shrunk ROI -57.0%
+- league_id: 301
+  market: away_ou_1_5
+  n: 17
+  won: 4
+  raw_roi: -0.4959
+  shrunk_roi: -0.1544
+  reason: 4/17 won, shrunk ROI -15.4%
+- league_id: 82
+  market: home_ou_1_5
+  n: 11
+  won: 2
+  raw_roi: -0.5345
+  shrunk_roi: -0.1511
+  reason: 2/11 won, shrunk ROI -15.1%
+bonuses:
+- league_id: 301
+  market: ou_3_5
+  n: 10
+  won: 10
+  raw_roi: 0.859
+  shrunk_roi: 0.5564
+  multiplier: 1.2
+- league_id: 564
+  market: team_to_score_first
+  n: 10
+  won: 6
+  raw_roi: 0.267
+  shrunk_roi: 0.531
+  multiplier: 1.2
+- league_id: 301
+  market: first_half_ou_0_5
+  n: 13
+  won: 12
+  raw_roi: 0.7254
+  shrunk_roi: 0.4269
+  multiplier: 1.2
+- league_id: 301
+  market: team_to_score_first
+  n: 13
+  won: 8
+  raw_roi: 0.3923
+  shrunk_roi: 0.2741
+  multiplier: 1.2
+- league_id: 301
+  market: fulltime_result
+  n: 13
+  won: 6
+  raw_roi: 0.2392
+  shrunk_roi: 0.2568
+  multiplier: 1.2
+- league_id: 301
+  market: btts_second_half
+  n: 26
+  won: 26
+  raw_roi: 0.3454
+  shrunk_roi: 0.2514
+  multiplier: 1.2

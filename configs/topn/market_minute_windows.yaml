@@ -1,0 +1,108 @@
+generated_at: '2026-05-10T22:56:16.563058+00:00'
+thresholds:
+  min_market_n: 30
+  bucket_width_minutes: 10
+  shrinkage_k: 10
+  roi_floor_pct: 0.0
+  min_bucket_n: 3
+markets:
+  away_ou_1_5:
+    window:
+    - 40
+    - 49
+    n_total: 50
+    shrunk_market_roi: -0.09579999999999998
+  btts:
+    window:
+    - 40
+    - 49
+    n_total: 38
+    shrunk_market_roi: -0.7723684210526316
+  btts_first_half:
+    window: null
+    n_total: 20
+    shrunk_market_roi: null
+    reason: n=20 < min_n=30, fallback to class default
+  btts_second_half:
+    window:
+    - 20
+    - 89
+    n_total: 133
+    shrunk_market_roi: 0.16571428571428576
+  cards_total_3_5:
+    window: null
+    n_total: 12
+    shrunk_market_roi: null
+    reason: n=12 < min_n=30, fallback to class default
+  cards_total_4_5:
+    window: null
+    n_total: 21
+    shrunk_market_roi: null
+    reason: n=21 < min_n=30, fallback to class default
+  cards_total_5_5:
+    window: null
+    n_total: 16
+    shrunk_market_roi: null
+    reason: n=16 < min_n=30, fallback to class default
+  double_chance:
+    window:
+    - 20
+    - 39
+    n_total: 58
+    shrunk_market_roi: 0.010172413793103473
+  draw_no_bet:
+    window:
+    - 20
+    - 59
+    n_total: 109
+    shrunk_market_roi: 0.0881651376146789
+  first_half_ou_0_5:
+    window:
+    - 10
+    - 49
+    n_total: 40
+    shrunk_market_roi: 0.421
+  first_half_ou_1_5:
+    window: null
+    n_total: 28
+    shrunk_market_roi: null
+    reason: n=28 < min_n=30, fallback to class default
+  first_half_result:
+    window: null
+    n_total: 3
+    shrunk_market_roi: null
+    reason: n=3 < min_n=30, fallback to class default
+  fulltime_result:
+    window:
+    - 10
+    - 69
+    n_total: 63
+    shrunk_market_roi: 0.354920634920635
+  home_ou_1_5:
+    window:
+    - 50
+    - 69
+    n_total: 90
+    shrunk_market_roi: -0.016666666666666646
+  ou_1_5:
+    window: null
+    n_total: 2
+    shrunk_market_roi: null
+    reason: n=2 < min_n=30, fallback to class default
+  ou_2_5:
+    window: null
+    n_total: 23
+    shrunk_market_roi: null
+    reason: n=23 < min_n=30, fallback to class default
+  ou_3_5:
+    window:
+    - 10
+    - 49
+    n_total: 42
+    shrunk_market_roi: 0.7369047619047621
+  team_to_score_first:
+    window:
+    - 10
+    - 89
+    n_total: 65
+    shrunk_market_roi: 0.27169230769230773

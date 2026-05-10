@@ -29,6 +29,9 @@ from scripts.spike.sportmonks.topn_filter import (
     ODD_CEIL,
     ODD_FLOOR,
     SIGNAL_COLUMNS,
+    WINDOW_FIRST_HALF,
+    WINDOW_FULL_MATCH,
+    WINDOW_SECOND_HALF,
     apply_cascade,
     cache_priors,
     calibrated_edge,
@@ -43,8 +46,11 @@ from scripts.spike.sportmonks.topn_filter import (
     f4_odd_band,
     f5_league_filter,
     load_cached_priors,
+    load_league_market_policy,
+    load_market_windows,
     logical_kernel,
     make_edge_calibrator,
+    market_window,
     odd_kernel,
     parse_logical_components,
     placement_schedule,
@@ -1127,3 +1133,231 @@ class TestDriftReport:
         cache_priors({"m1": (0.15, 30)}, {1: (0.25, 40)}, cache_path)
         result = compute_drift(cache_path=cache_path, kind_filter="market")
         assert all(r["kind"] == "market" for r in result["rows"])
+
+
+# ── Empirical windows + (league, market) policy ───────────────────────
+
+
+class TestMarketWindow:
+
+    def test_class_default_full_match(self):
+        # No empirical → return class default
+        assert market_window("ou_3_5") == WINDOW_FULL_MATCH
+        assert market_window("ou_3_5", empirical={}) == WINDOW_FULL_MATCH
+
+    def test_class_default_first_half(self):
+        assert market_window("first_half_ou_0_5") == WINDOW_FIRST_HALF
+        assert market_window("btts_first_half") == WINDOW_FIRST_HALF
+
+    def test_class_default_second_half(self):
+        assert market_window("btts_second_half") == WINDOW_SECOND_HALF
+
+    def test_empirical_narrows(self):
+        # Empirical [10, 49] inside class [0, 75] → tightened to [10, 49]
+        emp = {"ou_3_5": (10, 49)}
+        assert market_window("ou_3_5", emp) == (10, 49)
+
+    def test_empirical_cannot_widen_below_class_floor(self):
+        # btts_2h class [45, 70]; empirical wider [20, 89] → INTERSECT [45, 70]
+        emp = {"btts_second_half": (20, 89)}
+        assert market_window("btts_second_half", emp) == (45, 70)
+
+    def test_empirical_intersect_partial(self):
+        # Class [0, 75], empirical [50, 90] → [50, 75]
+        emp = {"team_to_score_first": (50, 90)}
+        assert market_window("team_to_score_first", emp) == (50, 75)
+
+    def test_market_not_in_empirical(self):
+        # Empirical defined for some markets but not this one → class default
+        emp = {"ou_3_5": (10, 49)}
+        assert market_window("draw_no_bet", emp) == WINDOW_FULL_MATCH
+
+
+class TestF2WithEmpiricalWindows:
+
+    def test_f2_uses_empirical_when_provided(self):
+        # ou_3_5 picks at minute 50, 60, 70 — class allows all (≤75)
+        # Empirical [10, 49] should drop all three
+        rows = [_make_pick(pick_id=i, market="ou_3_5", minute=m)
+                for i, m in enumerate([50, 60, 70])]
+        df = _df(*rows)
+        empirical = {"ou_3_5": (10, 49)}
+        out = f2_placement_window(df, empirical_windows=empirical)
+        assert out.height == 0
+
+    def test_f2_intersect_with_class_default(self):
+        # btts_2h: class is [45, 70]; empirical [20, 89] should NOT widen
+        rows = [
+            _make_pick(pick_id=1, market="btts_second_half", minute=30),  # below class
+            _make_pick(pick_id=2, market="btts_second_half", minute=50),  # in class
+            _make_pick(pick_id=3, market="btts_second_half", minute=80),  # above class
+        ]
+        df = _df(*rows)
+        empirical = {"btts_second_half": (20, 89)}
+        out = f2_placement_window(df, empirical_windows=empirical)
+        kept = sorted(r["minute"] for r in out.iter_rows(named=True))
+        assert kept == [50]
+
+    def test_f2_no_empirical_uses_class(self):
+        # Backwards-compat: no empirical → class defaults applied
+        rows = [_make_pick(pick_id=1, market="ou_3_5", minute=80)]
+        df = _df(*rows)
+        # Class default [0, 75] — minute 80 dropped
+        assert f2_placement_window(df).height == 0
+
+
+class TestF5WithPolicyBlocks:
+
+    def test_f5_drops_policy_block_cell(self):
+        # Pick in (league=999, market=foo) with explicit block in policy
+        rows = [
+            _make_pick(pick_id=1, fixture_id=1, market="ou_3_5", league_id=999),
+            _make_pick(pick_id=2, fixture_id=2, market="ou_3_5", league_id=8),
+        ]
+        df = _df(*rows)
+        blocks = {(999, "ou_3_5")}
+        out = f5_league_filter(df, policy_blocks=blocks)
+        assert out.height == 1
+        assert out.row(0, named=True)["league_id"] == 8
+
+    def test_f5_drop_league_id_still_applies(self):
+        # Whole-league drop list still fires regardless of policy
+        rows = [_make_pick(pick_id=1, league_id=384, market="ou_3_5")]
+        df = _df(*rows)
+        out = f5_league_filter(df, policy_blocks=None)
+        assert out.height == 0
+
+    def test_f5_no_blocks_passes_through(self):
+        rows = [_make_pick(pick_id=1, league_id=8, market="ou_3_5")]
+        df = _df(*rows)
+        out = f5_league_filter(df, policy_blocks=set())
+        assert out.height == 1
+
+
+class TestScoreWithBonuses:
+
+    def test_score_applies_bonus_multiplier(self):
+        rows = [
+            _make_pick(pick_id=1, league_id=301, market="ou_3_5"),
+            _make_pick(pick_id=2, league_id=8, market="ou_3_5"),
+        ]
+        df = _df(*rows)
+        bonuses = {(301, "ou_3_5"): 1.20}
+        out = score(df, policy_bonuses=bonuses).sort("id")
+        s1, s2 = out.get_column("score").to_list()
+        # s1 (league 301) should be ~20% higher than s2 (league 8)
+        assert s1 > s2
+        # Approximate the ratio (will be exactly 1.20 only if both base scores equal,
+        # but priors differ so check direction)
+        assert s1 / s2 > 1.05
+
+    def test_score_no_bonuses_unchanged(self):
+        rows = [_make_pick(pick_id=1, league_id=301, market="ou_3_5")]
+        df = _df(*rows)
+        s_no_bonus = score(df).get_column("score").to_list()[0]
+        s_empty_bonus = score(df, policy_bonuses={}).get_column("score").to_list()[0]
+        assert s_no_bonus == s_empty_bonus
+
+
+class TestYamlLoaders:
+
+    def test_load_market_windows_missing_file(self, tmp_path: Path):
+        assert load_market_windows(tmp_path / "missing.yaml") == {}
+
+    def test_load_market_windows_parses_correctly(self, tmp_path: Path):
+        import yaml
+        path = tmp_path / "windows.yaml"
+        path.write_text(yaml.safe_dump({
+            "markets": {
+                "ou_3_5": {"window": [10, 49], "n_total": 42},
+                "draw_no_bet": {"window": [20, 59], "n_total": 109},
+                "cards_total_5_5": {"window": None, "n_total": 16},
+            }
+        }))
+        out = load_market_windows(path)
+        assert out["ou_3_5"] == (10, 49)
+        assert out["draw_no_bet"] == (20, 59)
+        assert "cards_total_5_5" not in out
+
+    def test_load_policy_missing_file(self, tmp_path: Path):
+        blocks, bonuses = load_league_market_policy(tmp_path / "missing.yaml")
+        assert blocks == set()
+        assert bonuses == {}
+
+    def test_load_policy_parses_correctly(self, tmp_path: Path):
+        import yaml
+        path = tmp_path / "policy.yaml"
+        path.write_text(yaml.safe_dump({
+            "blocks": [
+                {"league_id": 208, "market": "btts", "n": 12,
+                 "shrunk_roi": -0.5},
+            ],
+            "bonuses": [
+                {"league_id": 301, "market": "ou_3_5", "n": 10,
+                 "multiplier": 1.20},
+            ],
+        }))
+        blocks, bonuses = load_league_market_policy(path)
+        assert (208, "btts") in blocks
+        assert bonuses[(301, "ou_3_5")] == 1.20
+
+
+class TestDiscoverPolicies:
+
+    def test_discover_market_windows_finds_positive_window(self,
+                                                            tmp_path: Path):
+        from scripts.spike.sportmonks.discover_policies import (
+            discover_market_windows,
+        )
+        # Synthetic market with strong signal: positive in min 20-49,
+        # negative in min 60-89
+        rows = []
+        for _ in range(15):  # min 20-29: all win
+            rows.append(_make_pick(market="m1", minute=25,
+                                    status="won", profit_units=1.0))
+        for _ in range(15):  # min 30-39: all win
+            rows.append(_make_pick(market="m1", minute=35,
+                                    status="won", profit_units=1.0))
+        for _ in range(10):  # min 60-69: all lose
+            rows.append(_make_pick(market="m1", minute=65,
+                                    status="lost", profit_units=-1.0))
+        df = _df(*rows)
+        out = discover_market_windows(df, min_n=30)
+        m1 = out["m1"]
+        assert m1["window"] is not None
+        # Window should include positive buckets (20-39), exclude negative (60-69)
+        lo, hi = m1["window"]
+        assert lo <= 20
+        assert hi <= 49  # cuts off before the negative bucket
+
+    def test_discover_falls_back_when_n_below_threshold(self):
+        from scripts.spike.sportmonks.discover_policies import (
+            discover_market_windows,
+        )
+        rows = [_make_pick(market="rare", status="won", profit_units=1.0)
+                for _ in range(5)]
+        df = _df(*rows)
+        out = discover_market_windows(df, min_n=30)
+        assert out["rare"]["window"] is None
+
+    def test_discover_policy_blocks_negative_cells(self, tmp_path: Path):
+        from scripts.spike.sportmonks.discover_policies import (
+            discover_league_market_policy,
+        )
+        # Synthetic: league 999 + market "loser" all lost (n=12)
+        rows = [
+            _make_pick(pick_id=i, fixture_id=1, market="loser",
+                       league_id=999, status="lost", profit_units=-1.0)
+            for i in range(12)
+        ]
+        # Add a baseline market for shrinkage anchoring
+        rows.extend([
+            _make_pick(pick_id=100 + i, fixture_id=2, market="winner",
+                       league_id=999, status="won", profit_units=1.0)
+            for i in range(15)
+        ])
+        df = _df(*rows)
+        out = discover_league_market_policy(df, min_cell_n=10,
+                                             block_threshold=-0.10)
+        block_keys = {(b["league_id"], b["market"]) for b in out["blocks"]}
+        assert (999, "loser") in block_keys

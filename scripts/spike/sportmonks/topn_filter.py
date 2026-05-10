@@ -109,6 +109,21 @@ WINDOW_FIRST_HALF = (0, 30)        # first_half_*, btts_first_half
 WINDOW_SECOND_HALF = (45, 70)      # btts_second_half (need 2H to be live)
 
 
+def _class_default_window(market: str) -> tuple[int, int]:
+    """Return the operational class-default minute window for a market.
+
+    These are the upstream operational guardrails — empirical windows
+    discovered by ``discover_policies`` are INTERSECTED with these to
+    avoid widening beyond what makes sense (e.g., a 2H market still
+    needs minute >= 45 even if data shows positive ROI earlier).
+    """
+    if market.startswith("first_half_") or market == "btts_first_half":
+        return WINDOW_FIRST_HALF
+    if market == "btts_second_half":
+        return WINDOW_SECOND_HALF
+    return WINDOW_FULL_MATCH
+
+
 # ── F3: Edge floor ──────────────────────────────────────────────────────
 # Day-1 edge bucket [10, 12) had ROI -18.12% on n=16 — overconfident model.
 # Bucket [12, 15) flipped to +6.77%. Bucket [15, 20) +13.11%. Floor at 12.
@@ -689,6 +704,88 @@ def enrich_with_signals(
     return joined.drop(["_pick_ts", "_ts"], strict=False)
 
 
+# ── Empirical policy loaders (windows + league/market overrides) ──────
+
+
+WINDOWS_YAML_PATH: Path = Path("configs/topn/market_minute_windows.yaml")
+POLICY_YAML_PATH: Path = Path("configs/topn/league_market_policy.yaml")
+
+
+def load_market_windows(
+    yaml_path: Path = WINDOWS_YAML_PATH,
+) -> dict[str, tuple[int, int]]:
+    """Load empirical per-market minute windows from YAML.
+
+    Returns ``{market: (lo_inclusive, hi_inclusive)}``. Markets with
+    null window in the YAML (n below threshold during discovery) are
+    omitted — caller falls back to ``_class_default_window``.
+
+    No-op (empty dict) if the YAML doesn't exist. The filter then uses
+    only class defaults — preserves backwards compatibility.
+    """
+    if not yaml_path.exists():
+        return {}
+    try:
+        import yaml  # local import — yaml is a soft dependency for the filter
+    except ImportError:
+        return {}
+    payload = yaml.safe_load(yaml_path.read_text()) or {}
+    markets = payload.get("markets", {})
+    out: dict[str, tuple[int, int]] = {}
+    for market, info in markets.items():
+        win = info.get("window") if isinstance(info, dict) else None
+        if win and len(win) == 2:
+            out[market] = (int(win[0]), int(win[1]))
+    return out
+
+
+def load_league_market_policy(
+    yaml_path: Path = POLICY_YAML_PATH,
+) -> tuple[set[tuple[int, str]], dict[tuple[int, str], float]]:
+    """Load (league, market) policy from YAML.
+
+    Returns ``(blocks, bonuses)`` where:
+      blocks : set of (league_id, market) tuples to drop in F5
+      bonuses: dict mapping (league_id, market) → score multiplier
+
+    Empty pair (set(), {}) when the YAML doesn't exist.
+    """
+    if not yaml_path.exists():
+        return set(), {}
+    try:
+        import yaml
+    except ImportError:
+        return set(), {}
+    payload = yaml.safe_load(yaml_path.read_text()) or {}
+    blocks: set[tuple[int, str]] = {
+        (int(b["league_id"]), b["market"])
+        for b in (payload.get("blocks") or [])
+    }
+    bonuses: dict[tuple[int, str], float] = {
+        (int(b["league_id"]), b["market"]): float(b.get("multiplier", 1.0))
+        for b in (payload.get("bonuses") or [])
+    }
+    return blocks, bonuses
+
+
+def market_window(
+    market: str, empirical: dict[str, tuple[int, int]] | None = None,
+) -> tuple[int, int]:
+    """Final minute window for a market = empirical INTERSECT class default.
+
+    If empirical is None or doesn't include this market, returns class
+    default unchanged. Intersection means we never widen beyond
+    operational guardrails (e.g., 2H markets stay >= minute 45).
+    """
+    cls_win = _class_default_window(market)
+    if empirical is None:
+        return cls_win
+    emp = empirical.get(market)
+    if emp is None:
+        return cls_win
+    return (max(cls_win[0], emp[0]), min(cls_win[1], emp[1]))
+
+
 # ── Cascade ─────────────────────────────────────────────────────────────
 
 
@@ -705,17 +802,39 @@ def f1_market_whitelist(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def f2_placement_window(df: pl.DataFrame) -> pl.DataFrame:
-    """Per-market-class minute cutoffs."""
-    is_fh = pl.col("market").str.starts_with("first_half_") | (
-        pl.col("market") == "btts_first_half"
-    )
-    is_2h = pl.col("market") == "btts_second_half"
-    return df.filter(
-        (is_fh & pl.col("minute").is_between(*WINDOW_FIRST_HALF))
-        | (is_2h & pl.col("minute").is_between(*WINDOW_SECOND_HALF))
-        | (~is_fh & ~is_2h & pl.col("minute").is_between(*WINDOW_FULL_MATCH))
-    )
+def f2_placement_window(
+    df: pl.DataFrame,
+    empirical_windows: dict[str, tuple[int, int]] | None = None,
+) -> pl.DataFrame:
+    """Per-market minute cutoffs.
+
+    Default behavior (no empirical_windows): uses class-default windows
+    only — 3 buckets (full-match, first-half, second-half).
+
+    With empirical_windows: per-market window = empirical INTERSECT
+    class default. Markets without an empirical entry get the class
+    default unchanged. Intersection ensures we never widen beyond
+    operational guardrails.
+    """
+    if df.is_empty():
+        return df
+    if empirical_windows is None:
+        empirical_windows = {}
+
+    # Build per-row [lo, hi] from market lookup, then filter
+    markets = df.get_column("market").to_list()
+    los = []
+    his = []
+    for m in markets:
+        lo, hi = market_window(m, empirical_windows)
+        los.append(lo)
+        his.append(hi)
+    return df.with_columns([
+        pl.Series("_win_lo", los, dtype=pl.Int64),
+        pl.Series("_win_hi", his, dtype=pl.Int64),
+    ]).filter(
+        pl.col("minute").is_between(pl.col("_win_lo"), pl.col("_win_hi"))
+    ).drop(["_win_lo", "_win_hi"])
 
 
 def f3_edge_floor(df: pl.DataFrame) -> pl.DataFrame:
@@ -728,23 +847,55 @@ def f4_odd_band(df: pl.DataFrame) -> pl.DataFrame:
     return df.filter(pl.col("bookmaker_odd").is_between(ODD_FLOOR, ODD_CEIL))
 
 
-def f5_league_filter(df: pl.DataFrame) -> pl.DataFrame:
-    """Drop proven-negative leagues. No-op if league_id missing."""
+def f5_league_filter(
+    df: pl.DataFrame,
+    policy_blocks: set[tuple[int, str]] | None = None,
+) -> pl.DataFrame:
+    """Drop proven-negative leagues + (league, market) cells from policy.
+
+    - Drops any pick whose league_id is in DROP_LEAGUE_IDS (whole-league)
+    - Drops any pick whose (league_id, market) is in policy_blocks
+      (granular cell-level block from discover_policies)
+
+    No-op on league_id when the column is missing.
+    """
     if "league_id" not in df.columns:
         return df
-    return df.filter(
+
+    out = df.filter(
         pl.col("league_id").is_null()
         | ~pl.col("league_id").is_in(list(DROP_LEAGUE_IDS))
     )
+    if not policy_blocks:
+        return out
+
+    # Build a (league_id, market) key per row, then filter out matches
+    rows = list(zip(
+        out.get_column("league_id").to_list(),
+        out.get_column("market").to_list(),
+    ))
+    keep_mask = [(int(lid), m) not in policy_blocks if lid is not None else True
+                 for lid, m in rows]
+    return out.filter(pl.Series(keep_mask))
 
 
-def apply_cascade(df: pl.DataFrame) -> pl.DataFrame:
-    """Apply F1→F5 in order. Returns the surviving candidate set."""
+def apply_cascade(
+    df: pl.DataFrame,
+    empirical_windows: dict[str, tuple[int, int]] | None = None,
+    policy_blocks: set[tuple[int, str]] | None = None,
+) -> pl.DataFrame:
+    """Apply F1→F5 in order. Returns the surviving candidate set.
+
+    Optional empirical policy from discover_policies:
+    - empirical_windows: per-market minute window override (intersected
+      with class default in F2)
+    - policy_blocks: (league_id, market) cells to drop in F5
+    """
     out = f1_market_whitelist(df)
-    out = f2_placement_window(out)
+    out = f2_placement_window(out, empirical_windows=empirical_windows)
     out = f3_edge_floor(out)
     out = f4_odd_band(out)
-    out = f5_league_filter(out)
+    out = f5_league_filter(out, policy_blocks=policy_blocks)
     return out
 
 
@@ -756,6 +907,7 @@ def score(
     market_priors: dict[str, tuple[float, int]] | None = None,
     league_priors: dict[int, tuple[float, int]] | None = None,
     edge_calibrator: Callable[[float], float] | None = None,
+    policy_bonuses: dict[tuple[int, str], float] | None = None,
 ) -> pl.DataFrame:
     """Compute composite score per pick. Adds 'score' column.
 
@@ -788,7 +940,7 @@ def score(
         obs, n = league_priors.get(league_id, (GLOBAL_PRIOR_ROI, 0))
         return shrunk_roi(obs, n, k=40)  # heavier shrinkage on leagues
 
-    return df.with_columns([
+    scored = df.with_columns([
         pl.col("market").map_elements(_market_score, return_dtype=pl.Float64)
             .alias("_market_roi"),
         (pl.col("league_id") if "league_id" in df.columns else pl.lit(None))
@@ -816,6 +968,22 @@ def score(
             + 0.05 * pl.col("_time_k")
         ).alias("score")
     ])
+
+    # Apply (league, market) policy bonuses — multiply final score for
+    # cells in the bonus list. No-op if policy_bonuses is None or empty.
+    if policy_bonuses and "league_id" in scored.columns:
+        rows = list(zip(
+            scored.get_column("league_id").to_list(),
+            scored.get_column("market").to_list(),
+        ))
+        multipliers = [
+            policy_bonuses.get((int(lid), m), 1.0) if lid is not None else 1.0
+            for lid, m in rows
+        ]
+        scored = scored.with_columns(
+            (pl.col("score") * pl.Series(multipliers)).alias("score")
+        )
+    return scored
 
 
 # ── Top-N selection with distribution constraints ─────────────────────
@@ -957,17 +1125,20 @@ def placement_schedule(
 
 def cascade_summary(
     df: pl.DataFrame,
+    empirical_windows: dict[str, tuple[int, int]] | None = None,
+    policy_blocks: set[tuple[int, str]] | None = None,
 ) -> dict[str, dict[str, float | int]]:
     """Per-stage survival counts + ROI on graded subset (retro-validation)."""
     stages: list[tuple[str, pl.DataFrame]] = [("raw", df)]
     cur = df
-    for name, fn in (
-        ("after_F1_market", f1_market_whitelist),
-        ("after_F2_window", f2_placement_window),
-        ("after_F3_edge",   f3_edge_floor),
-        ("after_F4_odd",    f4_odd_band),
-        ("after_F5_league", f5_league_filter),
-    ):
+    stage_fns = [
+        ("after_F1_market", lambda d: f1_market_whitelist(d)),
+        ("after_F2_window", lambda d: f2_placement_window(d, empirical_windows)),
+        ("after_F3_edge",   lambda d: f3_edge_floor(d)),
+        ("after_F4_odd",    lambda d: f4_odd_band(d)),
+        ("after_F5_league", lambda d: f5_league_filter(d, policy_blocks)),
+    ]
+    for name, fn in stage_fns:
         cur = fn(cur)
         stages.append((name, cur))
 
@@ -1203,6 +1374,16 @@ def _parse_args() -> argparse.Namespace:
                    default=SNAPSHOTS_DERIVED_PATH,
                    help="Path to snapshots_derived.parquet (run analyze_jornada "
                         "first to populate).")
+    p.add_argument("--windows-yaml", type=Path, default=WINDOWS_YAML_PATH,
+                   help="Empirical per-market minute windows from "
+                        "discover_policies. Missing → class defaults only.")
+    p.add_argument("--policy-yaml", type=Path, default=POLICY_YAML_PATH,
+                   help="(league, market) policy from discover_policies. "
+                        "Missing → no cell-level overrides.")
+    p.add_argument("--no-empirical-windows", action="store_true",
+                   help="Ignore windows YAML even if present (use class defaults).")
+    p.add_argument("--no-policy", action="store_true",
+                   help="Ignore policy YAML (no blocks/bonuses).")
     return p.parse_args()
 
 
@@ -1262,13 +1443,29 @@ def main() -> int:
         with_league = df.filter(pl.col("league_id").is_not_null()).height
         print(f"[enrich] {with_league}/{df.height} picks have league_id")
 
-    cascade_stats = cascade_summary(df)
+    # Load empirical policies (windows + blocks/bonuses) — both optional
+    empirical_windows: dict[str, tuple[int, int]] = {}
+    policy_blocks: set[tuple[int, str]] = set()
+    policy_bonuses: dict[tuple[int, str], float] = {}
+
+    if not args.no_empirical_windows:
+        empirical_windows = load_market_windows(args.windows_yaml)
+        if empirical_windows:
+            print(f"[windows] loaded {len(empirical_windows)} per-market "
+                  f"empirical windows from {args.windows_yaml}")
+    if not args.no_policy:
+        policy_blocks, policy_bonuses = load_league_market_policy(args.policy_yaml)
+        if policy_blocks or policy_bonuses:
+            print(f"[policy] loaded {len(policy_blocks)} blocks + "
+                  f"{len(policy_bonuses)} bonuses from {args.policy_yaml}")
+
+    cascade_stats = cascade_summary(df, empirical_windows, policy_blocks)
     print("\n[cascade]")
     for stage, agg in cascade_stats.items():
         print(f"  {stage:20s} n={agg['n']:4d} graded={agg['graded']:4d} "
               f"won={agg['won']:4d} pl={agg['pl']:+7.2f} roi={agg['roi_pct']:+6.2f}%")
 
-    survivors = apply_cascade(df)
+    survivors = apply_cascade(df, empirical_windows, policy_blocks)
     if survivors.is_empty():
         print("[score] no survivors — nothing to score")
         return 1
@@ -1277,7 +1474,8 @@ def main() -> int:
     print(f"[score] priors source: {source}")
     scored = score(survivors, market_priors=market_priors,
                    league_priors=league_priors,
-                   edge_calibrator=edge_cal)
+                   edge_calibrator=edge_cal,
+                   policy_bonuses=policy_bonuses)
     top = top_n(
         scored,
         n=args.top_n,
