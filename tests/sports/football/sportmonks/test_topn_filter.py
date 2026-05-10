@@ -1040,3 +1040,90 @@ class TestEdgeCalibration:
         out = score(df, edge_calibrator=cal)
         s1, s2 = out.sort("id").get_column("score").to_list()
         assert s2 - s1 == pytest.approx(0.20, abs=0.01)
+
+
+# ── Drift report (Lote C) ─────────────────────────────────────────────
+
+
+class TestDriftReport:
+
+    def test_empty_cache_returns_error(self, tmp_path: Path):
+        from scripts.spike.sportmonks.drift_report import compute_drift
+        result = compute_drift(cache_path=tmp_path / "missing.parquet")
+        assert result["error"] is not None
+        assert result["n_snapshots"] == 0
+
+    def test_single_snapshot_returns_error(self, tmp_path: Path):
+        from scripts.spike.sportmonks.drift_report import compute_drift
+        cache_path = tmp_path / "priors.parquet"
+        cache_priors({"ou_3_5": (0.50, 30)}, {}, cache_path)
+        result = compute_drift(cache_path=cache_path)
+        assert result["n_snapshots"] == 1
+        assert "need at least 2" in result["error"]
+
+    def test_two_snapshots_compute_drift(self, tmp_path: Path):
+        from scripts.spike.sportmonks.drift_report import compute_drift
+        cache_path = tmp_path / "priors.parquet"
+        cache_priors({"ou_3_5": (0.50, 30), "btts": (-0.30, 20)}, {},
+                     cache_path)
+        # Force timestamp difference for second snapshot
+        import time as _t
+        _t.sleep(0.01)
+        # Use values that avoid float precision issues at threshold boundaries
+        cache_priors({"ou_3_5": (0.43, 50), "btts": (-0.15, 40)}, {},
+                     cache_path)
+        result = compute_drift(cache_path=cache_path)
+        assert result["error"] is None
+        assert result["n_snapshots"] == 2
+        # ou_3_5: 0.50 → 0.43 = -7pp (drifting)
+        ou = next(r for r in result["rows"] if r["key"] == "ou_3_5")
+        assert ou["delta_roi_pp"] == pytest.approx(-7.0, abs=0.1)
+        assert ou["delta_n"] == 20
+        assert ou["status"] == "drifting"
+        # btts: -0.30 → -0.15 = +15pp (alert)
+        btts = next(r for r in result["rows"] if r["key"] == "btts")
+        assert btts["delta_roi_pp"] == pytest.approx(15.0, abs=0.1)
+        assert btts["status"] == "alert"
+
+    def test_status_thresholds(self, tmp_path: Path):
+        from scripts.spike.sportmonks.drift_report import compute_drift
+        cache_path = tmp_path / "priors.parquet"
+        cache_priors({
+            "stable_market":   (0.10, 20),
+            "drifting_market": (0.10, 20),
+            "alert_market":    (0.10, 20),
+        }, {}, cache_path)
+        import time as _t
+        _t.sleep(0.01)
+        cache_priors({
+            "stable_market":   (0.12, 30),  # +2pp → stable
+            "drifting_market": (0.17, 30),  # +7pp → drifting
+            "alert_market":    (0.25, 30),  # +15pp → alert
+        }, {}, cache_path)
+        result = compute_drift(cache_path=cache_path)
+        by_key = {r["key"]: r for r in result["rows"]}
+        assert by_key["stable_market"]["status"] == "stable"
+        assert by_key["drifting_market"]["status"] == "drifting"
+        assert by_key["alert_market"]["status"] == "alert"
+
+    def test_new_and_dropped_keys(self, tmp_path: Path):
+        from scripts.spike.sportmonks.drift_report import compute_drift
+        cache_path = tmp_path / "priors.parquet"
+        cache_priors({"old_market": (0.20, 15)}, {}, cache_path)
+        import time as _t
+        _t.sleep(0.01)
+        cache_priors({"new_market": (0.30, 10)}, {}, cache_path)
+        result = compute_drift(cache_path=cache_path)
+        statuses = {r["key"]: r["status"] for r in result["rows"]}
+        assert statuses["old_market"] == "dropped"
+        assert statuses["new_market"] == "new"
+
+    def test_kind_filter(self, tmp_path: Path):
+        from scripts.spike.sportmonks.drift_report import compute_drift
+        cache_path = tmp_path / "priors.parquet"
+        cache_priors({"m1": (0.10, 20)}, {1: (0.20, 30)}, cache_path)
+        import time as _t
+        _t.sleep(0.01)
+        cache_priors({"m1": (0.15, 30)}, {1: (0.25, 40)}, cache_path)
+        result = compute_drift(cache_path=cache_path, kind_filter="market")
+        assert all(r["kind"] == "market" for r in result["rows"])
