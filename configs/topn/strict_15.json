@@ -1,0 +1,10 @@
+{
+  "name": "strict (minute≤70, top-15)",
+  "top_n": 15,
+  "max_per_fixture": 2,
+  "max_per_window": 3,
+  "dedup": true,
+  "use_live_priors": false,
+  "edge_floor_pct": 15.0,
+  "window_full_match": [0, 70]
+}

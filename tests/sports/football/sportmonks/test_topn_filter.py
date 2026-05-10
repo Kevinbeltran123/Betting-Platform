@@ -4,11 +4,16 @@ Uses synthetic Polars DataFrames mimicking the picks_graded schema. Real-data
 validation lives in ``analyze_jornada.py`` reruns against picks.db.
 
 Test plan covers each F1-F5 filter behavior, the Bayesian shrinkage helper,
-the non-monotonic logical kernel, and the Top-N selection's per-fixture
-+ per-window quotas.
+the non-monotonic logical kernel, the Top-N selection's per-fixture +
+per-window quotas, dedup, dynamic priors recomputation, and signal
+enrichment.
 """
 
 from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -21,13 +26,19 @@ from scripts.spike.sportmonks.topn_filter import (
     KEEP_UNCOND,
     ODD_CEIL,
     ODD_FLOOR,
+    SIGNAL_COLUMNS,
     apply_cascade,
+    cache_priors,
     calibrated_edge,
+    compute_market_priors_from_db,
+    dedup_picks,
+    enrich_with_signals,
     f1_market_whitelist,
     f2_placement_window,
     f3_edge_floor,
     f4_odd_band,
     f5_league_filter,
+    load_cached_priors,
     logical_kernel,
     odd_kernel,
     score,
@@ -425,8 +436,12 @@ class TestTopN:
         assert top_n(df, n=10, max_per_window=10).height == 10
 
     def test_max_per_fixture_enforced(self):
-        # 5 picks on same fixture → only 3 should survive with cap=3
-        rows = [_make_pick(pick_id=i, fixture_id=999,
+        # 5 distinct (market, selection) bets on same fixture; cap=3 must bind.
+        # Use distinct markets so dedup doesn't collapse them.
+        markets = ["ou_3_5", "cards_total_4_5", "ou_2_5",
+                   "first_half_ou_0_5", "team_to_score_first"]
+        rows = [_make_pick(pick_id=i, fixture_id=999, market=markets[i],
+                           selection="under" if i < 4 else "home",
                            minute=20 + i, edge_pct=30.0 - i)
                 for i in range(5)]
         df = score(_df(*rows))
@@ -463,3 +478,304 @@ class TestTopN:
     def test_empty_input_returns_empty(self):
         df = pl.DataFrame()
         assert top_n(df, n=25).is_empty()
+
+
+# ── Smart dedup ────────────────────────────────────────────────────────
+
+
+class TestDedupPicks:
+
+    def test_duplicate_collapsed_to_highest_score(self):
+        # Same (fixture, market, selection) emitted at min 62 and 72.
+        # Day-1 case: Athletic-Valencia ttsf/home losers — highest scoring
+        # one wins, the other dropped.
+        rows = [
+            _make_pick(pick_id=1, fixture_id=999, market="team_to_score_first",
+                       selection="home", minute=62, edge_pct=27.0),
+            _make_pick(pick_id=2, fixture_id=999, market="team_to_score_first",
+                       selection="home", minute=72, edge_pct=31.0),
+        ]
+        df = score(_df(*rows))
+        out = dedup_picks(df)
+        assert out.height == 1
+
+    def test_different_selections_preserved(self):
+        # ftr/home vs ftr/away on same fixture are DIFFERENT bets
+        rows = [
+            _make_pick(pick_id=1, fixture_id=999, market="fulltime_result",
+                       selection="home", edge_pct=20.0),
+            _make_pick(pick_id=2, fixture_id=999, market="fulltime_result",
+                       selection="away", edge_pct=22.0),
+        ]
+        df = score(_df(*rows))
+        assert dedup_picks(df).height == 2
+
+    def test_different_markets_preserved(self):
+        rows = [
+            _make_pick(pick_id=1, fixture_id=999, market="ou_3_5",
+                       selection="under", edge_pct=20.0),
+            _make_pick(pick_id=2, fixture_id=999, market="ou_2_5",
+                       selection="under", edge_pct=22.0),
+        ]
+        df = score(_df(*rows))
+        assert dedup_picks(df).height == 2
+
+    def test_top_n_dedup_default_on(self):
+        # 5 duplicate emissions of same bet → only 1 selected
+        rows = [
+            _make_pick(pick_id=i, fixture_id=999,
+                       market="ou_3_5", selection="under",
+                       minute=20 + i, edge_pct=25.0)
+            for i in range(5)
+        ]
+        df = score(_df(*rows))
+        out = top_n(df, n=10, dedup=True)
+        assert out.height == 1
+
+    def test_top_n_dedup_off_keeps_dupes(self):
+        rows = [
+            _make_pick(pick_id=i, fixture_id=999,
+                       market="ou_3_5", selection="under",
+                       minute=20 + i, edge_pct=25.0)
+            for i in range(5)
+        ]
+        df = score(_df(*rows))
+        # max_per_fixture=3 still binds even without dedup
+        out = top_n(df, n=10, dedup=False)
+        assert out.height == 3
+
+    def test_dedup_empty_dataframe(self):
+        assert dedup_picks(pl.DataFrame()).is_empty()
+
+    def test_dedup_works_pre_score(self):
+        # No 'score' column → falls back to edge_pct sort
+        rows = [
+            _make_pick(pick_id=1, fixture_id=999, market="ou_3_5",
+                       selection="under", edge_pct=20.0),
+            _make_pick(pick_id=2, fixture_id=999, market="ou_3_5",
+                       selection="under", edge_pct=30.0),
+        ]
+        df = _df(*rows)
+        out = dedup_picks(df)
+        assert out.height == 1
+        assert out.row(0, named=True)["edge_pct"] == 30.0
+
+
+# ── Dynamic priors from DB ─────────────────────────────────────────────
+
+
+@pytest.fixture
+def synthetic_picks_db(tmp_path: Path) -> Path:
+    """Build a temp picks.db with known per-market ROI for testing priors."""
+    db = tmp_path / "picks.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("""
+            CREATE TABLE picks (
+                id INTEGER PRIMARY KEY,
+                fixture_id INTEGER,
+                home_team TEXT,
+                away_team TEXT,
+                market TEXT,
+                selection TEXT,
+                minute INTEGER,
+                bookmaker_odd REAL,
+                our_probability REAL,
+                edge_pct REAL,
+                logical_score REAL,
+                status TEXT,
+                profit_units REAL,
+                emitted_at TEXT
+            )
+        """)
+        # ou_3_5: 10 won @ +0.80, 0 lost → ROI = +0.80
+        # btts: 1 won @ +1.00, 9 lost @ -1.00 → ROI = -0.80
+        # rare_market: only 3 graded (below PRIORS_MIN_N=5) → excluded
+        rows = []
+        for i in range(10):
+            rows.append((100 + i, 1, "H", "A", "ou_3_5", "under", 30, 1.80,
+                         0.70, 25.0, 0.65, "won", 0.80,
+                         "2026-05-10T13:00:00Z"))
+        rows.append((200, 2, "H", "A", "btts", "yes", 30, 2.00, 0.65, 30.0,
+                     0.55, "won", 1.00, "2026-05-10T13:00:00Z"))
+        for i in range(9):
+            rows.append((201 + i, 2, "H", "A", "btts", "yes", 30, 2.00, 0.65,
+                         30.0, 0.55, "lost", -1.00, "2026-05-10T13:00:00Z"))
+        for i in range(3):
+            rows.append((300 + i, 3, "H", "A", "rare_market", "x", 30, 1.50,
+                         0.74, 15.0, 0.60, "won", 0.50,
+                         "2026-05-10T13:00:00Z"))
+        conn.executemany(
+            "INSERT INTO picks (id, fixture_id, home_team, away_team, market, "
+            "selection, minute, bookmaker_odd, our_probability, edge_pct, "
+            "logical_score, status, profit_units, emitted_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+    return db
+
+
+class TestComputePriors:
+
+    def test_recomputes_per_market_roi(self, synthetic_picks_db: Path):
+        priors = compute_market_priors_from_db(synthetic_picks_db)
+        assert "ou_3_5" in priors
+        roi, n = priors["ou_3_5"]
+        assert n == 10
+        assert roi == pytest.approx(0.80)
+
+    def test_negative_roi_correctly_computed(self, synthetic_picks_db: Path):
+        priors = compute_market_priors_from_db(synthetic_picks_db)
+        assert "btts" in priors
+        roi, n = priors["btts"]
+        assert n == 10
+        # 1×(+1.00) + 9×(-1.00) = -8.00 across 10 = -0.80
+        assert roi == pytest.approx(-0.80)
+
+    def test_below_min_n_dropped(self, synthetic_picks_db: Path):
+        priors = compute_market_priors_from_db(synthetic_picks_db)
+        # rare_market has only 3 picks (< PRIORS_MIN_N=5) → excluded
+        assert "rare_market" not in priors
+
+
+# ── Priors cache (parquet roundtrip) ───────────────────────────────────
+
+
+class TestPriorsCache:
+
+    def test_roundtrip(self, tmp_path: Path):
+        market_in = {"ou_3_5": (0.50, 30), "btts": (-0.30, 20)}
+        league_in = {301: (0.25, 100), 8: (0.20, 80)}
+        cache_path = tmp_path / "priors.parquet"
+        cache_priors(market_in, league_in, cache_path)
+        loaded = load_cached_priors(cache_path)
+        assert loaded is not None
+        market_out, league_out = loaded
+        assert market_out["ou_3_5"][0] == pytest.approx(0.50)
+        assert market_out["ou_3_5"][1] == 30
+        assert league_out[301][0] == pytest.approx(0.25)
+
+    def test_load_missing_returns_none(self, tmp_path: Path):
+        assert load_cached_priors(tmp_path / "missing.parquet") is None
+
+    def test_append_preserves_history(self, tmp_path: Path):
+        cache_path = tmp_path / "priors.parquet"
+        cache_priors({"ou_3_5": (0.50, 10)}, {}, cache_path)
+        cache_priors({"ou_3_5": (0.55, 20)}, {}, cache_path)
+        # Both snapshots in the cache; load returns latest
+        full = pl.read_parquet(cache_path)
+        assert full.height == 2  # 2 market entries (1 per snapshot)
+        loaded = load_cached_priors(cache_path)
+        assert loaded is not None
+        market_out, _ = loaded
+        # Latest is 0.55
+        assert market_out["ou_3_5"][0] == pytest.approx(0.55)
+
+
+# ── Signal enrichment ─────────────────────────────────────────────────
+
+
+@pytest.fixture
+def synthetic_snapshots(tmp_path: Path) -> Path:
+    """Build a synthetic snapshots_derived.parquet for enrichment tests."""
+    rows = [
+        # fixture 100: 3 snapshots at minute 25, 30, 35 (timestamps approx)
+        {"fixture_id": 100, "snapshot_taken_at": "2026-05-10T13:25:00+00:00",
+         "informational_density": 0.10, "home_momentum": 0.50,
+         "away_momentum": 0.50, "home_shot_acceleration": 0.0,
+         "away_shot_acceleration": 0.0, "home_set_piece_intensity": 0.5,
+         "away_set_piece_intensity": 0.5, "home_killing_clock": False,
+         "away_killing_clock": False},
+        {"fixture_id": 100, "snapshot_taken_at": "2026-05-10T13:30:00+00:00",
+         "informational_density": 0.20, "home_momentum": 0.80,
+         "away_momentum": 0.20, "home_shot_acceleration": 0.5,
+         "away_shot_acceleration": 0.0, "home_set_piece_intensity": 0.8,
+         "away_set_piece_intensity": 0.5, "home_killing_clock": False,
+         "away_killing_clock": False},
+        {"fixture_id": 100, "snapshot_taken_at": "2026-05-10T13:35:00+00:00",
+         "informational_density": 0.30, "home_momentum": 0.70,
+         "away_momentum": 0.30, "home_shot_acceleration": 0.3,
+         "away_shot_acceleration": 0.1, "home_set_piece_intensity": 0.6,
+         "away_set_piece_intensity": 0.5, "home_killing_clock": True,
+         "away_killing_clock": False},
+    ]
+    path = tmp_path / "snapshots_derived.parquet"
+    pl.DataFrame(rows).write_parquet(path)
+    return path
+
+
+class TestSignalEnrichment:
+
+    def test_attaches_signal_columns(self, synthetic_snapshots: Path):
+        pick = _make_pick(pick_id=1, fixture_id=100, minute=30)
+        pick["emitted_at"] = "2026-05-10T13:30:01+00:00"
+        df = _df(pick)
+        out = enrich_with_signals(df, synthetic_snapshots)
+        for col in SIGNAL_COLUMNS:
+            assert col in out.columns, f"missing {col}"
+
+    def test_picks_nearest_snapshot(self, synthetic_snapshots: Path):
+        # Pick at 13:30:01 should match the 13:30:00 snapshot
+        pick = _make_pick(pick_id=1, fixture_id=100, minute=30)
+        pick["emitted_at"] = "2026-05-10T13:30:01+00:00"
+        df = _df(pick)
+        out = enrich_with_signals(df, synthetic_snapshots)
+        assert out.row(0, named=True)["informational_density"] == pytest.approx(0.20)
+        assert out.row(0, named=True)["home_momentum"] == pytest.approx(0.80)
+
+    def test_killing_clock_preserved_as_bool(self, synthetic_snapshots: Path):
+        pick = _make_pick(pick_id=1, fixture_id=100, minute=35)
+        pick["emitted_at"] = "2026-05-10T13:35:00+00:00"
+        df = _df(pick)
+        out = enrich_with_signals(df, synthetic_snapshots)
+        assert out.row(0, named=True)["home_killing_clock"] is True
+
+    def test_missing_parquet_no_op(self, tmp_path: Path):
+        pick = _make_pick(pick_id=1, fixture_id=100)
+        pick["emitted_at"] = "2026-05-10T13:30:00+00:00"
+        df = _df(pick)
+        out = enrich_with_signals(df, tmp_path / "nope.parquet")
+        # No signal cols added
+        assert "informational_density" not in out.columns
+
+    def test_missing_emitted_at_no_op(self, synthetic_snapshots: Path):
+        pick = _make_pick(pick_id=1, fixture_id=100)
+        # Drop emitted_at
+        pick.pop("emitted_at", None)
+        df = _df(pick)
+        out = enrich_with_signals(df, synthetic_snapshots)
+        assert "informational_density" not in out.columns
+
+
+# ── A/B comparison harness (smoke test) ───────────────────────────────
+
+
+class TestComparison:
+
+    def test_compare_smoke(self, synthetic_picks_db: Path, tmp_path: Path,
+                            monkeypatch):
+        """End-to-end compare two configs; verify it returns sane shape."""
+        from scripts.spike.sportmonks.compare_topn import (
+            FilterConfig, compare,
+        )
+        # Stub league enrichment (synthetic db has no snapshots)
+        from scripts.spike.sportmonks import topn_filter as tf
+
+        def _no_league(df, *_a, **_k):
+            return df.with_columns(pl.lit(None).cast(pl.Int64).alias("league_id"))
+
+        monkeypatch.setattr(tf, "enrich_with_league", _no_league)
+        monkeypatch.setattr(
+            "scripts.spike.sportmonks.compare_topn.enrich_with_league",
+            _no_league,
+        )
+
+        cfg_a = FilterConfig(name="baseline", top_n=5)
+        cfg_b = FilterConfig(name="strict", top_n=3)
+
+        result = compare(cfg_a, cfg_b, db_path=synthetic_picks_db)
+        assert "verdict" in result
+        assert "a" in result and "b" in result
+        assert result["a"]["name"] == "baseline"
+        assert result["b"]["name"] == "strict"
+        # B has tighter cap so should have ≤ A
+        assert result["b"]["n"] <= result["a"]["n"]

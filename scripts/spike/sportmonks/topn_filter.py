@@ -9,25 +9,37 @@ The cascade is calibrated against Day-1 numbers — every threshold has an
 empirical justification documented in the constant block. Re-tune with
 ``analyze_jornada.py`` re-graded data after Day-3 / Day-7.
 
+Pipeline stages:
+  load_picks → enrich_with_league → apply_cascade (F1-F5)
+    → score (Bayesian-shrunk priors, optionally live-recomputed)
+    → top_n (greedy with dedup + per-fixture/window quotas)
+    → enrich_with_signals (momentum, info_density, killing_clock for output)
+
 Usage::
 
-    # CLI on the live picks DB
+    # CLI on the live picks DB (uses Day-1 hardcoded priors)
     uv run python -m scripts.spike.sportmonks.topn_filter
+
+    # Use live-recomputed priors from picks.db (Day-3+)
+    uv run python -m scripts.spike.sportmonks.topn_filter --use-live-priors
 
     # Programmatic
     from scripts.spike.sportmonks.topn_filter import (
         load_picks, apply_cascade, score, top_n,
+        compute_market_priors_from_db,
+        enrich_with_signals,
     )
     df = load_picks()
     df = apply_cascade(df)
-    df = score(df)
-    top = top_n(df, n=25)
+    df = score(df, market_priors=compute_market_priors_from_db())
+    top = enrich_with_signals(top_n(df, n=25))
 
 Outputs (CLI):
 - Markdown summary at ``reports/sportmonks_live/topn_{date}.md``
 - Parquet of top-25 at ``reports/sportmonks_live/exports/topn_picks.parquet``
+- Cached priors at ``data/cache/sportmonks/priors.parquet`` (when --use-live-priors)
 
-Read-only: never mutates picks.db, never modifies cache files.
+Read-only on picks.db and cache files; only writes to reports/ and priors cache.
 """
 
 from __future__ import annotations
@@ -36,7 +48,8 @@ import argparse
 import json
 import sqlite3
 import sys
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -124,8 +137,12 @@ GLOBAL_PRIOR_ROI: float = 0.10
 SHRINKAGE_K: int = 30
 
 
-# ── Day-1 market priors (frozen — used for pre-Day-2 scoring) ─────────
-# These get overwritten if `analyze_jornada.py` produces a fresher snapshot.
+# ── Day-1 market priors (FALLBACK ONLY — prefer --use-live-priors) ────
+# Hand-typed from the strategy doc §2. Verified to MATCH the live picks.db
+# recompute for markets (16 markets, all <0.001 abs drift) but DRIFTS for
+# leagues — see DAY1_LEAGUE_ROI note below. Use these only when picks.db
+# is unavailable (testing, comparison baseline, or fallback when live
+# recompute returns empty).
 DAY1_MARKET_ROI: dict[str, tuple[float, int]] = {
     "ou_3_5":              (0.7369, 42),
     "cards_total_4_5":     (0.6295, 21),
@@ -146,6 +163,21 @@ DAY1_MARKET_ROI: dict[str, tuple[float, int]] = {
 }
 
 DAY1_LEAGUE_ROI: dict[int, tuple[float, int]] = {
+    # ⚠️ KNOWN DRIFT vs live picks.db. Strategy doc §2 reported these but
+    # the actual DB shows materially different numbers (see _drift_log
+    # in compute_league_priors_from_db). Kept here for reproducibility of
+    # the strategy doc but --use-live-priors (CLI default) supersedes them.
+    #
+    # League ID | Doc §2     | Live (Day-1)   | Drift
+    # ----------|------------|----------------|-------
+    # 8 (EPL)   | +20.93% 61 | +4.24% 62      | -16.7pp ← significant
+    # 82 (BL)   | +14.51% 94 | -0.43% 95      | -14.9pp ← significant
+    # 301 (L1)  | +25.40% 178| +17.40% 178    |  -8.0pp
+    # 564 (LL)  | +65.24% 34 | +96.62% 34     | +31.4pp ← favorable
+    # 384 (SA)  |  -6.62% 52 | -23.02% 52     | -16.4pp ← much worse
+    #
+    # Plus ~14 leagues that exist in live data but not in the §2 list.
+    # Conclusion: live priors are SOURCE OF TRUTH; hardcoded is fallback.
     301:  (0.2540, 178),  # Ligue 1
     82:   (0.1451, 94),   # Bundesliga
     8:    (0.2093, 61),   # EPL
@@ -290,6 +322,217 @@ def enrich_with_league(
     return df.join(league_df, on="fixture_id", how="left")
 
 
+# ── Dynamic priors (recomputed from picks.db) ──────────────────────────
+
+
+PRIORS_CACHE_PATH: Path = (
+    Path(__file__).resolve().parent.parent.parent.parent
+    / "data" / "cache" / "sportmonks" / "priors.parquet"
+)
+"""Persistent location for live-recomputed priors snapshot."""
+
+PRIORS_MIN_N: int = 5
+"""Minimum graded picks for a market/league to enter the priors dict.
+
+Below this, the global GLOBAL_PRIOR_ROI fires automatically via shrinkage.
+"""
+
+
+def _aggregate_priors(
+    rows: list[tuple[str | int | None, float | None]],
+) -> dict:
+    """Group (key, profit_units) rows into {key: (mean_roi, n)} dict."""
+    by: dict = defaultdict(list)
+    for key, pl_units in rows:
+        if key is None:
+            continue
+        by[key].append(pl_units or 0.0)
+    return {
+        k: (sum(v) / len(v), len(v))
+        for k, v in by.items()
+        if len(v) >= PRIORS_MIN_N
+    }
+
+
+def compute_market_priors_from_db(
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, tuple[float, int]]:
+    """Recompute observed ROI per market from current graded picks.
+
+    Walks all (won, lost) picks — voids excluded since they refund stake
+    and don't carry signal about market quality. Returns the same shape as
+    DAY1_MARKET_ROI: ``{market: (roi_decimal, n)}``.
+
+    Markets with n < PRIORS_MIN_N are dropped (the global prior fires via
+    shrinkage when scoring a pick from such a market).
+    """
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT market, profit_units FROM picks "
+            "WHERE status IN ('won', 'lost')"
+        ).fetchall()
+    return _aggregate_priors(rows)
+
+
+def compute_league_priors_from_db(
+    db_path: Path = DEFAULT_DB_PATH,
+    cache_root: Path = DEFAULT_CACHE_ROOT,
+) -> dict[int, tuple[float, int]]:
+    """Recompute observed ROI per league from current graded picks.
+
+    Requires walking the snapshot cache to map fixture_id → league_id (same
+    enrichment used by ``enrich_with_league`` and ``analyze_jornada``).
+    Cached per call — for batch use, prefer enriching the picks DataFrame
+    once and aggregating directly.
+    """
+    df = load_picks(db_path)
+    if df.is_empty():
+        return {}
+    df = enrich_with_league(df, cache_root)
+    graded = df.filter(pl.col("status").is_in(["won", "lost"]))
+    if graded.is_empty():
+        return {}
+    rows = list(zip(
+        graded.get_column("league_id").to_list(),
+        graded.get_column("profit_units").to_list(),
+    ))
+    return _aggregate_priors(rows)
+
+
+def cache_priors(
+    market_priors: dict[str, tuple[float, int]],
+    league_priors: dict[int, tuple[float, int]],
+    cache_path: Path = PRIORS_CACHE_PATH,
+) -> Path:
+    """Persist priors to parquet for cross-run reuse + history tracking.
+
+    Schema: long-format with one row per (kind, key, observed_roi, n,
+    updated_at). Re-running APPENDS — each row carries a snapshot timestamp
+    so you can chart prior drift over the trial period.
+    """
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    rows: list[dict] = []
+    for k, (roi, n) in market_priors.items():
+        rows.append({"kind": "market", "key": str(k), "observed_roi": roi,
+                     "n": n, "updated_at": now_iso})
+    for k, (roi, n) in league_priors.items():
+        rows.append({"kind": "league", "key": str(k), "observed_roi": roi,
+                     "n": n, "updated_at": now_iso})
+    if not rows:
+        return cache_path
+    new_df = pl.from_dicts(rows)
+    if cache_path.exists():
+        existing = pl.read_parquet(cache_path)
+        new_df = pl.concat([existing, new_df])
+    new_df.write_parquet(cache_path)
+    return cache_path
+
+
+def load_cached_priors(
+    cache_path: Path = PRIORS_CACHE_PATH,
+) -> tuple[dict[str, tuple[float, int]], dict[int, tuple[float, int]]] | None:
+    """Load most-recent priors snapshot from parquet cache.
+
+    Returns None if the cache doesn't exist. Otherwise returns
+    (market_priors, league_priors) using the latest updated_at timestamp.
+    """
+    if not cache_path.exists():
+        return None
+    df = pl.read_parquet(cache_path)
+    if df.is_empty():
+        return None
+    latest_ts = df.get_column("updated_at").max()
+    latest = df.filter(pl.col("updated_at") == latest_ts)
+    market: dict[str, tuple[float, int]] = {}
+    league: dict[int, tuple[float, int]] = {}
+    for row in latest.iter_rows(named=True):
+        if row["kind"] == "market":
+            market[row["key"]] = (row["observed_roi"], row["n"])
+        elif row["kind"] == "league":
+            try:
+                league[int(row["key"])] = (row["observed_roi"], row["n"])
+            except (TypeError, ValueError):
+                continue
+    return market, league
+
+
+# ── Signal enrichment (for output context) ─────────────────────────────
+
+
+SNAPSHOTS_DERIVED_PATH: Path = (
+    Path("reports/sportmonks_live/exports/snapshots_derived.parquet")
+)
+"""Default path to the derived signals parquet produced by analyze_jornada."""
+
+SIGNAL_COLUMNS: tuple[str, ...] = (
+    "informational_density",
+    "home_momentum", "away_momentum",
+    "home_shot_acceleration", "away_shot_acceleration",
+    "home_set_piece_intensity", "away_set_piece_intensity",
+    "home_killing_clock", "away_killing_clock",
+)
+
+
+def enrich_with_signals(
+    df: pl.DataFrame,
+    snapshots_path: Path = SNAPSHOTS_DERIVED_PATH,
+) -> pl.DataFrame:
+    """Attach derived match-state signals to each pick.
+
+    For each pick, finds the snapshot for the same fixture whose
+    ``snapshot_taken_at`` is nearest to the pick's ``emitted_at`` and
+    joins those signal columns. Uses Polars ``join_asof`` per fixture.
+
+    No-op if the snapshots parquet doesn't exist (operator hasn't run
+    analyze_jornada yet) or the picks DataFrame lacks ``emitted_at``.
+    Returns the input DataFrame with up to 9 signal columns appended.
+
+    Operator use case: when the Top-25 lands, momentum_pos and
+    info_density tell you whether the model's edge is live (high
+    momentum = match opening up = ou_3_5 'under' is RISKIER). This is
+    the diagnostic block called for in §3 of the strategy doc.
+    """
+    if df.is_empty() or "emitted_at" not in df.columns:
+        return df
+    if not snapshots_path.exists():
+        return df
+
+    snapshots = pl.read_parquet(snapshots_path)
+    if snapshots.is_empty():
+        return df
+
+    # Parse timestamps eagerly — Polars' lazy strptime refuses tz-aware ISO
+    # strings without an explicit format. Eager Series.str.to_datetime
+    # auto-handles the timezone offset.
+    snap_ts = snapshots.get_column("snapshot_taken_at").str.to_datetime(
+        time_zone="UTC", strict=False,
+    )
+    snap = snapshots.with_columns(snap_ts.alias("_ts")).sort(["fixture_id", "_ts"])
+
+    pick_ts = df.get_column("emitted_at").str.to_datetime(
+        time_zone="UTC", strict=False,
+    )
+    picks = df.with_columns(pick_ts.alias("_pick_ts")).sort(
+        ["fixture_id", "_pick_ts"]
+    )
+
+    # Suppress benign Polars warning about per-group sortedness check —
+    # we DID sort by ("fixture_id", "_pick_ts") above; Polars just can't
+    # verify within each `by` group.
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.filterwarnings("ignore", message="Sortedness of columns")
+        joined = picks.join_asof(
+            snap.select(["fixture_id", "_ts", *SIGNAL_COLUMNS]),
+            left_on="_pick_ts",
+            right_on="_ts",
+            by="fixture_id",
+            strategy="nearest",
+        )
+    return joined.drop(["_pick_ts", "_ts"], strict=False)
+
+
 # ── Cascade ─────────────────────────────────────────────────────────────
 
 
@@ -416,15 +659,43 @@ def score(
 # ── Top-N selection with distribution constraints ─────────────────────
 
 
+def dedup_picks(df: pl.DataFrame) -> pl.DataFrame:
+    """Collapse duplicate (fixture_id, market, selection) bets to the highest-scoring instance.
+
+    Day-1 surfaced this gap: the same exact bet (same fixture/market/selection)
+    re-emitted minutes apart counts as 2 picks but is the SAME wager. The watcher
+    re-scans every 60s; while a value persists it gets re-emitted. Without dedup,
+    Top-25 wastes slots on duplicates.
+
+    Concrete Day-1 case: Athletic-Valencia team_to_score_first/home appeared in
+    Top-25 at minute 62 AND minute 72 — both lost (-2.0 units). With dedup, only
+    the higher-scoring instance survives, freeing the second slot for a different
+    bet that may convert.
+
+    Falls back to no-op if 'score' column is missing (call before scoring is OK
+    but pre-score dedup just keeps the first occurrence).
+    """
+    if df.is_empty():
+        return df
+    sort_cols = ["score"] if "score" in df.columns else ["edge_pct"]
+    return (
+        df.sort(sort_cols, descending=True, nulls_last=True)
+          .unique(subset=["fixture_id", "market", "selection"], keep="first",
+                  maintain_order=True)
+    )
+
+
 def top_n(
     df: pl.DataFrame,
     n: int = 25,
     max_per_fixture: int = 3,
     max_per_window: int = 5,
     window_min: int = 15,
+    dedup: bool = True,
 ) -> pl.DataFrame:
     """Greedy selection: walk picks in score order, accept while quotas hold.
 
+    - dedup: collapse duplicate (fixture, market, selection) emissions first
     - max_per_fixture: avoids correlated-loss exposure (no pile-on)
     - max_per_window: distributes across 15-min review windows
     - n: hard cap on total picks (operator throughput ceiling)
@@ -432,7 +703,8 @@ def top_n(
     if df.is_empty() or "score" not in df.columns:
         return df
 
-    sorted_df = df.sort(
+    candidates = dedup_picks(df) if dedup else df
+    sorted_df = candidates.sort(
         by=["score", "minute"], descending=[True, False], nulls_last=True,
     )
 
@@ -563,6 +835,37 @@ def render_topn_report(
             lines.append("| " + " | ".join(cells) + " |")
         lines.append("")
 
+        # Diagnostic block (per §3 criterion 6) — shows momentum/info_density
+        # alongside each pick so the operator can verify the model's edge is
+        # consistent with live match state before placing.
+        signal_cols_present = [c for c in SIGNAL_COLUMNS if c in top.columns]
+        if signal_cols_present:
+            lines.append("### Diagnostic signals at emission\n")
+            lines.append(
+                "_Cross-check: high momentum on the side you're fading "
+                "(e.g. ou_3_5 'under' with rising home_momentum) is a yellow "
+                "flag. killing_clock=true near the end means the team is "
+                "killing time — favors 'no more goals' picks._\n"
+            )
+            id_col = "id" if "id" in top.columns else "fixture_id"
+            sig_header = [id_col, "minute"] + signal_cols_present
+            lines.append("| " + " | ".join(sig_header) + " |")
+            lines.append("|" + "|".join(["---"] * len(sig_header)) + "|")
+            for row in top.iter_rows(named=True):
+                cells = [str(row.get(id_col, "—")), str(row.get("minute", "—"))]
+                for c in signal_cols_present:
+                    v = row.get(c)
+                    if v is None:
+                        cells.append("—")
+                    elif isinstance(v, bool):
+                        cells.append("✓" if v else "·")
+                    elif isinstance(v, float):
+                        cells.append(f"{v:.2f}")
+                    else:
+                        cells.append(str(v))
+                lines.append("| " + " | ".join(cells) + " |")
+            lines.append("")
+
     # Headline comparison
     raw_graded = raw.filter(pl.col("status").is_in(["won", "lost"]))
     if not raw_graded.is_empty():
@@ -597,7 +900,42 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--max-per-window", type=int, default=5)
     p.add_argument("--skip-league", action="store_true",
                    help="Skip league enrichment (faster; no league_id filter)")
+    p.add_argument("--use-static-priors", action="store_true",
+                   help="Use the hardcoded Day-1 priors instead of recomputing "
+                        "from picks.db. Default is live recompute (more accurate "
+                        "— hardcoded league priors have known >5pp drift).")
+    p.add_argument("--no-dedup", action="store_true",
+                   help="Disable (fixture, market, selection) dedup in Top-N.")
+    p.add_argument("--no-signals", action="store_true",
+                   help="Skip signal enrichment of the Top-N output.")
+    p.add_argument("--snapshots-derived", type=Path,
+                   default=SNAPSHOTS_DERIVED_PATH,
+                   help="Path to snapshots_derived.parquet (run analyze_jornada "
+                        "first to populate).")
     return p.parse_args()
+
+
+def _resolve_priors(
+    args: argparse.Namespace,
+) -> tuple[dict[str, tuple[float, int]], dict[int, tuple[float, int]], str]:
+    """Pick the right priors source based on flags, log which one was used.
+
+    Returns (market_priors, league_priors, source_label).
+    """
+    if args.use_static_priors:
+        return DAY1_MARKET_ROI, DAY1_LEAGUE_ROI, "hardcoded Day-1 (static)"
+
+    print("[priors] computing live priors from picks.db")
+    market = compute_market_priors_from_db(args.picks_db)
+    league = compute_league_priors_from_db(args.picks_db, args.cache_root)
+    if not market and not league:
+        print("[priors] no graded picks yet — falling back to Day-1 hardcoded")
+        return DAY1_MARKET_ROI, DAY1_LEAGUE_ROI, "hardcoded Day-1 (live empty)"
+
+    cache_path = cache_priors(market, league)
+    print(f"[priors] cached {len(market)} markets + {len(league)} leagues "
+          f"to {cache_path}")
+    return market, league, "live (recomputed from picks.db)"
 
 
 def main() -> int:
@@ -626,13 +964,27 @@ def main() -> int:
         print("[score] no survivors — nothing to score")
         return 1
 
-    scored = score(survivors)
+    market_priors, league_priors, source = _resolve_priors(args)
+    print(f"[score] priors source: {source}")
+    scored = score(survivors, market_priors=market_priors,
+                   league_priors=league_priors)
     top = top_n(
         scored,
         n=args.top_n,
         max_per_fixture=args.max_per_fixture,
         max_per_window=args.max_per_window,
+        dedup=not args.no_dedup,
     )
+
+    if not args.no_signals:
+        before_cols = top.width
+        top = enrich_with_signals(top, args.snapshots_derived)
+        added = top.width - before_cols
+        if added > 0:
+            print(f"[signals] enriched Top-N with {added} signal columns")
+        elif not args.snapshots_derived.exists():
+            print(f"[signals] {args.snapshots_derived} missing — "
+                  "run analyze_jornada first; output omits signals")
 
     # Report
     args.output_dir.mkdir(parents=True, exist_ok=True)

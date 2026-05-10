@@ -1,0 +1,8 @@
+{
+  "name": "baseline (minute≤75, top-25)",
+  "top_n": 25,
+  "max_per_fixture": 3,
+  "max_per_window": 5,
+  "dedup": true,
+  "use_live_priors": false
+}
