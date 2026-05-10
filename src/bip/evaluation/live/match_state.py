@@ -366,6 +366,122 @@ class LiveMatchState:
         )
         return max(0, int(round(current - prior)))
 
+    def key_passes_in_last_window(
+        self, side: str, *, window: int = 5,
+    ) -> int:
+        if not self.trends:
+            return 0
+        current = self._cumulative_at_minute(
+            side, StatType.KEY_PASSES, self.minute,
+        )
+        prior = self._cumulative_at_minute(
+            side, StatType.KEY_PASSES, max(0, self.minute - window),
+        )
+        return max(0, int(round(current - prior)))
+
+    def corners_in_last_window(
+        self, side: str, *, window: int = 5,
+    ) -> int:
+        if not self.trends:
+            return 0
+        current = self._cumulative_at_minute(
+            side, StatType.CORNERS, self.minute,
+        )
+        prior = self._cumulative_at_minute(
+            side, StatType.CORNERS, max(0, self.minute - window),
+        )
+        return max(0, int(round(current - prior)))
+
+    def shot_acceleration(self, side: str) -> float:
+        """Second-derivative of shot rate: shots in last 3 min vs shots in
+        the 5 minutes BEFORE that (min ``minute-8`` to ``minute-3``).
+
+        Returns:
+            > 1.0 → accelerating (rising shot rate)
+            ~ 1.0 → steady pace
+            < 1.0 → decelerating (cooling off)
+            0.0   → no recent shots OR no trends data
+
+        Used to:
+        - Confirm/reject killing-clock detection (a team in clock-killing
+          mode should be DECELERATING; if their accel is > 0.9 the
+          detector is over-firing)
+        - Scale the late-game trailing-team push proportionally to the
+          actual measured push intensity
+        - Distinguish "team peaked and stopped" from "team starting to push"
+        """
+        if not self.trends or self.minute < 8:
+            return 0.0
+        # Last 3 min: minute - 3 to minute
+        recent = (
+            self._cumulative_at_minute(side, StatType.SHOTS_TOTAL, self.minute)
+            - self._cumulative_at_minute(side, StatType.SHOTS_TOTAL, max(0, self.minute - 3))
+        )
+        # Previous 5 min: minute - 8 to minute - 3
+        prior = (
+            self._cumulative_at_minute(side, StatType.SHOTS_TOTAL, max(0, self.minute - 3))
+            - self._cumulative_at_minute(side, StatType.SHOTS_TOTAL, max(0, self.minute - 8))
+        )
+        recent_rate = max(0, recent) / 3.0
+        prior_rate = max(0, prior) / 5.0
+        if prior_rate <= 0.0 and recent_rate <= 0.0:
+            return 0.0
+        if prior_rate <= 0.0:
+            # No prior shots, but recent ones → strong acceleration
+            return 2.0
+        return recent_rate / prior_rate
+
+    def momentum_score(self, side: str, *, window: int = 5) -> float:
+        """Composite attacking-momentum score combining shots, dangerous
+        attacks, and key passes rolling-window rates against match-average
+        rates.
+
+        Returns a multiplier in roughly [0.5, 1.6]:
+            < 0.85 → team has slowed below their match-average pace
+            ~ 1.0  → team is at their typical match-pace
+            > 1.15 → team is materially accelerating
+
+        The composite is more robust than shots-only because:
+        - Shots can spike from desperate long-range attempts (false positive)
+        - Dangerous attacks and key passes confirm true attacking pressure
+        - Three rising stats together = signal; one rising = noise
+
+        Returns 1.0 (neutral) when no trends data exists or minute too low.
+        """
+        if not self.trends or self.minute < 15:
+            return 1.0
+        # Recent-window aggregate rate (per minute)
+        recent_shots = self.shots_in_last_window(side, window=window)
+        recent_da = self.dangerous_attacks_in_last_window(side, window=window)
+        recent_kp = self.key_passes_in_last_window(side, window=window)
+
+        # Match-average rate (per minute) — cumulative ÷ minute
+        cum_shots = self._cumulative_at_minute(side, StatType.SHOTS_TOTAL, self.minute)
+        cum_da = self._cumulative_at_minute(side, StatType.DANGEROUS_ATTACKS, self.minute)
+        cum_kp = self._cumulative_at_minute(side, StatType.KEY_PASSES, self.minute)
+
+        # Per-stat ratios, neutral=1.0 when stat-rate not estimable
+        def _ratio(recent: float, cum: float) -> float:
+            avg_per_min = cum / self.minute if self.minute > 0 else 0.0
+            recent_per_min = recent / window if window > 0 else 0.0
+            if avg_per_min <= 0.0:
+                return 1.0
+            return recent_per_min / avg_per_min
+
+        # Weighted geometric mean — shots 50%, DA 30%, KP 20%.
+        # Geometric mean keeps the composite bounded when one stat is 0
+        # (clamped to 0.1) and avoids the arithmetic-mean pathology where
+        # one extreme outlier dominates.
+        import math as _m
+        weights = (0.50, 0.30, 0.20)
+        ratios = (
+            max(0.1, _ratio(recent_shots, cum_shots)),
+            max(0.1, _ratio(recent_da, cum_da)),
+            max(0.1, _ratio(recent_kp, cum_kp)),
+        )
+        log_sum = sum(w * _m.log(r) for w, r in zip(weights, ratios))
+        return _m.exp(log_sum)
+
     @property
     def yellow_card_count_home(self) -> int:
         return sum(1 for _m, t, _p in self.yellow_card_events if t == self.home_team_id)
@@ -408,6 +524,13 @@ class LiveMatchState:
         where minutes_of_possession ≈ minute × possession_pct/100. League
         average for attacking teams is ~0.40-0.70 actions per poss-minute;
         clock-killing sits significantly below that band.
+
+        Trend confirmation: if the instantaneous detector fires AND we
+        have trends data, we additionally require that shot rate is
+        actually DECELERATING (shot_acceleration < 0.9). This rejects the
+        false-positive case where a team that was attacking hard 20 min
+        ago has high cumulative possession but is currently still pushing
+        — they aren't really killing clock yet.
         """
         if self.minute < 60:
             return False
@@ -421,7 +544,18 @@ class LiveMatchState:
         if poss_minutes < 5.0:
             return False  # too small a sample for a stable rate
         productivity = (st + kp) / poss_minutes
-        return productivity < 0.20
+        if productivity >= 0.20:
+            return False
+        # Instantaneous gate fired — confirm via trend if available.
+        # No trends data → trust instantaneous detector (preserves prior
+        # behavior for leagues without minute-by-minute coverage).
+        if self.trends:
+            accel = self.shot_acceleration(side)
+            # accel > 0.9 means shots NOT decelerating → team still pushing,
+            # not actually killing clock. Reject.
+            if accel > 0.9:
+                return False
+        return True
 
     # ── Information-content gate (B-7 / B-G3) ──────────────────────────
 

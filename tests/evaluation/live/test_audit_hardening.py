@@ -1510,6 +1510,169 @@ class TestPhase1aBackoutBugs:
         assert MARKET_FULLTIME_RESULT in skip
         assert MARKET_DOUBLE_CHANCE in skip
 
+    # ── Phase 7 — trends deep integration ──────────────────────────────
+
+    def _trends_for(
+        self, side_team_id: int, *, type_id: int,
+        minute_value_pairs: list[tuple[int, int]],
+    ):
+        """Build cumulative Trend records: (minute, cumulative_value)."""
+        from bip.sports.football.sportmonks.schemas import Trend
+        return [
+            Trend.model_validate({
+                "id": id((m, side_team_id, type_id)),
+                "fixture_id": 1, "type_id": type_id,
+                "participant_id": side_team_id,
+                "period_id": 1 if m <= 45 else 2,
+                "minute": m, "value": v,
+            })
+            for m, v in minute_value_pairs
+        ]
+
+    def test_shot_acceleration_detects_rising_pace(self):
+        """3 shots in last 3 min vs 2 shots in min 12-17 ago = accel ratio
+        (3/3) / (2/5) = 1.0 / 0.4 = 2.5"""
+        from bip.evaluation.live.match_state import LiveMatchState
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        # Cumulative SHOTS_TOTAL for home_team_id=10 over time:
+        # at min 15: 0; at min 17: 1; at min 20: 2 (=2 in min 15-20 → "5 min before recent")
+        # at min 25: 5 (=3 in min 20-25 → "last 3 min" since current minute=25... wait
+        # acceleration uses (minute-3, minute) for recent and (minute-8, minute-3) for prior.
+        # At minute=20: recent=last 3 min (17-20); prior=min 12-17.
+        trends = self._trends_for(10, type_id=StatType.SHOTS_TOTAL,
+                                   minute_value_pairs=[
+                                       (12, 0), (17, 2), (20, 5)
+                                   ])
+        # cumulative at min 20 = 5; at min 17 = 2; at min 12 = 0
+        # recent: 5 - 2 = 3 in last 3 min → 1.0/min
+        # prior: 2 - 0 = 2 in min 12-17 → 0.4/min
+        # ratio = 1.0/0.4 = 2.5
+        base = _make_state(minute=20, home_goals=0)
+        state = LiveMatchState(**{**base.__dict__, "trends": trends})
+        assert state.shot_acceleration("home") == pytest.approx(2.5, abs=0.01)
+
+    def test_shot_acceleration_no_trends_returns_zero(self):
+        """No trends → 0.0 (graceful degradation)."""
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        state = _make_state(minute=30, home_goals=0)
+        assert state.shot_acceleration("home") == 0.0
+
+    def test_momentum_score_neutral_when_pace_matches_avg(self):
+        """Recent rate == match-average rate → composite ≈ 1.0"""
+        from bip.evaluation.live.match_state import LiveMatchState
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        # At minute=20 with cumulative shots=4 (avg 0.2/min) and last 5 min
+        # = 1 shot (0.2/min) → ratio = 1.0
+        trends = (
+            self._trends_for(10, type_id=StatType.SHOTS_TOTAL,
+                             minute_value_pairs=[(15, 3), (20, 4)])
+            + self._trends_for(10, type_id=StatType.DANGEROUS_ATTACKS,
+                               minute_value_pairs=[(15, 30), (20, 40)])
+            + self._trends_for(10, type_id=StatType.KEY_PASSES,
+                               minute_value_pairs=[(15, 6), (20, 8)])
+        )
+        base = _make_state(minute=20, home_goals=0)
+        state = LiveMatchState(**{**base.__dict__, "trends": trends})
+        # Each ratio: shots 0.2/0.2=1, DA 2.0/2.0=1, KP 0.4/0.4=1 → 1.0
+        m = state.momentum_score("home", window=5)
+        assert m == pytest.approx(1.0, abs=0.05)
+
+    def test_momentum_score_high_when_accelerating(self):
+        """Team accelerates: 4 shots in last 5 min, only 4 total → recent
+        is 0.8/min vs match-avg 0.2/min → ratio 4.0 (clamped)."""
+        from bip.evaluation.live.match_state import LiveMatchState
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        # At minute 20, cumulative shots=4, prior at min 15 = 0
+        # → recent 4 shots in 5 min = 0.8/min; avg 0.2/min → ratio 4.0
+        trends = (
+            self._trends_for(10, type_id=StatType.SHOTS_TOTAL,
+                             minute_value_pairs=[(15, 0), (20, 4)])
+            + self._trends_for(10, type_id=StatType.DANGEROUS_ATTACKS,
+                               minute_value_pairs=[(15, 10), (20, 30)])
+            + self._trends_for(10, type_id=StatType.KEY_PASSES,
+                               minute_value_pairs=[(15, 1), (20, 5)])
+        )
+        base = _make_state(minute=20, home_goals=0)
+        state = LiveMatchState(**{**base.__dict__, "trends": trends})
+        m = state.momentum_score("home", window=5)
+        # Composite is bounded but should be > 1.5 for clear acceleration
+        assert m > 1.5
+
+    def test_killing_clock_rejected_when_team_still_pushing(self):
+        """Trend confirmation: instantaneous detector says clock-killing
+        (high poss + low cumulative actions), but shots are still
+        accelerating → reject (team isn't really killing clock)."""
+        from bip.evaluation.live.match_state import LiveMatchState
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        # Configure state to instantaneously fire clock-killing:
+        #   minute=70, poss=70, shots=4, KP=1 → poss_min=49, prod=5/49=0.10 < 0.20
+        # But shots accelerating: 3 shots in last 3min vs 1 in prior 5min
+        trends = self._trends_for(10, type_id=StatType.SHOTS_TOTAL,
+                                   minute_value_pairs=[(62, 1), (67, 1), (70, 4)])
+        base = _make_state(
+            minute=70, home_goals=1,
+            home_stats={
+                StatType.BALL_POSSESSION: 70,
+                StatType.SHOTS_TOTAL: 4, StatType.KEY_PASSES: 1,
+            },
+        )
+        state = LiveMatchState(**{**base.__dict__, "trends": trends})
+        # Without trends would be True (Phase 1a regression test confirms).
+        # With trends showing acceleration, should be False.
+        accel = state.shot_acceleration("home")
+        assert accel > 0.9, f"test setup error: accel={accel:.2f}"
+        assert state.is_killing_clock("home") is False
+
+    def test_killing_clock_confirmed_when_actually_decelerating(self):
+        """Sister test: instantaneous gate fires AND shots are flat /
+        decelerating → confirmed clock-killing."""
+        from bip.evaluation.live.match_state import LiveMatchState
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        # Most shots accumulated 20+ min ago, no recent activity
+        trends = self._trends_for(10, type_id=StatType.SHOTS_TOTAL,
+                                   minute_value_pairs=[(45, 4), (60, 4), (67, 4), (70, 4)])
+        base = _make_state(
+            minute=70, home_goals=1,
+            home_stats={
+                StatType.BALL_POSSESSION: 70,
+                StatType.SHOTS_TOTAL: 4, StatType.KEY_PASSES: 1,
+            },
+        )
+        state = LiveMatchState(**{**base.__dict__, "trends": trends})
+        # Shot acceleration: recent (last 3 min) = 0; prior (3-8) = 0 → 0.0
+        # 0.0 ≤ 0.9 → killing-clock confirmed
+        assert state.is_killing_clock("home") is True
+
+    def test_late_game_push_scaled_by_shot_acceleration(self):
+        """Trailing team with high acceleration gets bigger nudge than
+        trailing team with no recent shots."""
+        from bip.evaluation.live.match_state import LiveMatchState
+        from tests.evaluation.live.test_audit_hardening import _make_state
+        # Home trailing 0-1 at min 80
+        pushing_trends = self._trends_for(
+            10, type_id=StatType.SHOTS_TOTAL,
+            minute_value_pairs=[(72, 4), (77, 5), (80, 9)],
+        )
+        # accel: recent (77-80) = 4; prior (72-77) = 1 → 4/3 ÷ 1/5 = 6.67 (capped 1.5)
+        flat_trends = self._trends_for(
+            10, type_id=StatType.SHOTS_TOTAL,
+            minute_value_pairs=[(60, 4), (70, 4), (80, 4)],
+        )
+        # accel = 0 (no recent shots)
+        base = _make_state(
+            minute=80, home_goals=0, away_goals=1,
+            home_stats={StatType.BALL_POSSESSION: 50, StatType.SHOTS_TOTAL: 9, StatType.KEY_PASSES: 3},
+            home_pressure=[60, 65, 70, 70, 75],
+            away_pressure=[40, 35, 30, 30, 25],
+        )
+        push_state = LiveMatchState(**{**base.__dict__, "trends": pushing_trends})
+        flat_state = LiveMatchState(**{**base.__dict__, "trends": flat_trends})
+        predictor = LiveMatchPredictor()
+        push_probs = predictor.predict(push_state).by_market[MARKET_FULLTIME_RESULT]
+        flat_probs = predictor.predict(flat_state).by_market[MARKET_FULLTIME_RESULT]
+        # Pushing team gets bigger draw bump than flat team
+        assert push_probs["draw"] > flat_probs["draw"] + 0.005
+
     # ── Phase 6 — software completeness for backtest day ──────────────
 
     def test_stake_by_ci_scales_down_with_wide_interval(self):

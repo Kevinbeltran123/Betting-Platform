@@ -496,9 +496,31 @@ class LiveMatchPredictor:
                 adj["draw"] -= shift / 2
                 adj["home"] -= shift / 2
 
-        # 3. Late-game trailing-team push (>=70 min, trailing by exactly 1 goal)
+        # 3. Late-game trailing-team push (>=70 min, trailing by exactly 1)
+        # Trend-aware: scale the nudge by the trailing team's MEASURED push
+        # intensity (shot acceleration). A team trailing 1-0 at min 75 that's
+        # actually pressing (accel 1.5×) gets a bigger draw-equalising
+        # nudge than a team that's faded (accel 0.6×) and probably won't
+        # equalise. Without trends, we default to factor=1.0 (preserves
+        # original unconditional nudge).
         if state.minute >= 70 and abs(state.score_diff_home) == 1:
-            shift = self.trailing_late_boost_max * min(1.0, (state.minute - 70) / 20.0)
+            base_shift = self.trailing_late_boost_max * min(
+                1.0, (state.minute - 70) / 20.0
+            )
+            trailing_side = "home" if state.score_diff_home == -1 else "away"
+            push_factor = 1.0
+            if state.trends:
+                accel = state.shot_acceleration(trailing_side)
+                # Map shot_acceleration to push_factor:
+                #   accel >= 1.5 → 1.5× boost (peak push)
+                #   accel ~ 1.0 → 1.0× boost (steady)
+                #   accel <= 0.5 → 0.4× boost (faded — they aren't coming back)
+                #   accel = 0.0 (no recent shots) → 0.5× boost (could be just lull)
+                if accel == 0.0:
+                    push_factor = 0.5
+                else:
+                    push_factor = max(0.40, min(1.5, accel))
+            shift = base_shift * push_factor
             if state.score_diff_home == -1:
                 # Home trailing by 1 → push up draw (equalising)
                 adj["draw"] += shift
@@ -683,25 +705,19 @@ class LiveMatchPredictor:
                 # Soften: only half of ratio diff reaches λ
                 lam_remaining *= 0.5 + 0.5 * ratio_capped
 
-        # ── Trends-derived momentum (rolling 5-min shot rate vs match avg) ──
-        # Cumulative xG-proxy is slow-moving; trends give us "is the team
-        # accelerating RIGHT NOW?" A team with 3 shots in the last 5 min vs
-        # match-average 0.4 shots/min is actively pushing — boost λ_remaining.
-        # Skip when no trends data exists (gracefully degrades for leagues
-        # without minute-by-minute coverage).
-        if state.minute >= 20 and state.trends:
-            recent_shots = state.shots_in_last_window(side, window=5)
-            current_total = state._cumulative_at_minute(
-                side, StatType.SHOTS_TOTAL, state.minute,
-            )
-            avg_shots_per_min = current_total / state.minute if state.minute > 0 else 0.0
-            if avg_shots_per_min > 0.0 and recent_shots > 0:
-                recent_rate = recent_shots / 5.0
-                ratio = recent_rate / avg_shots_per_min
-                # Cap at [0.85, 1.15] — momentum is real but bounded.
-                # Even a hot team rarely sustains 1.5× their match avg.
-                momentum_mult = max(0.85, min(1.15, 0.7 + 0.3 * ratio))
-                lam_remaining *= momentum_mult
+        # ── Trends-derived multi-stat momentum composite ─────────────
+        # Cumulative xG-proxy is slow-moving; the momentum_score combines
+        # shots + dangerous_attacks + key_passes rolling rates vs match-
+        # average via weighted geometric mean — much more robust than
+        # shots-only (a team firing desperate long-range attempts shows
+        # high shots but flat KP/DA → composite stays neutral).
+        # Skips automatically when no trends or minute < 15.
+        momentum = state.momentum_score(side, window=5)
+        if momentum != 1.0:  # 1.0 is the no-data / steady-pace neutral
+            # Cap multiplier at [0.85, 1.15] — momentum effect is real
+            # but a single 5-minute window can't justify >15% λ shift.
+            momentum_mult = max(0.85, min(1.15, 0.5 + 0.5 * momentum))
+            lam_remaining *= momentum_mult
 
         return max(0.0, lam_remaining)
 
@@ -821,26 +837,54 @@ class LiveMatchPredictor:
     def _corners_total(
         self, state: LiveMatchState, *, line: float,
     ) -> dict[str, float] | None:
-        """Total-corners O/U using a Poisson model with a league prior.
+        """Total-corners O/U using a Poisson model.
 
-        λ_full estimated as a weighted blend of:
-          - Observed corners-per-minute extrapolated to 90 minutes
-          - League prior (DEFAULT_LEAGUE_CORNERS_PRIOR)
-        with weight CORNERS_PRIOR_WEIGHT_MINUTES on the prior.
+        Two-source rate blend:
+          1. Match-average rate: cumulative corners ÷ minute, regularised
+             by league prior (CORNERS_PRIOR_WEIGHT_MINUTES on the prior).
+          2. Recent rate: corners in last 15 min from trends (when trends
+             data is available). Captures current pace better than match
+             average for matches that have shifted tempo (e.g., one team
+             dominating second half corner-wise).
+
+        Final rate is a weighted blend: 60% recent, 40% match-average,
+        when both are available. Falls back to match-average alone when
+        trends aren't emitted.
         """
         if state.minute < 10:
             return None
         corners_so_far = state.home_corners + state.away_corners
-        # Effective minutes for rate estimation (prior weight + observed)
+        if corners_so_far > line:
+            return {"over": 1.0, "under": 0.0}
+
+        # Source 1: match-average rate with league-prior regularisation
         effective_minutes = state.minute + CORNERS_PRIOR_WEIGHT_MINUTES
         prior_corners = (
             DEFAULT_LEAGUE_CORNERS_PRIOR
             * (CORNERS_PRIOR_WEIGHT_MINUTES / 90.0)
         )
-        rate_per_min = (corners_so_far + prior_corners) / max(effective_minutes, 1.0)
-        lam_remaining = rate_per_min * max(0, 90 - state.minute)
-        if corners_so_far > line:
-            return {"over": 1.0, "under": 0.0}
+        match_avg_rate = (corners_so_far + prior_corners) / max(
+            effective_minutes, 1.0,
+        )
+
+        # Source 2: recent corner rate from trends (last 15 min)
+        recent_rate: float | None = None
+        if state.trends and state.minute >= 25:
+            recent_corners = (
+                state.corners_in_last_window("home", window=15)
+                + state.corners_in_last_window("away", window=15)
+            )
+            window_minutes = min(15, state.minute)
+            if window_minutes >= 5:
+                recent_rate = recent_corners / float(window_minutes)
+
+        # Blend: 60% recent, 40% match-average when both present
+        if recent_rate is not None:
+            blended_rate = 0.60 * recent_rate + 0.40 * match_avg_rate
+        else:
+            blended_rate = match_avg_rate
+
+        lam_remaining = blended_rate * max(0, 90 - state.minute)
         if lam_remaining <= 0:
             return {"over": 0.0, "under": 1.0}
         needed = max(0, math.ceil(line) - corners_so_far)
