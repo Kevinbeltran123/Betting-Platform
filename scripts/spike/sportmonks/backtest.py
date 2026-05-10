@@ -253,6 +253,7 @@ def _replay_fixture(
             probs, odds,
             home_team_name=state.home_team_name,
             away_team_name=state.away_team_name,
+            state=state,
         )
         for p in picks:
             won = _outcome_for_pick(p, outcome)

@@ -1,12 +1,12 @@
 """Live match predictor — combines Sportmonks ML predictions with our own
 Dixon-Robinson-style live state model.
 
-Strategy (operator-imparcial choice 2026-05-09):
+Strategy (operator-imparcial choice 2026-05-09, hardened 2026-05-09 night):
 
   Sportmonks already emits 29 well-calibrated pre-built predictions
   (1X2, BTTS, OU, HT/FT, First Half Winner, Correct Score, etc.). We
   TRUST those as a strong baseline — competing with their proprietary
-  ML head-on is a losing battle. Our model adds value at TWO seams:
+  ML head-on is a losing battle. Our model adds value at THREE seams:
 
   1. Live state adjustments — Sportmonks predictions are pre-match
      biased; we re-score using Dixon-Robinson scaling for remaining-
@@ -19,14 +19,22 @@ Strategy (operator-imparcial choice 2026-05-09):
      prediction is balanced), we shift probabilities a bounded amount
      toward the live signal. The boost is capped at ±10pp per market.
 
+  3. Information-density gate — at low live-signal density (early
+     minutes, no events, no pressure samples), we DO NOT live-adjust;
+     we return the Sportmonks prior verbatim. This kills the "min 8
+     burst" pathology where the predictor invents divergence from
+     thin air.
+
 The output is a ``MarketProbabilities`` object with a probability for
-every market the value detector knows how to compare against odds.
+every market the value detector knows how to compare against odds, plus
+a per-market confidence half-width derived from disagreement between
+Sportmonks's own prediction sources.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -35,7 +43,7 @@ from bip.evaluation.live.match_state import LiveMatchState
 from bip.evaluation.tournaments.predictors.bivariate_poisson import (
     _bivariate_poisson_grid as _bivariate_poisson_grid_full,
 )
-from bip.sports.football.sportmonks.types import PredictionType
+from bip.sports.football.sportmonks.types import PredictionType, StatType
 
 
 def _bivariate_poisson_grid(
@@ -66,10 +74,12 @@ def _bivariate_poisson_grid(
 # vocabulary so callers can map to in-play odds market_descriptions.
 MARKET_FULLTIME_RESULT = "fulltime_result"      # {home, draw, away}
 MARKET_DOUBLE_CHANCE = "double_chance"           # {1x, x2, 12}
+MARKET_DRAW_NO_BET = "draw_no_bet"               # {home, away}
 MARKET_FIRST_HALF_RESULT = "first_half_result"   # {home, draw, away}
 MARKET_HTFT = "htft"                              # 9 cells
 MARKET_BTTS = "btts"                              # {yes, no}
 MARKET_BTTS_FIRST_HALF = "btts_first_half"        # {yes, no}
+MARKET_BTTS_SECOND_HALF = "btts_second_half"      # {yes, no}
 MARKET_OU_05 = "ou_0_5"                           # {over, under}
 MARKET_OU_15 = "ou_1_5"
 MARKET_OU_25 = "ou_2_5"
@@ -78,6 +88,13 @@ MARKET_FIRST_HALF_OU_05 = "first_half_ou_0_5"
 MARKET_FIRST_HALF_OU_15 = "first_half_ou_1_5"
 MARKET_HOME_OU_15 = "home_ou_1_5"
 MARKET_AWAY_OU_15 = "away_ou_1_5"
+MARKET_HOME_CLEAN_SHEET = "home_clean_sheet"      # {yes, no}
+MARKET_AWAY_CLEAN_SHEET = "away_clean_sheet"      # {yes, no}
+MARKET_TEAM_TO_SCORE_FIRST = "team_to_score_first"  # {home, away, none}
+MARKET_CORNERS_TOTAL_8_5 = "corners_total_8_5"    # {over, under}
+MARKET_CORNERS_TOTAL_9_5 = "corners_total_9_5"
+MARKET_CORNERS_TOTAL_10_5 = "corners_total_10_5"
+MARKET_CORNERS_TOTAL_11_5 = "corners_total_11_5"
 
 # Tunables — all empirical, can be calibrated post-trial against real ROI
 PRESSURE_DIFF_TRIGGER = 25.0          # avg pressure diff (0-100) before we adjust
@@ -89,6 +106,33 @@ RED_CARD_LAMBDA_PENALTY = 0.25         # 25% reduction for affected team's λ
 RED_CARD_LAMBDA_BOOST = 0.10           # 10% boost for opposing team's λ
 TRAILING_LATE_GAME_BOOST_MAX = 0.04    # ±4pp for "trailing team pushes" effect
 
+# Information-density threshold — below this we return Sportmonks priors
+# verbatim instead of rebuilding from per-team OU + pressure (kills cluster C).
+INFO_DENSITY_LIVE_THRESHOLD = 0.40
+
+# League-prior expected total corners per match (top-5 European average).
+# Per-league calibration tracked separately when post-trial data accrues.
+DEFAULT_LEAGUE_CORNERS_PRIOR = 10.4
+# Effective sample-size weight for the prior — at minute 0 we trust the
+# prior fully; by minute 60 we trust observed corner rate ~3:1.
+CORNERS_PRIOR_WEIGHT_MINUTES = 18.0
+
+# Killing-the-clock dampening: if a side is in clock-killing mode, scale
+# their goal-creation λ down by this fraction (4pp on overs).
+KILLING_CLOCK_LAMBDA_DAMP = 0.15
+
+# ── BTTS half-time decomposition (empirical, top-5 league average) ──────
+# Of all BTTS-yes matches: ~45% have both teams scored by HT, ~55% don't
+# (both goals after HT). These hardcoded factors are a backstop for when
+# Sportmonks doesn't ship dedicated BTTS-1H/BTTS-2H predictions.
+#
+# TODO calibrate per-league post-trial: a high-pace league like the
+# Bundesliga skews toward 1H BTTS realisation; tactical leagues like
+# Serie A skew later. With ≥30 collected fixtures per league we can
+# replace these with empirical fractions from goal_events timestamps.
+BTTS_FIRST_HALF_FRACTION = 0.45
+BTTS_SECOND_HALF_FRACTION = 0.55
+
 
 @dataclass(frozen=True)
 class MarketProbabilities:
@@ -97,6 +141,12 @@ class MarketProbabilities:
     Probabilities sum to 1.0 within a market (for mutually exclusive
     selections like 1X2 / BTTS / OU). Numeric tolerances are applied to
     the SUM at construction time (1.0 ± 1e-3 acceptable).
+
+    ``confidences[market]`` is a per-market credibility-interval half-
+    width derived from the disagreement between Sportmonks's own
+    prediction sources (1X2 prior vs DC vs CORRECT_SCORE marginal). Used
+    by ValueDetector to gate picks when our reported EV is within the
+    noise band.
     """
 
     fixture_id: int
@@ -105,6 +155,8 @@ class MarketProbabilities:
     by_market: dict[str, dict[str, float]]
     # Provenance: which model contributed which probabilities
     sources: dict[str, str]   # market → 'sportmonks' | 'live_adjusted' | 'derived'
+    # Per-market credibility half-width (decimal, e.g. 0.04 = ±4pp)
+    confidences: dict[str, float] = field(default_factory=dict)
 
     def get(self, market: str, selection: str) -> float | None:
         m = self.by_market.get(market)
@@ -125,6 +177,7 @@ class LiveMatchPredictor:
         red_card_penalty: float = RED_CARD_LAMBDA_PENALTY,
         red_card_boost: float = RED_CARD_LAMBDA_BOOST,
         trailing_late_boost_max: float = TRAILING_LATE_GAME_BOOST_MAX,
+        info_density_threshold: float = INFO_DENSITY_LIVE_THRESHOLD,
     ) -> None:
         self.pressure_boost_max = pressure_boost_max
         self.pressure_trend_boost_max = pressure_trend_boost_max
@@ -132,20 +185,33 @@ class LiveMatchPredictor:
         self.red_card_penalty = red_card_penalty
         self.red_card_boost = red_card_boost
         self.trailing_late_boost_max = trailing_late_boost_max
+        self.info_density_threshold = info_density_threshold
 
     def predict(self, state: LiveMatchState) -> MarketProbabilities:
         """Emit market probabilities for the current state."""
         by_market: dict[str, dict[str, float]] = {}
         sources: dict[str, str] = {}
+        confidences: dict[str, float] = {}
 
-        # 1. Fulltime result — adjust for live signal
+        # 1. Fulltime result — adjust for live signal (gated by info density)
         ft_probs, ft_src = self._fulltime_result(state)
         if ft_probs:
             by_market[MARKET_FULLTIME_RESULT] = ft_probs
             sources[MARKET_FULLTIME_RESULT] = ft_src
-            # Derived: double chance
-            by_market[MARKET_DOUBLE_CHANCE] = self._double_chance_from_1x2(ft_probs)
-            sources[MARKET_DOUBLE_CHANCE] = "derived"
+            confidences[MARKET_FULLTIME_RESULT] = self._confidence_1x2(state, ft_probs)
+            # Derived: double chance — prefer Sportmonks DC when available,
+            # else derive from 1X2.
+            dc_probs, dc_src = self._double_chance(state, ft_probs)
+            if dc_probs:
+                by_market[MARKET_DOUBLE_CHANCE] = dc_probs
+                sources[MARKET_DOUBLE_CHANCE] = dc_src
+                confidences[MARKET_DOUBLE_CHANCE] = confidences[MARKET_FULLTIME_RESULT]
+            # Derived: draw-no-bet (B-20)
+            dnb = self._draw_no_bet_from_1x2(ft_probs)
+            if dnb is not None:
+                by_market[MARKET_DRAW_NO_BET] = dnb
+                sources[MARKET_DRAW_NO_BET] = "derived"
+                confidences[MARKET_DRAW_NO_BET] = confidences[MARKET_FULLTIME_RESULT] * 1.2
 
         # 2. First half result — only useful before HT
         if not state.is_finished and state.minute < 45:
@@ -153,6 +219,7 @@ class LiveMatchPredictor:
             if fh_probs:
                 by_market[MARKET_FIRST_HALF_RESULT] = fh_probs
                 sources[MARKET_FIRST_HALF_RESULT] = "sportmonks"
+                confidences[MARKET_FIRST_HALF_RESULT] = 0.05
 
         # 3. HT/FT — only useful before HT
         if not state.is_finished and state.minute < 45:
@@ -160,12 +227,14 @@ class LiveMatchPredictor:
             if htft:
                 by_market[MARKET_HTFT] = htft
                 sources[MARKET_HTFT] = "sportmonks"
+                confidences[MARKET_HTFT] = 0.06  # 9-cell market is noisier
 
         # 4. BTTS (full match) — already-scored teams shift probability
         btts = self._btts(state)
         if btts:
             by_market[MARKET_BTTS] = btts
             sources[MARKET_BTTS] = "live_adjusted"
+            confidences[MARKET_BTTS] = 0.04
 
         # 5. BTTS first half — pre-HT only
         if not state.is_finished and state.minute < 45:
@@ -173,16 +242,25 @@ class LiveMatchPredictor:
             if btts1:
                 by_market[MARKET_BTTS_FIRST_HALF] = btts1
                 sources[MARKET_BTTS_FIRST_HALF] = "live_adjusted"
+                confidences[MARKET_BTTS_FIRST_HALF] = 0.06
 
-        # 6. OU 0.5/1.5/2.5/3.5 — Dixon-Robinson scaled when in play
+        # 6. BTTS second half — derived (B-24)
+        btts2h = self._btts_second_half(state)
+        if btts2h:
+            by_market[MARKET_BTTS_SECOND_HALF] = btts2h
+            sources[MARKET_BTTS_SECOND_HALF] = "derived"
+            confidences[MARKET_BTTS_SECOND_HALF] = 0.06
+
+        # 7. OU 0.5/1.5/2.5/3.5 — Dixon-Robinson scaled when in play
         for line, market in [(0.5, MARKET_OU_05), (1.5, MARKET_OU_15),
                              (2.5, MARKET_OU_25), (3.5, MARKET_OU_35)]:
             ou = self._ou_total(state, line=line)
             if ou:
                 by_market[market] = ou
                 sources[market] = "live_adjusted"
+                confidences[market] = 0.04
 
-        # 7. First half OU
+        # 8. First half OU
         if not state.is_finished and state.minute < 45:
             for line, market in [(0.5, MARKET_FIRST_HALF_OU_05),
                                  (1.5, MARKET_FIRST_HALF_OU_15)]:
@@ -190,16 +268,60 @@ class LiveMatchPredictor:
                 if ou:
                     by_market[market] = ou
                     sources[market] = "live_adjusted"
+                    confidences[market] = 0.05
 
-        # 8. Per-team OU 1.5
+        # 9. Per-team OU 1.5
         home_ou15 = self._team_ou(state, line=1.5, side="home")
         away_ou15 = self._team_ou(state, line=1.5, side="away")
         if home_ou15:
             by_market[MARKET_HOME_OU_15] = home_ou15
             sources[MARKET_HOME_OU_15] = "sportmonks"
+            confidences[MARKET_HOME_OU_15] = 0.05
         if away_ou15:
             by_market[MARKET_AWAY_OU_15] = away_ou15
             sources[MARKET_AWAY_OU_15] = "sportmonks"
+            confidences[MARKET_AWAY_OU_15] = 0.05
+
+        # 10. Team clean sheet (B-23) — derived from team-to-score-remaining
+        for side, market_key in (
+            ("home", MARKET_AWAY_CLEAN_SHEET),  # away CS = home doesn't score
+            ("away", MARKET_HOME_CLEAN_SHEET),  # home CS = away doesn't score
+        ):
+            cs = self._team_clean_sheet(state, scoring_side=side)
+            if cs:
+                by_market[market_key] = cs
+                sources[market_key] = "derived"
+                confidences[market_key] = 0.05
+
+        # 11. Team to score first (B-17) — useful when score is 0-0
+        if state.home_goals == 0 and state.away_goals == 0:
+            ttsf = self._team_to_score_first(state)
+            if ttsf:
+                by_market[MARKET_TEAM_TO_SCORE_FIRST] = ttsf
+                sources[MARKET_TEAM_TO_SCORE_FIRST] = "sportmonks"
+                confidences[MARKET_TEAM_TO_SCORE_FIRST] = 0.06
+
+        # 12. Corners totals (B-1) — only when CORNERS stat is populated
+        # AND informational density has accumulated. Without the density
+        # gate, an isolated corner at minute 10 with no other stats
+        # produces a Poisson rate estimated from a single data point —
+        # the same cluster-C pathology we kill on goal markets.
+        if (
+            state.minute >= 10
+            and (state.home_corners + state.away_corners) > 0
+            and state.informational_density >= self.info_density_threshold
+        ):
+            for line, market in (
+                (8.5, MARKET_CORNERS_TOTAL_8_5),
+                (9.5, MARKET_CORNERS_TOTAL_9_5),
+                (10.5, MARKET_CORNERS_TOTAL_10_5),
+                (11.5, MARKET_CORNERS_TOTAL_11_5),
+            ):
+                co = self._corners_total(state, line=line)
+                if co:
+                    by_market[market] = co
+                    sources[market] = "live_adjusted"
+                    confidences[market] = 0.06
 
         kind = "live" if state.is_live or state.is_half_time else "pre_match"
         return MarketProbabilities(
@@ -208,6 +330,7 @@ class LiveMatchPredictor:
             snapshot_kind=kind,
             by_market=by_market,
             sources=sources,
+            confidences=confidences,
         )
 
     # ── per-market predictors ───────────────────────────────────────────
@@ -228,6 +351,14 @@ class LiveMatchPredictor:
         # Pre-match: trust Sportmonks fully
         if not state.is_live and not state.is_half_time and state.minute == 0:
             return _normalise(base), "sportmonks"
+
+        # ── B-G3 / B-7 information-density gate ────────────────────────
+        # At low density (early minutes, no events, no pressure samples),
+        # we DO NOT rebuild 1X2 from per-team OU + nudges — we return the
+        # Sportmonks prior verbatim. This kills the cluster-C "min-8 burst".
+        density = state.informational_density
+        if density < self.info_density_threshold:
+            return _normalise(base), "sportmonks_low_info"
 
         # ── Dixon-Robinson live scoring ────────────────────────────────
         # Estimate per-team λ_remaining via Sportmonks per-team OU 0.5
@@ -279,21 +410,33 @@ class LiveMatchPredictor:
         """
         adj = dict(probs)
 
-        # 1. Average pressure differential
-        diff = state.home_pressure_avg - state.away_pressure_avg
-        if abs(diff) > PRESSURE_DIFF_TRIGGER:
-            shift = self.pressure_boost_max * min(1.0, abs(diff) / 50.0)
-            if diff > 0:
-                adj["home"] += shift
-                adj["away"] -= shift / 2
-                adj["draw"] -= shift / 2
-            else:
-                adj["away"] += shift
-                adj["home"] -= shift / 2
-                adj["draw"] -= shift / 2
+        # 1. Average pressure differential — only when BOTH sides have
+        # samples. Asymmetric data (e.g., Sportmonks emits home pressure
+        # but drops away samples this snapshot) produces a fake huge diff
+        # against an artificial 0 baseline → false PRESSURE_DIFF_TRIGGER.
+        has_home_pressure = bool(state.home_pressure_recent)
+        has_away_pressure = bool(state.away_pressure_recent)
+        if has_home_pressure and has_away_pressure:
+            diff = state.home_pressure_avg - state.away_pressure_avg
+            if abs(diff) > PRESSURE_DIFF_TRIGGER:
+                shift = self.pressure_boost_max * min(1.0, abs(diff) / 50.0)
+                if diff > 0:
+                    adj["home"] += shift
+                    adj["away"] -= shift / 2
+                    adj["draw"] -= shift / 2
+                else:
+                    adj["away"] += shift
+                    adj["home"] -= shift / 2
+                    adj["draw"] -= shift / 2
 
-        # 2. Pressure TREND (rising vs falling)
-        trend_diff = state.home_pressure_trend - state.away_pressure_trend
+        # 2. Pressure TREND (rising vs falling) — needs ≥4 samples per side
+        if (
+            len(state.home_pressure_recent) >= 4
+            and len(state.away_pressure_recent) >= 4
+        ):
+            trend_diff = state.home_pressure_trend - state.away_pressure_trend
+        else:
+            trend_diff = 0.0
         if abs(trend_diff) > PRESSURE_TREND_TRIGGER:
             shift = self.pressure_trend_boost_max * min(1.0, abs(trend_diff) / 30.0)
             if trend_diff > 0:
@@ -317,6 +460,27 @@ class LiveMatchPredictor:
                 # Away trailing by 1
                 adj["draw"] += shift
                 adj["home"] -= shift
+
+        # 4. Killing-the-clock dampening (B-3) — when a leading team is
+        # parking the bus (high possession, no penetration), suppress the
+        # late-game equaliser bias and push probability to the leader.
+        for side in ("home", "away"):
+            if not state.is_killing_clock(side):
+                continue
+            leading = (
+                (side == "home" and state.score_diff_home > 0)
+                or (side == "away" and state.score_diff_home < 0)
+            )
+            if leading:
+                shift = self.trailing_late_boost_max * 0.5  # half of trailing-push
+                if side == "home":
+                    adj["home"] += shift
+                    adj["draw"] -= shift / 2
+                    adj["away"] -= shift / 2
+                else:
+                    adj["away"] += shift
+                    adj["draw"] -= shift / 2
+                    adj["home"] -= shift / 2
 
         return _normalise(_clip(adj))
 
@@ -357,9 +521,18 @@ class LiveMatchPredictor:
             λ_full = -ln(1 − P(over 0.5))
         2. Scale to remaining time (90 − minute) / 90.
         3. Apply red-card adjustment (Mengual & Forrest 2002):
-           - Affected team: λ *= (1 - 0.25)
-           - Opposing team: λ *= (1 + 0.10)
-        4. Apply live xG signal: if live xG-proxy / expected ratio > 1.2
+           - Affected team: λ *= (1 - 0.25..0.40 by remaining time)
+           - Opposing team: λ *= (1 + 0.10..0.18)
+        4. Apply BIG_CHANCES_MISSED regression (B-6): if missed/created > 0.5,
+           team has been wasteful; small λ boost (regress toward conversion).
+        5. Apply SAVES signal (B-5): if opp has many saves vs few SOT, the
+           opposing keeper has been overperforming; small additional boost.
+        6. Apply INJURIES penalty (B-9): mid-match injuries depress λ.
+        7. Apply engagement composite (B-11): high tackles/interceptions
+           mid-match → goal suppression.
+        8. Apply killing-the-clock dampening (B-3): if THIS side is parking
+           the bus, drop their attacking λ.
+        9. Apply live xG signal: if live xG-proxy / expected ratio > 1.2
            or < 0.8, scale λ accordingly (capped at ±20%).
         """
         type_id = (
@@ -380,14 +553,6 @@ class LiveMatchPredictor:
             return lam_remaining
 
         # ── Red-card adjustment (scaled by remaining minutes) ─────────
-        # Empirical effect: a red card with 30+ minutes left typically
-        # halves the affected team's xG-per-minute (Mengual & Forrest
-        # 2002 + later EPL data). Our penalty scales with how much time
-        # the team has to play down a man:
-        #   ≥45 min remaining → -40%
-        #   30-45 min        → -35%
-        #   15-30 min        → -25%
-        #   < 15 min         → -15% (defensive setup, less impact)
         red_min_self = (
             state.red_card_minute_home if side == "home"
             else state.red_card_minute_away
@@ -405,6 +570,57 @@ class LiveMatchPredictor:
             boost = self._scaled_red_card_boost(time_opp_a_man_down)
             lam_remaining *= (1.0 + boost)
 
+        # ── BIG_CHANCES_MISSED regression (B-6) ──────────────────────
+        # Wasteful team likely to convert next big chance. Bound nudge at +8%.
+        bc_created = (
+            state.home_big_chances_created if side == "home"
+            else state.away_big_chances_created
+        )
+        bc_missed = (
+            state.home_big_chances_missed if side == "home"
+            else state.away_big_chances_missed
+        )
+        if bc_created >= 2 and bc_missed >= 1:
+            miss_rate = bc_missed / max(bc_created, 1)
+            if miss_rate >= 0.5:
+                lam_remaining *= 1.0 + min(0.08, 0.04 * miss_rate)
+
+        # ── SAVES signal (B-5) ───────────────────────────────────────
+        # If THIS team has been kept out by OPP keeper many times, their xG
+        # has been under-rewarded → small regression-toward-mean boost.
+        opp_saves = state.away_saves if side == "home" else state.home_saves
+        own_sot = (
+            state.home_stats.get(StatType.SHOTS_ON_TARGET, 0) if side == "home"
+            else state.away_stats.get(StatType.SHOTS_ON_TARGET, 0)
+        )
+        if opp_saves >= 4 and own_sot >= 4:
+            save_rate = opp_saves / max(own_sot, 1)
+            if save_rate >= 0.7:
+                lam_remaining *= 1.0 + min(0.06, 0.04 * (save_rate - 0.5))
+
+        # ── INJURIES penalty (B-9) ───────────────────────────────────
+        # Mid-match injuries cost players → soft λ depression. Capped at -15%.
+        inj = state.home_injuries if side == "home" else state.away_injuries
+        if inj >= 1 and state.minute >= 30:
+            lam_remaining *= max(0.85, 1.0 - 0.05 * inj)
+
+        # ── Engagement composite (B-11) ──────────────────────────────
+        # High tackles+interceptions+duels suggests scrappy game → goal
+        # suppression. Use TOTAL match engagement (both sides) since this
+        # is a match-state signal not a team-specific one.
+        total_eng = state.home_engagement + state.away_engagement
+        # Empirical: top-5 league average ≈ 80 by minute 60. Above 110+ = scrappy.
+        if state.minute >= 30:
+            expected_eng = (state.minute / 60.0) * 80.0
+            if expected_eng > 0 and total_eng > expected_eng * 1.4:
+                ratio = total_eng / expected_eng
+                damp = min(0.10, 0.05 * (ratio - 1.4))
+                lam_remaining *= (1.0 - damp)
+
+        # ── Killing-the-clock dampening (B-3) ────────────────────────
+        if state.is_killing_clock(side):
+            lam_remaining *= (1.0 - KILLING_CLOCK_LAMBDA_DAMP)
+
         # ── Live xG signal: actual creation vs minute-prorated expectation ──
         if state.minute >= 15:  # too noisy in opening minutes
             live_xg = (
@@ -421,6 +637,140 @@ class LiveMatchPredictor:
                 lam_remaining *= 0.5 + 0.5 * ratio_capped
 
         return max(0.0, lam_remaining)
+
+    def _double_chance(
+        self, state: LiveMatchState, ft_probs: dict[str, float],
+    ) -> tuple[dict[str, float] | None, str]:
+        """Return (DC probabilities, source).
+
+        Prefers Sportmonks ``DOUBLE_CHANCE_PROBABILITY`` when available
+        (B-18); falls back to derivation from our 1X2 probabilities.
+
+        Sportmonks DC body shape: ``{draw_home, draw_away, home_away}``
+        — confusingly named because Sportmonks uses "first_outcome second_outcome"
+        ordering by alphabetical, where:
+          - ``home_away`` = 12 (no draw)
+          - ``draw_home`` = 1X
+          - ``draw_away`` = X2
+        """
+        sm = state.sportmonks_prediction(PredictionType.DOUBLE_CHANCE_PROBABILITY)
+        # Pre-match: trust Sportmonks DC directly when present
+        if sm and not state.is_live and not state.is_half_time and state.minute == 0:
+            body = {
+                "1x": _pct(sm.get("draw_home")),
+                "x2": _pct(sm.get("draw_away")),
+                "12": _pct(sm.get("home_away")),
+            }
+            if all(0.0 < v < 1.0 for v in body.values()):
+                return _normalise(body), "sportmonks"
+        # Live or fallback: derive from our 1X2 (which already reflects state)
+        return self._double_chance_from_1x2(ft_probs), "derived"
+
+    def _draw_no_bet_from_1x2(
+        self, ft: dict[str, float],
+    ) -> dict[str, float] | None:
+        """Renormalise 1X2 dropping the draw → DNB market."""
+        non_draw = ft["home"] + ft["away"]
+        if non_draw <= 0:
+            return None
+        return {
+            "home": ft["home"] / non_draw,
+            "away": ft["away"] / non_draw,
+        }
+
+    def _team_clean_sheet(
+        self, state: LiveMatchState, *, scoring_side: str,
+    ) -> dict[str, float] | None:
+        """P(scoring_side does NOT score the rest of the match).
+
+        ``scoring_side="home"`` returns the AWAY clean-sheet market
+        (i.e. away keeper keeps a clean sheet).
+        """
+        scoring_prob = self._team_to_score_remaining(state, scoring_side)
+        if scoring_prob is None:
+            return None
+        return {
+            "yes": _clip_scalar(1.0 - scoring_prob),
+            "no": _clip_scalar(scoring_prob),
+        }
+
+    def _team_to_score_first(
+        self, state: LiveMatchState,
+    ) -> dict[str, float] | None:
+        """Use Sportmonks TEAM_TO_SCORE_FIRST_PROBABILITY (type 238).
+
+        Body shape: ``{home, draw, away}`` — "draw" means no goal scored
+        in the rest of the match (clean sheet both sides).
+        """
+        sm = state.sportmonks_prediction(
+            PredictionType.TEAM_TO_SCORE_FIRST_PROBABILITY
+        )
+        if not sm:
+            return None
+        return _normalise({
+            "home": _pct(sm.get("home")),
+            "away": _pct(sm.get("away")),
+            "none": _pct(sm.get("draw")),
+        })
+
+    def _btts_second_half(
+        self, state: LiveMatchState,
+    ) -> dict[str, float] | None:
+        """BTTS-2H — both teams score within the SECOND HALF period.
+
+        Bookmaker pricing of BTTS-2H is independent of first-half goals: it
+        asks whether each team scores at least once in the 2H itself. So we
+        compute P(home scores in 2H) × P(away scores in 2H) using
+        ``_team_score_in_remaining_uncond`` — which deliberately ignores the
+        first-half scoreline (unlike ``_team_to_score_remaining``, which
+        short-circuits to 1.0 for already-scored teams).
+        """
+        sm = state.sportmonks_prediction(PredictionType.BTTS_PROBABILITY)
+        if not sm:
+            return None
+        # Pre-HT: BTTS-2H requires both teams to score AFTER HT.
+        # See BTTS_SECOND_HALF_FRACTION docstring for empirical basis +
+        # per-league calibration TODO.
+        if state.minute < 45 and not state.is_half_time:
+            full_yes = _pct(sm.get("yes"))
+            yes_2h = full_yes * BTTS_SECOND_HALF_FRACTION
+            return _normalise({"yes": yes_2h, "no": 1.0 - yes_2h})
+        # HT or 2H: P(both score in remaining time), agnostic to 1H goals.
+        home_2h = self._team_score_in_remaining_uncond(state, "home")
+        away_2h = self._team_score_in_remaining_uncond(state, "away")
+        if home_2h is None or away_2h is None:
+            return None
+        yes = home_2h * away_2h
+        return _normalise({"yes": yes, "no": 1.0 - yes})
+
+    def _corners_total(
+        self, state: LiveMatchState, *, line: float,
+    ) -> dict[str, float] | None:
+        """Total-corners O/U using a Poisson model with a league prior.
+
+        λ_full estimated as a weighted blend of:
+          - Observed corners-per-minute extrapolated to 90 minutes
+          - League prior (DEFAULT_LEAGUE_CORNERS_PRIOR)
+        with weight CORNERS_PRIOR_WEIGHT_MINUTES on the prior.
+        """
+        if state.minute < 10:
+            return None
+        corners_so_far = state.home_corners + state.away_corners
+        # Effective minutes for rate estimation (prior weight + observed)
+        effective_minutes = state.minute + CORNERS_PRIOR_WEIGHT_MINUTES
+        prior_corners = (
+            DEFAULT_LEAGUE_CORNERS_PRIOR
+            * (CORNERS_PRIOR_WEIGHT_MINUTES / 90.0)
+        )
+        rate_per_min = (corners_so_far + prior_corners) / max(effective_minutes, 1.0)
+        lam_remaining = rate_per_min * max(0, 90 - state.minute)
+        if corners_so_far > line:
+            return {"over": 1.0, "under": 0.0}
+        if lam_remaining <= 0:
+            return {"over": 0.0, "under": 1.0}
+        needed = max(0, math.ceil(line) - corners_so_far)
+        p_over = 1.0 - _poisson_cdf(needed - 1, lam_remaining)
+        return {"over": _clip_scalar(p_over), "under": _clip_scalar(1 - p_over)}
 
     def _sportmonks_first_half_result(
         self, state: LiveMatchState,
@@ -474,13 +824,13 @@ class LiveMatchPredictor:
         # Sportmonks doesn't ship BTTS-1H pre-built; derive from
         # Home OU 0.5 1H × Away OU 0.5 1H if available
         # (Both OU 0.5 yes ≡ team_score_first_half_yes).
-        # Simpler fallback: half of full-match BTTS pre-match.
+        # Simpler fallback: BTTS-1H ≈ BTTS_FIRST_HALF_FRACTION × full BTTS.
+        # See BTTS_FIRST_HALF_FRACTION for empirical basis + calibration TODO.
         sm = state.sportmonks_prediction(PredictionType.BTTS_PROBABILITY)
         if not sm:
             return None
         full_yes = _pct(sm.get("yes"))
-        # Empirical fraction: ~45% of BTTS happens by half-time.
-        first_half_yes = full_yes * 0.45
+        first_half_yes = full_yes * BTTS_FIRST_HALF_FRACTION
         return _normalise({"yes": first_half_yes, "no": 1 - first_half_yes})
 
     def _ou_total(
@@ -522,6 +872,18 @@ class LiveMatchPredictor:
             return None
         # Remaining-time scale
         lam_remaining = lam_total * (max(0, 90 - state.minute) / 90.0)
+        # B-3: killing-the-clock dampens TOTAL-λ proportional to how many
+        # sides are killing clock. If both teams are parking the bus, full
+        # 15% damp. If only one team is killing (the leader; the other is
+        # still pushing), only ~half the goal-rate suppression applies —
+        # the active team still contributes their full λ. The previous
+        # `if EITHER killed → full damp` over-suppressed asymmetric cases.
+        home_kills = state.is_killing_clock("home")
+        away_kills = state.is_killing_clock("away")
+        if home_kills and away_kills:
+            lam_remaining *= (1.0 - KILLING_CLOCK_LAMBDA_DAMP)
+        elif home_kills or away_kills:
+            lam_remaining *= (1.0 - KILLING_CLOCK_LAMBDA_DAMP * 0.5)
         if lam_remaining <= 0:
             return {"over": 1.0 if already > line else 0.0,
                     "under": 0.0 if already > line else 1.0}
@@ -591,8 +953,10 @@ class LiveMatchPredictor:
             return None
         target = _pct(sm.get("yes"))  # P(over 2.5)
         if not 0.0 < target < 1.0:
-            # Edge case: trust mid-range default
-            return 2.7
+            # Sportmonks emitted no usable OU 2.5 prediction — return None so
+            # callers (OU markets, BTTS-2H, first-half OU) skip this snapshot
+            # rather than fabricate λ from a hard-coded mid-range default.
+            return None
         # Binary search for λ
         lo, hi = 0.1, 6.0
         for _ in range(40):
@@ -634,6 +998,31 @@ class LiveMatchPredictor:
             return 0.0
         return 1.0 - math.exp(-lam_remaining)
 
+    def _team_score_in_remaining_uncond(
+        self, state: LiveMatchState, side: str,
+    ) -> float | None:
+        """P(side scores ≥1 in remaining minutes), ignoring first-half goals.
+
+        Differs from ``_team_to_score_remaining`` in that it does NOT
+        short-circuit to 1.0 when the side has already scored — required
+        for BTTS-2H (both score IN THE SECOND HALF, regardless of 1H state).
+        """
+        type_id = (
+            PredictionType.HOME_OVER_UNDER_0_5_PROBABILITY if side == "home"
+            else PredictionType.AWAY_OVER_UNDER_0_5_PROBABILITY
+        )
+        sm = state.sportmonks_prediction(type_id)
+        if not sm:
+            return None
+        p_over_0_5 = _pct(sm.get("yes"))
+        if not 0.0 < p_over_0_5 < 1.0:
+            return None
+        lam_pre = -math.log(1 - p_over_0_5)
+        lam_remaining = lam_pre * max(0, 90 - state.minute) / 90.0
+        if lam_remaining <= 0:
+            return 0.0
+        return 1.0 - math.exp(-lam_remaining)
+
     def _first_half_goals_so_far(self, state: LiveMatchState) -> int:
         """Count goals scored in the first half (period_id == 1)."""
         return sum(
@@ -646,6 +1035,75 @@ class LiveMatchPredictor:
             "x2": _clip_scalar(ft["draw"] + ft["away"]),
             "12": _clip_scalar(ft["home"] + ft["away"]),
         }
+
+    # ── confidence (B-G4) ──────────────────────────────────────────────
+
+    def _confidence_1x2(
+        self, state: LiveMatchState, our_probs: dict[str, float],
+    ) -> float:
+        """Per-pick credibility-interval half-width for 1X2 markets.
+
+        Disagreement between Sportmonks sources — direct 1X2, DOUBLE_CHANCE
+        marginal, CORRECT_SCORE-grid marginal — gives a free standard-error
+        proxy across ALL THREE outcomes (home/draw/away). We take the MAX
+        spread across the three axes so a pick on `home` or `away` doesn't
+        get a CI derived only from disagreement on `draw`.
+
+        Floor of 0.02 (±2pp) ensures ValueDetector never demands less than
+        baseline noise.
+        """
+        sources_per_outcome: dict[str, list[float]] = {
+            "home": [], "draw": [], "away": [],
+        }
+
+        sm_ftr = state.sportmonks_prediction(
+            PredictionType.FULLTIME_RESULT_PROBABILITY
+        )
+        if sm_ftr:
+            for outcome in ("home", "draw", "away"):
+                v = _pct(sm_ftr.get(outcome))
+                if 0 < v < 1:
+                    sources_per_outcome[outcome].append(v)
+
+        sm_dc = state.sportmonks_prediction(PredictionType.DOUBLE_CHANCE_PROBABILITY)
+        if sm_dc:
+            # Each DC selection covers 2 outcomes; the OPPOSITE-pair tells
+            # us the third outcome's marginal:
+            #   P(home) = 1 - P(X2)        (X2 = draw or away → not home)
+            #   P(draw) = 1 - P(home_away) (12 = home or away → not draw)
+            #   P(away) = 1 - P(1X)        (1X = home or draw → not away)
+            x2 = _pct(sm_dc.get("draw_away"))
+            ha = _pct(sm_dc.get("home_away"))
+            one_x = _pct(sm_dc.get("draw_home"))
+            if 0 < x2 < 1:
+                sources_per_outcome["home"].append(1.0 - x2)
+            if 0 < ha < 1:
+                sources_per_outcome["draw"].append(1.0 - ha)
+            if 0 < one_x < 1:
+                sources_per_outcome["away"].append(1.0 - one_x)
+
+        grid = state.sportmonks_score_grid
+        if grid is not None:
+            n = grid.shape[0]
+            p_home = float(
+                sum(grid[i, j] for i in range(n) for j in range(n) if i > j)
+            )
+            p_draw = float(sum(grid[i, i] for i in range(n)))
+            p_away = float(
+                sum(grid[i, j] for i in range(n) for j in range(n) if i < j)
+            )
+            sources_per_outcome["home"].append(p_home)
+            sources_per_outcome["draw"].append(p_draw)
+            sources_per_outcome["away"].append(p_away)
+
+        spreads: list[float] = []
+        for sources in sources_per_outcome.values():
+            if len(sources) >= 2:
+                spreads.append(max(sources) - min(sources))
+
+        max_spread = max(spreads) if spreads else 0.04
+        # Half-width: spread/2 + 1.5pp baseline noise
+        return max(0.02, max_spread / 2 + 0.015)
 
 
 # ── numeric helpers ─────────────────────────────────────────────────────────

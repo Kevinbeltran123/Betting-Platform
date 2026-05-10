@@ -77,16 +77,20 @@ async def scan_one_fixture(
     raw = f.model_dump(mode="json")
     cache.save_snapshot(fixture_id, {"data": raw})
 
-    state = LiveMatchState.from_fixture(f)
+    snapshot_taken_at = datetime.now(timezone.utc)
+    state = LiveMatchState.from_fixture(f, snapshot_taken_at=snapshot_taken_at)
     if not (state.is_live or state.is_half_time):
         return []
 
     probs = predictor.predict(state)
     odds = await client.get_inplay_odds_for_fixture(fixture_id)
+    # Pass state so sanity filters (red card, info-density, valuebet,
+    # correct-score, blackout, stale-odd) all engage.
     picks = detector.evaluate(
         probs, odds,
         home_team_name=state.home_team_name,
         away_team_name=state.away_team_name,
+        state=state,
     )
     return picks
 
@@ -146,17 +150,28 @@ def render_markdown_report(
         lines.append("_No value picks found in current scan._")
         return "\n".join(lines)
 
-    lines.append(f"## {len(picks)} value picks (sorted by edge)")
+    clean = [p for p in picks if not p.flagged_reason]
+    flagged = [p for p in picks if p.flagged_reason]
+
+    lines.append(
+        f"## {len(clean)} clean picks  &  {len(flagged)} flagged "
+        f"(sorted by edge)"
+    )
     lines.append("")
-    lines.append("| EV%   | Match | Min | Market | Selection | Odd | Fair | P(model) | Stake% |")
-    lines.append("|-------|-------|-----|--------|-----------|-----|------|----------|--------|")
+    lines.append(
+        "| EV%   | Match | Min | Market | Sel | Odd | Fair | P | Stake% | L | Flag |"
+    )
+    lines.append(
+        "|-------|-------|-----|--------|-----|-----|------|---|--------|---|------|"
+    )
     for p in picks:
         match_label = labels.get(p.fixture_id, f"{p.home_team} vs {p.away_team}")
+        flag_str = p.flagged_reason or ""
         lines.append(
             f"| {p.edge_pct:+5.2f} | {match_label} | {p.minute} | "
             f"{p.market} | {p.selection} | {p.bookmaker_odd:.2f} | "
             f"{p.fair_odd:.2f} | {p.our_probability:.3f} | "
-            f"{p.suggested_stake_pct:.2f} |"
+            f"{p.suggested_stake_pct:.2f} | {p.logical_score:.2f} | {flag_str} |"
         )
     lines.append("")
     return "\n".join(lines)
@@ -200,6 +215,10 @@ def write_reports(
                 "suggested_stake_pct": p.suggested_stake_pct,
                 "market_description": p.market_description,
                 "snapshot_kind": p.snapshot_kind,
+                "flagged_reason": p.flagged_reason,
+                "logical_score": p.logical_score,
+                "logical_components": p.logical_components,
+                "confidence_half_width": p.confidence_half_width,
             }
             for p in picks
         ],

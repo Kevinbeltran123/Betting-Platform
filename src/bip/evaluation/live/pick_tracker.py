@@ -9,10 +9,16 @@ Stable pick identity: a pick is uniquely identified by
 where ``snapshot_minute_bucket`` is the floor of (minute / 5) — picks
 within the same 5-minute window count as the same pick (avoid emitting
 the "Lanús X2" pick 30 times in 5 minutes).
+
+In addition to the ``picks`` table, this module owns ``pick_decisions``,
+a debug-grade audit log of EVERY decision the value detector makes —
+emit, flag, drop. That table is the input for §E falsifiability metrics
+(per-component breakdown, hit-rate-by-bucket, gate-rejection rate).
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -47,6 +53,9 @@ CREATE TABLE IF NOT EXISTS picks (
     snapshot_kind TEXT NOT NULL,
     emitted_at TEXT NOT NULL,           -- ISO 8601 UTC
     flagged_reason TEXT,                -- sanity filter trip (NULL = clean)
+    logical_score REAL,                  -- §D composite, [0,1]
+    logical_components_json TEXT,        -- JSON: subscore breakdown
+    confidence_half_width REAL,          -- predictor CI half-width
     -- Outcome columns, populated post-match
     status TEXT NOT NULL DEFAULT 'pending',  -- pending | won | lost | void | unknown
     settled_at TEXT,
@@ -64,6 +73,36 @@ CREATE INDEX IF NOT EXISTS idx_picks_status ON picks (status);
 CREATE INDEX IF NOT EXISTS idx_picks_fixture ON picks (fixture_id);
 CREATE INDEX IF NOT EXISTS idx_picks_emitted_at ON picks (emitted_at);
 CREATE INDEX IF NOT EXISTS idx_picks_flagged ON picks (flagged_reason);
+
+-- Decision audit: one row per (market, selection, bookmaker_id) PER detector
+-- pass, regardless of whether it ended in emit / flag / drop. Powers the
+-- per-gate rejection-rate analysis from §E.
+CREATE TABLE IF NOT EXISTS pick_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fixture_id INTEGER NOT NULL,
+    minute INTEGER NOT NULL,
+    market TEXT NOT NULL,
+    selection TEXT NOT NULL,
+    bookmaker_id INTEGER,
+    bookmaker_odd REAL,
+    our_probability REAL,
+    edge_pct REAL,
+    decision TEXT NOT NULL,         -- 'emit' | 'flag' | 'drop'
+    drop_reason TEXT,                -- specific gate that fired
+    sm_marginal REAL,                -- Sportmonks correct-score marginal
+    valuebet_agrees INTEGER,         -- nullable bool
+    informational_density REAL,
+    logical_score REAL,
+    logical_components_json TEXT,
+    confidence_half_width REAL,
+    pick_id INTEGER,                 -- FK into picks.id when decision='emit'
+    snapshot_taken_at TEXT,
+    audited_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_decisions_fixture ON pick_decisions (fixture_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_decision ON pick_decisions (decision);
+CREATE INDEX IF NOT EXISTS idx_decisions_drop_reason ON pick_decisions (drop_reason);
 """
 
 
@@ -78,6 +117,12 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     }
     if "flagged_reason" not in existing_cols:
         conn.execute("ALTER TABLE picks ADD COLUMN flagged_reason TEXT")
+    if "logical_score" not in existing_cols:
+        conn.execute("ALTER TABLE picks ADD COLUMN logical_score REAL")
+    if "logical_components_json" not in existing_cols:
+        conn.execute("ALTER TABLE picks ADD COLUMN logical_components_json TEXT")
+    if "confidence_half_width" not in existing_cols:
+        conn.execute("ALTER TABLE picks ADD COLUMN confidence_half_width REAL")
 
 
 @dataclass(frozen=True)
@@ -104,6 +149,8 @@ class TrackedPick:
     profit_units: float | None
     flagged_reason: str | None = None
     market_description: str | None = None
+    logical_score: float | None = None
+    confidence_half_width: float | None = None
 
 
 class PickTracker:
@@ -134,6 +181,10 @@ class PickTracker:
         """
         bucket = pick.minute // DEDUP_BUCKET_MINUTES
         now_iso = datetime.now(timezone.utc).isoformat()
+        components_json = (
+            json.dumps(pick.logical_components, sort_keys=True)
+            if pick.logical_components else None
+        )
         try:
             with self._connect() as conn:
                 cursor = conn.execute(
@@ -143,8 +194,9 @@ class PickTracker:
                         bookmaker_id, minute, minute_bucket, bookmaker_odd,
                         our_probability, fair_odd, edge_pct, kelly_fraction_full,
                         suggested_stake_pct, market_description, snapshot_kind,
-                        emitted_at, flagged_reason
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        emitted_at, flagged_reason,
+                        logical_score, logical_components_json, confidence_half_width
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         pick.fixture_id, pick.home_team, pick.away_team,
@@ -154,11 +206,94 @@ class PickTracker:
                         pick.kelly_fraction_full, pick.suggested_stake_pct,
                         pick.market_description, pick.snapshot_kind, now_iso,
                         pick.flagged_reason,
+                        pick.logical_score, components_json,
+                        pick.confidence_half_width,
                     ),
                 )
                 return cursor.lastrowid, True
         except sqlite3.IntegrityError:
             return None, False
+
+    def record_decision(
+        self,
+        *,
+        fixture_id: int,
+        minute: int,
+        market: str,
+        selection: str,
+        decision: str,
+        bookmaker_id: int | None = None,
+        bookmaker_odd: float | None = None,
+        our_probability: float | None = None,
+        edge_pct: float | None = None,
+        drop_reason: str | None = None,
+        sm_marginal: float | None = None,
+        valuebet_agrees: bool | None = None,
+        informational_density: float | None = None,
+        logical_score: float | None = None,
+        logical_components: dict[str, float] | None = None,
+        confidence_half_width: float | None = None,
+        pick_id: int | None = None,
+        snapshot_taken_at: datetime | None = None,
+    ) -> None:
+        """Append one row to ``pick_decisions``.
+
+        Always succeeds (no UNIQUE constraint on this table — append-only).
+        Powers the §E falsifiability metrics: gate-rejection rates, hit-rate
+        bucketing by edge or logical_score, per-component decomposition.
+        """
+        if decision not in ("emit", "flag", "drop"):
+            raise ValueError(f"invalid decision: {decision}")
+        components_json = (
+            json.dumps(logical_components, sort_keys=True)
+            if logical_components else None
+        )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pick_decisions (
+                    fixture_id, minute, market, selection,
+                    bookmaker_id, bookmaker_odd, our_probability, edge_pct,
+                    decision, drop_reason,
+                    sm_marginal, valuebet_agrees, informational_density,
+                    logical_score, logical_components_json,
+                    confidence_half_width, pick_id, snapshot_taken_at,
+                    audited_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    fixture_id, minute, market, selection,
+                    bookmaker_id, bookmaker_odd, our_probability, edge_pct,
+                    decision, drop_reason,
+                    sm_marginal,
+                    None if valuebet_agrees is None else int(valuebet_agrees),
+                    informational_density,
+                    logical_score, components_json,
+                    confidence_half_width, pick_id,
+                    snapshot_taken_at.isoformat() if snapshot_taken_at else None,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def gate_rejection_rates(self, *, hours: int = 24) -> list[dict[str, Any]]:
+        """Return per-drop_reason counts over the last N hours.
+
+        Useful for §E "each gate ≥ 5% of total filter, ≤ 60%" check.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT drop_reason, COUNT(*) AS n
+                FROM pick_decisions
+                WHERE decision='drop'
+                  AND audited_at >= datetime('now', ?)
+                GROUP BY drop_reason
+                ORDER BY n DESC
+                """,
+                (f"-{int(hours)} hours",),
+            ).fetchall()
+        return [{"drop_reason": r["drop_reason"] or "unflagged", "n": r["n"]}
+                for r in rows]
 
     def update_outcome(
         self, pick_id: int, *,
@@ -290,4 +425,8 @@ def _row_to_tracked(row: sqlite3.Row) -> TrackedPick:
         profit_units=row["profit_units"],
         flagged_reason=row["flagged_reason"] if "flagged_reason" in keys else None,
         market_description=row["market_description"],
+        logical_score=row["logical_score"] if "logical_score" in keys else None,
+        confidence_half_width=(
+            row["confidence_half_width"] if "confidence_half_width" in keys else None
+        ),
     )

@@ -10,13 +10,19 @@ The state EXPOSES derived signals that the predictor consumes:
 - Per-team aggregate stats by name (`shots_on_target`, `dangerous_attacks`, etc.)
 - Recent-window pressure averages (last 5/10 min)
 - Goal-event timeline (for Dixon-Robinson scoring)
+- Red card / yellow card / substitution event timelines
 - Sportmonks predictions, indexed by type_id (for baseline lookup)
+- Cached Sportmonks correct-score grid (for cross-market sanity)
+- Informational-density score (gates live-adjusted picks)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
+
+import numpy as np
 
 from bip.sports.football.sportmonks.schemas import (
     Fixture,
@@ -54,6 +60,21 @@ XG_PROXY_WEIGHTS: dict[int, float] = {
 }
 
 
+# Event type_ids (verified 2026-05-09 against /core/types).
+EVENT_TYPE_GOAL = 14
+EVENT_TYPE_OWNGOAL = 15
+EVENT_TYPE_PENALTY_SCORED = 16
+EVENT_TYPE_MISSED_PENALTY = 17
+EVENT_TYPE_SUBSTITUTION = 18
+EVENT_TYPE_YELLOWCARD = 19
+EVENT_TYPE_REDCARD = 20
+EVENT_TYPE_YELLOWREDCARD = 21
+
+
+# Score-grid dimension for the cached Sportmonks correct-score table.
+_SCORE_GRID_MAX_N = 8
+
+
 @dataclass(frozen=True)
 class LiveMatchState:
     """Immutable snapshot — one frame of one match."""
@@ -87,6 +108,19 @@ class LiveMatchState:
 
     # Red-card events (minute, team_affected_id)
     red_card_events: list[tuple[int, int]] = field(default_factory=list)
+
+    # Yellow-card events (minute, team_id, player_id) — player_id is 0 when absent.
+    # Used for booked-player tracking (yellow→red risk) and cards-market signal.
+    yellow_card_events: list[tuple[int, int, int]] = field(default_factory=list)
+
+    # Substitution events (minute, team_id, player_in_id-or-None).
+    # Manager-intent signal: triple-sub by 70' = pushing for goal;
+    # lone defensive sub at 80' = locking the result.
+    substitution_events: list[tuple[int, int, int | None]] = field(default_factory=list)
+
+    # Snapshot meta (best-effort; not always emitted by Sportmonks).
+    snapshot_taken_at: datetime | None = None
+    league_id: int | None = None
 
     # ── derived signals ─────────────────────────────────────────────────
 
@@ -163,6 +197,237 @@ class LiveMatchState:
         aways = [m for m, t in self.red_card_events if t == self.away_team_id]
         return min(aways) if aways else None
 
+    # ── Stat-derived signals (B-1, B-2, B-3, B-5, B-6, B-7, B-9, B-11) ──
+
+    @property
+    def home_corners(self) -> int:
+        return int(self.home_stats.get(StatType.CORNERS, 0))
+
+    @property
+    def away_corners(self) -> int:
+        return int(self.away_stats.get(StatType.CORNERS, 0))
+
+    @property
+    def home_possession(self) -> float:
+        """Possession % (0-100). Defaults to 50 when stat missing."""
+        return float(self.home_stats.get(StatType.BALL_POSSESSION, 50.0))
+
+    @property
+    def away_possession(self) -> float:
+        return float(self.away_stats.get(StatType.BALL_POSSESSION, 50.0))
+
+    @property
+    def home_shots_total(self) -> int:
+        return int(self.home_stats.get(StatType.SHOTS_TOTAL, 0))
+
+    @property
+    def away_shots_total(self) -> int:
+        return int(self.away_stats.get(StatType.SHOTS_TOTAL, 0))
+
+    @property
+    def home_key_passes(self) -> int:
+        return int(self.home_stats.get(StatType.KEY_PASSES, 0))
+
+    @property
+    def away_key_passes(self) -> int:
+        return int(self.away_stats.get(StatType.KEY_PASSES, 0))
+
+    @property
+    def home_saves(self) -> int:
+        return int(self.home_stats.get(StatType.SAVES, 0))
+
+    @property
+    def away_saves(self) -> int:
+        return int(self.away_stats.get(StatType.SAVES, 0))
+
+    @property
+    def home_big_chances_missed(self) -> int:
+        return int(self.home_stats.get(StatType.BIG_CHANCES_MISSED, 0))
+
+    @property
+    def away_big_chances_missed(self) -> int:
+        return int(self.away_stats.get(StatType.BIG_CHANCES_MISSED, 0))
+
+    @property
+    def home_big_chances_created(self) -> int:
+        return int(self.home_stats.get(StatType.BIG_CHANCES_CREATED, 0))
+
+    @property
+    def away_big_chances_created(self) -> int:
+        return int(self.away_stats.get(StatType.BIG_CHANCES_CREATED, 0))
+
+    @property
+    def home_injuries(self) -> int:
+        return int(self.home_stats.get(StatType.INJURIES, 0))
+
+    @property
+    def away_injuries(self) -> int:
+        return int(self.away_stats.get(StatType.INJURIES, 0))
+
+    @property
+    def home_engagement(self) -> int:
+        """Tackles + interceptions + duels-won — defensive engagement.
+
+        High engagement signals a scrappy game where the underlying goal
+        rate compresses (defenders winning the ball before xG accumulates).
+        """
+        return (
+            int(self.home_stats.get(StatType.TACKLES, 0))
+            + int(self.home_stats.get(StatType.INTERCEPTIONS, 0))
+            + int(self.home_stats.get(StatType.DUELS_WON, 0))
+        )
+
+    @property
+    def away_engagement(self) -> int:
+        return (
+            int(self.away_stats.get(StatType.TACKLES, 0))
+            + int(self.away_stats.get(StatType.INTERCEPTIONS, 0))
+            + int(self.away_stats.get(StatType.DUELS_WON, 0))
+        )
+
+    # ── Yellow-card / booked-player signals (B-29) ─────────────────────
+
+    @property
+    def yellow_card_count_home(self) -> int:
+        return sum(1 for _m, t, _p in self.yellow_card_events if t == self.home_team_id)
+
+    @property
+    def yellow_card_count_away(self) -> int:
+        return sum(1 for _m, t, _p in self.yellow_card_events if t == self.away_team_id)
+
+    @property
+    def players_booked_home(self) -> set[int]:
+        return {p for _m, t, p in self.yellow_card_events
+                if t == self.home_team_id and p}
+
+    @property
+    def players_booked_away(self) -> set[int]:
+        return {p for _m, t, p in self.yellow_card_events
+                if t == self.away_team_id and p}
+
+    # ── Substitution signals (B-30) ────────────────────────────────────
+
+    @property
+    def substitutions_home(self) -> int:
+        return sum(1 for _m, t, _p in self.substitution_events if t == self.home_team_id)
+
+    @property
+    def substitutions_away(self) -> int:
+        return sum(1 for _m, t, _p in self.substitution_events if t == self.away_team_id)
+
+    # ── Killing-the-clock detector (B-3) ───────────────────────────────
+
+    def is_killing_clock(self, side: str) -> bool:
+        """Detect "high possession but no penetration" pattern.
+
+        Triggers when a team has ≥65% possession from min ≥60, but their
+        attacking productivity per minute of ball is suspiciously low. In
+        that pattern they are protecting a result, NOT going for a goal,
+        so over-goals + draw-pushing nudges should be suppressed.
+
+        Productivity = (shots_total + key_passes) / minutes_of_possession,
+        where minutes_of_possession ≈ minute × possession_pct/100. League
+        average for attacking teams is ~0.40-0.70 actions per poss-minute;
+        clock-killing sits significantly below that band.
+        """
+        if self.minute < 60:
+            return False
+        if side == "home":
+            poss, st, kp = self.home_possession, self.home_shots_total, self.home_key_passes
+        else:
+            poss, st, kp = self.away_possession, self.away_shots_total, self.away_key_passes
+        if poss < 65.0:
+            return False
+        poss_minutes = self.minute * (poss / 100.0)
+        if poss_minutes < 5.0:
+            return False  # too small a sample for a stable rate
+        productivity = (st + kp) / poss_minutes
+        return productivity < 0.20
+
+    # ── Information-content gate (B-7 / B-G3) ──────────────────────────
+
+    @property
+    def informational_density(self) -> float:
+        """Score in [0, 1] — how much real live signal has accumulated.
+
+        Used by the predictor to decide whether to live-adjust at all.
+        At low density we return Sportmonks pre-match priors verbatim
+        rather than rebuild from per-team OU + pressure.
+
+        Formula::
+
+            minute_term = min(1, minute / 25)
+            data_term   = max(pressure_term, stat_term, event_term)
+            density     = minute_term × (0.4 + 0.6 × data_term)
+
+        Match events (goals, red cards) feed ``event_term`` — a strong
+        signal that accelerates density to full credit ON THE DATA AXIS.
+        But they DO NOT bypass the minute floor: a red card at minute 5
+        still leaves minute_term=0.20, so density caps at 0.20 — below
+        the gate floor — until enough match time has elapsed for stats
+        and pressure to complement the event.
+
+        The previous override to 1.0 on any event was a bug: it allowed
+        live-adjusted picks to emit at minute 5-15 with no statistical
+        accumulation, recreating the cluster-C "min-8 burst" via early
+        events.
+        """
+        minute_term = min(1.0, max(0, self.minute) / 25.0)
+        n_pressure = len(self.home_pressure_recent) + len(self.away_pressure_recent)
+        pressure_term = min(1.0, n_pressure / 8.0)  # 4 samples per side = full
+        stat_events = sum(
+            self.home_stats.get(t, 0) + self.away_stats.get(t, 0)
+            for t in (
+                StatType.SHOTS_TOTAL, StatType.KEY_PASSES,
+                StatType.CORNERS, StatType.SHOTS_ON_TARGET,
+            )
+        )
+        stat_term = min(1.0, stat_events / 12.0)
+        event_term = 1.0 if (
+            self.red_card_events
+            or (self.home_goals + self.away_goals) >= 1
+        ) else 0.0
+        data_term = max(pressure_term, stat_term, event_term)
+        return minute_term * (0.4 + 0.6 * data_term)
+
+    # ── Sportmonks correct-score grid (B-16) ───────────────────────────
+
+    @property
+    def sportmonks_score_grid(self) -> np.ndarray | None:
+        """Build a (max_n+1, max_n+1) probability grid from Sportmonks
+        ``CORRECT_SCORE_PROBABILITY`` (type_id 240).
+
+        Body shape (verified): ``{scores: {"0-0": 8.4, "1-0": 11.2, ..., "other": 4.1}}``.
+        Values are percentages 0-100. The "other" bucket is ignored for
+        marginal calculations — its mass is redistributed via final
+        normalisation. None when Sportmonks didn't emit the prediction.
+        """
+        sm = self.sportmonks_predictions.get(PredictionType.CORRECT_SCORE_PROBABILITY)
+        if not sm:
+            return None
+        scores = sm.get("scores") if isinstance(sm, dict) else None
+        if not isinstance(scores, dict):
+            return None
+        n = _SCORE_GRID_MAX_N + 1
+        grid = np.zeros((n, n))
+        for k, v in scores.items():
+            if not isinstance(k, str) or k == "other":
+                continue
+            try:
+                h_str, a_str = k.split("-")
+                h, a = int(h_str), int(a_str)
+            except (ValueError, IndexError):
+                continue
+            if 0 <= h < n and 0 <= a < n:
+                try:
+                    grid[h, a] = float(v) / 100.0
+                except (TypeError, ValueError):
+                    continue
+        total = grid.sum()
+        if total <= 0:
+            return None
+        return grid / total
+
     # ── Live xG signal (computed vs expected) ───────────────────────────
 
     def home_live_xg_signal(self) -> float:
@@ -201,6 +466,7 @@ class LiveMatchState:
         fixture: Fixture,
         *,
         pressure_window_minutes: int = 10,
+        snapshot_taken_at: datetime | None = None,
     ) -> LiveMatchState:
         """Build a state from an enriched Fixture.
 
@@ -236,8 +502,8 @@ class LiveMatchState:
         # Sportmonks predictions indexed by type_id
         predictions_by_type = _index_predictions(fixture.predictions or [])
 
-        # Events: extract goals + red cards
-        goal_events, red_card_events = _extract_events(
+        # Events: extract goals + red cards + yellow cards + subs
+        goal_events, red_card_events, yellow_events, sub_events = _extract_events(
             fixture.events or [], home.id, away.id
         )
 
@@ -261,6 +527,10 @@ class LiveMatchState:
             sportmonks_predictions=predictions_by_type,
             goal_events=goal_events,
             red_card_events=red_card_events,
+            yellow_card_events=yellow_events,
+            substitution_events=sub_events,
+            snapshot_taken_at=snapshot_taken_at,
+            league_id=fixture.league_id,
         )
 
 
@@ -405,27 +675,45 @@ def _index_predictions(preds: list[Prediction]) -> dict[int, dict[str, Any]]:
     return out
 
 
-def _extract_events(events, home_id: int, away_id: int):
-    """Pull goals + red cards from event list.
+def _extract_events(
+    events, home_id: int, away_id: int,
+) -> tuple[
+    list[tuple[int, int]],
+    list[tuple[int, int]],
+    list[tuple[int, int, int]],
+    list[tuple[int, int, int | None]],
+]:
+    """Pull goals + red cards + yellow cards + substitutions from event list.
 
     Sportmonks v3 event type_ids (verified 2026-05-09 against /core/types):
     - 14 = GOAL
-    - 15 = OWNGOAL (counts for opposing team statistically — but here we
-           track which team scored vs conceded; an own goal still credits
-           the team whose net got hit, which is the opposing side. We
-           include 15 so the model knows "the other team has scored"
-           via score events; goal_events records the minute regardless.)
+    - 15 = OWNGOAL (we record minute regardless of attribution side)
     - 16 = PENALTY (scored from the spot)
-    - 17 = MISSED_PENALTY (NOT a goal — was excluded incorrectly before)
-    - 18 = SUBSTITUTION (was incorrectly bucketed as goal before — fixed)
-    - 19 = YELLOWCARD (was incorrectly bucketed as red card before — fixed)
+    - 17 = MISSED_PENALTY (NOT a goal)
+    - 18 = SUBSTITUTION
+    - 19 = YELLOWCARD
     - 20 = REDCARD (straight red)
     - 21 = YELLOWREDCARD (second yellow → red, treated as red card)
+
+    Returns
+    -------
+    goal_events
+        ``[(minute, scoring_team_id), ...]`` sorted by minute.
+    red_card_events
+        ``[(minute, team_affected_id), ...]`` sorted by minute. Combines
+        straight-red and yellow→red into one stream.
+    yellow_card_events
+        ``[(minute, team_id, player_id_or_0), ...]`` sorted. Used for
+        booked-player tracking and cards-market signal.
+    substitution_events
+        ``[(minute, team_id, related_player_id_or_None), ...]`` sorted.
     """
     goal_events: list[tuple[int, int]] = []
     red_card_events: list[tuple[int, int]] = []
-    GOAL_TYPE_IDS = {14, 15, 16}    # goal, own goal, penalty scored
-    RED_CARD_TYPE_IDS = {20, 21}    # straight red, yellow-red
+    yellow_card_events: list[tuple[int, int, int]] = []
+    substitution_events: list[tuple[int, int, int | None]] = []
+    GOAL_TYPE_IDS = {EVENT_TYPE_GOAL, EVENT_TYPE_OWNGOAL, EVENT_TYPE_PENALTY_SCORED}
+    RED_CARD_TYPE_IDS = {EVENT_TYPE_REDCARD, EVENT_TYPE_YELLOWREDCARD}
     for e in events:
         minute = e.minute
         team = e.participant_id
@@ -437,6 +725,12 @@ def _extract_events(events, home_id: int, away_id: int):
             goal_events.append((minute, team))
         elif e.type_id in RED_CARD_TYPE_IDS:
             red_card_events.append((minute, team))
+        elif e.type_id == EVENT_TYPE_YELLOWCARD:
+            yellow_card_events.append((minute, team, e.player_id or 0))
+        elif e.type_id == EVENT_TYPE_SUBSTITUTION:
+            substitution_events.append((minute, team, e.related_player_id))
     goal_events.sort()
     red_card_events.sort()
-    return goal_events, red_card_events
+    yellow_card_events.sort()
+    substitution_events.sort()
+    return goal_events, red_card_events, yellow_card_events, substitution_events

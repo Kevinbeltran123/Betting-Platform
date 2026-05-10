@@ -131,8 +131,21 @@ async def scan_round(
     notify: bool,
     beep: bool,
     min_edge: float,
+    leagues_allowlist: frozenset[int] | None = None,
+    leagues_blocklist: frozenset[int] | None = None,
 ) -> tuple[int, int]:
-    """One full scan round. Returns (picks_emitted, picks_new)."""
+    """One full scan round. Returns (picks_emitted, picks_new).
+
+    League quality filter (B-21): when ``leagues_allowlist`` is set, only
+    fixtures whose ``league_id`` is in the allowlist proceed. When
+    ``leagues_blocklist`` is set, fixtures from those leagues are skipped.
+    Both default to None (no filtering — preserves prior behaviour). The
+    allowlist takes precedence: if both are set, fixtures must pass
+    allowlist AND not appear in blocklist.
+
+    Filter is applied BEFORE the get_fixture call to save API quota on
+    leagues we never want picks from.
+    """
     n_emitted = 0
     n_new = 0
     async with sportmonks_client_from_env() as client:
@@ -141,30 +154,64 @@ async def scan_round(
             f for f in live
             if f.state and f.state.id in LIVE_STATE_IDS
         ]
+        # League filter — skip fixtures outside the operator's quality tier
+        if leagues_allowlist is not None:
+            relevant = [f for f in relevant if f.league_id in leagues_allowlist]
+        if leagues_blocklist is not None:
+            relevant = [f for f in relevant if f.league_id not in leagues_blocklist]
 
         for f in relevant:
             try:
                 full = await client.get_fixture(f.id, includes=INCLUDES)
                 cache.save_snapshot(f.id, {"data": full.model_dump(mode="json")})
 
-                state = LiveMatchState.from_fixture(full)
+                snapshot_taken_at = datetime.now(timezone.utc)
+                state = LiveMatchState.from_fixture(
+                    full, snapshot_taken_at=snapshot_taken_at,
+                )
                 if not (state.is_live or state.is_half_time):
                     continue
 
                 probs = predictor.predict(state)
                 odds = await client.get_inplay_odds_for_fixture(f.id)
+
+                # Per-snapshot drop logger — feeds pick_decisions table so
+                # gate_rejection_rates() has data. Emits/flags continue to
+                # be recorded by the watcher post-loop (with pick_id).
+                def _on_decision(*, snapshot_at=snapshot_taken_at, **kwargs):
+                    tracker.record_decision(
+                        snapshot_taken_at=snapshot_at, **kwargs,
+                    )
+
                 picks = detector.evaluate(
                     probs, odds,
                     home_team_name=state.home_team_name,
                     away_team_name=state.away_team_name,
                     state=state,  # enables sanity filters
+                    on_decision=_on_decision,
                 )
 
+                # Note: detector already enforces min_edge_pct; no re-filter.
                 for pick in picks:
-                    if pick.edge_pct < min_edge:
-                        continue
                     n_emitted += 1
                     pick_id, is_new = tracker.record(pick)
+                    decision = "flag" if pick.flagged_reason else "emit"
+                    tracker.record_decision(
+                        fixture_id=pick.fixture_id, minute=pick.minute,
+                        market=pick.market, selection=pick.selection,
+                        decision=decision,
+                        bookmaker_id=pick.bookmaker_id,
+                        bookmaker_odd=pick.bookmaker_odd,
+                        our_probability=pick.our_probability,
+                        edge_pct=pick.edge_pct,
+                        drop_reason=pick.flagged_reason,
+                        informational_density=state.informational_density,
+                        logical_score=pick.logical_score,
+                        logical_components=pick.logical_components,
+                        confidence_half_width=pick.confidence_half_width,
+                        pick_id=pick_id,
+                        snapshot_taken_at=snapshot_taken_at,
+                    )
                     if not is_new:
                         continue
                     n_new += 1
@@ -181,6 +228,7 @@ async def scan_round(
                             f"{pick.market}/{pick.selection} @ {pick.bookmaker_odd:.2f}  "
                             f"P={pick.our_probability:.3f}  "
                             f"stake={pick.suggested_stake_pct:.2f}%  "
+                            f"L={pick.logical_score:.2f}  "
                             f"id={pick_id}{flag_str}\n"
                         )
                     icon = "⚠️" if pick.flagged_reason else "🚨"
@@ -189,7 +237,8 @@ async def scan_round(
                         f"{state.home_team_name} vs {state.away_team_name} "
                         f"(min {pick.minute})  "
                         f"{pick.market}/{pick.selection} @ {pick.bookmaker_odd:.2f}  "
-                        f"stake={pick.suggested_stake_pct:.2f}%  id={pick_id}{flag_str}"
+                        f"stake={pick.suggested_stake_pct:.2f}%  "
+                        f"L={pick.logical_score:.2f}  id={pick_id}{flag_str}"
                     )
                     # Only send proactive notifications for clean picks; flagged
                     # picks log silently — operator must check the report.
@@ -217,6 +266,8 @@ async def watch_loop(
     notify: bool,
     beep: bool,
     detector_kwargs: dict,
+    leagues_allowlist: frozenset[int] | None = None,
+    leagues_blocklist: frozenset[int] | None = None,
 ) -> None:
     cache = SportmonksCache(root=cache_root)
     tracker = PickTracker(db_path=db_path)
@@ -241,6 +292,8 @@ async def watch_loop(
                 cache=cache, tracker=tracker, predictor=predictor,
                 detector=detector, log_path=log_path,
                 notify=notify, beep=beep, min_edge=min_edge,
+                leagues_allowlist=leagues_allowlist,
+                leagues_blocklist=leagues_blocklist,
             )
             now = datetime.now(timezone.utc).strftime("%H:%M:%S")
             elapsed = datetime.now(timezone.utc).timestamp() - t0
@@ -271,6 +324,41 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--kelly", type=float, default=0.25)
     p.add_argument("--min-odd", type=float, default=1.20)
     p.add_argument("--max-odd", type=float, default=8.0)
+    p.add_argument("--sanity-edge-cap", type=float, default=50.0,
+                   help="Above this %% EV picks are treated as stale-odd "
+                        "artefacts (default 50)")
+    p.add_argument("--no-drop-extreme", action="store_true",
+                   help="Disable hard-drop of critical-flag picks "
+                        "(default: hard-drop enabled)")
+    p.add_argument("--no-coherence", action="store_true",
+                   help="Disable bookmaker self-coherence gate")
+    p.add_argument("--no-blackout", action="store_true",
+                   help="Disable post-event / late-minute blackouts")
+    p.add_argument("--no-stale-check", action="store_true",
+                   help="Disable stale-odd timestamp gate")
+    p.add_argument("--no-ci-gate", action="store_true",
+                   help="Disable per-pick credibility-interval gate")
+    p.add_argument("--no-bundle-dedup", action="store_true",
+                   help="Disable correlated cross-market deduplication")
+    p.add_argument("--info-density-floor", type=float, default=0.20,
+                   help="Hard floor for live-pick informational density "
+                        "(default 0.20)")
+    p.add_argument("--min-logical-emit", type=float, default=0.70,
+                   help="Logical-score threshold for clean emit (default 0.70)")
+    p.add_argument("--min-logical-flag", type=float, default=0.40,
+                   help="Logical-score threshold below which picks are "
+                        "dropped entirely (default 0.40)")
+    p.add_argument(
+        "--leagues-allowlist", type=str, default="",
+        help="Comma-separated Sportmonks league_ids to whitelist (others "
+             "skipped before any per-fixture API call). Example: '8,564,82,"
+             "384,301' for top-5 European. Default: empty (no allowlist).",
+    )
+    p.add_argument(
+        "--leagues-blocklist", type=str, default="",
+        help="Comma-separated Sportmonks league_ids to blacklist. Applied "
+             "AFTER allowlist. Default: empty (no blocklist).",
+    )
     p.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
     p.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     p.add_argument("--log-path", type=Path,
@@ -297,11 +385,38 @@ def main() -> int:
         kelly_fraction=args.kelly,
         min_odd=args.min_odd,
         max_odd=args.max_odd,
+        sanity_edge_cap=args.sanity_edge_cap,
+        drop_extreme=not args.no_drop_extreme,
+        enforce_coherence=not args.no_coherence,
+        enforce_blackout=not args.no_blackout,
+        enforce_stale_odd_check=not args.no_stale_check,
+        enforce_ci_gate=not args.no_ci_gate,
+        bundle_dedup=not args.no_bundle_dedup,
+        info_density_floor=args.info_density_floor,
+        min_logical_score_emit=args.min_logical_emit,
+        min_logical_score_flag=args.min_logical_flag,
     )
+
+    def _parse_league_ids(s: str) -> frozenset[int] | None:
+        s = (s or "").strip()
+        if not s:
+            return None
+        try:
+            return frozenset(int(x.strip()) for x in s.split(",") if x.strip())
+        except ValueError:
+            print(f"⚠ invalid league id list: {s!r} — ignoring", file=sys.stderr)
+            return None
+
+    leagues_allowlist = _parse_league_ids(args.leagues_allowlist)
+    leagues_blocklist = _parse_league_ids(args.leagues_blocklist)
 
     print(f"🟢 Watching live matches.  edge ≥ {args.min_edge:.1f}%   "
           f"interval={args.interval}s   "
           f"DB: {args.db_path}   log: {args.log_path}")
+    if leagues_allowlist:
+        print(f"   League allowlist: {sorted(leagues_allowlist)}")
+    if leagues_blocklist:
+        print(f"   League blocklist: {sorted(leagues_blocklist)}")
     if not args.no_notify and platform.system() == "Darwin":
         print("   macOS notifications: ON")
     if args.beep:
@@ -315,6 +430,8 @@ def main() -> int:
         log_path=args.log_path,
         notify=not args.no_notify, beep=args.beep,
         detector_kwargs=detector_kwargs,
+        leagues_allowlist=leagues_allowlist,
+        leagues_blocklist=leagues_blocklist,
     ))
     return 0
 
