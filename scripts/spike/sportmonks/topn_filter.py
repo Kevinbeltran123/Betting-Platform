@@ -51,6 +51,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import polars as pl
 
@@ -265,11 +266,105 @@ def time_kernel(minute: int, market: str) -> float:
 
 
 def calibrated_edge(edge_pct: float) -> float:
-    """Haircut overconfident edges below 15% per Day-1 calibration data."""
+    """LEGACY haircut: 50% on edges below 15%. Static fallback.
+
+    Prefer the dynamic calibrator built by ``compute_edge_buckets_from_db``
+    + ``make_edge_calibrator`` when picks.db has enough graded picks
+    (see ``EDGE_BUCKET_MIN_N``). Day-1 derivation showed this hardcoded
+    factor matches the (12,15) bucket exactly but understates the haircut
+    needed for (30+) (~0.39 actual vs 1.0 hardcoded).
+    """
     edge = edge_pct / 100.0
     if edge_pct < 15.0:
         return edge * 0.5
     return edge
+
+
+# ── Dynamic edge calibration (Lote B) ──────────────────────────────────
+
+
+EDGE_BUCKETS: tuple[tuple[float, float], ...] = (
+    (0.0, 8.0),
+    (8.0, 12.0),
+    (12.0, 15.0),
+    (15.0, 20.0),
+    (20.0, 30.0),
+    (30.0, 1000.0),  # open-ended top bucket
+)
+"""Bucket boundaries for edge calibration. Aligned with ``analyze_jornada._edge_bucket``."""
+
+EDGE_BUCKET_MIN_N: int = 5
+"""Buckets with fewer than this many graded picks default to factor=1.0 (no haircut)."""
+
+
+def compute_edge_buckets_from_db(
+    db_path: Path = DEFAULT_DB_PATH,
+    min_n: int = EDGE_BUCKET_MIN_N,
+) -> dict[tuple[float, float], float]:
+    """Compute realization factor (realized_roi / nominal_edge) per edge bucket.
+
+    For each bucket, ``factor = mean(profit_units) / mean(edge_pct/100)``.
+    Returned factors are clipped to [0, 1.0]:
+      - ``factor < 0`` (anti-edge bucket: claimed edge but lost money) → 0.0
+      - ``factor > 1`` (over-realizing: looks like the bookmaker is
+        suspiciously generous) → 1.0
+      - sparse bucket (n < min_n) → 1.0 (neutral)
+      - mean nominal edge ≤ 0 (degenerate) → 1.0
+
+    Day-1 expected output:
+      (0, 8)   → 1.0   (n=2 below threshold)
+      (8, 12)  → 0.0   (overconfident: -2% realized on +10% claimed)
+      (12, 15) → 0.50  (matches the legacy static haircut)
+      (15, 20) → 0.75
+      (20, 30) → 0.58
+      (30+)    → 0.39  (stale-odd discount at high edges)
+    """
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT edge_pct, profit_units FROM picks "
+            "WHERE status IN ('won', 'lost')"
+        ).fetchall()
+
+    factors: dict[tuple[float, float], float] = {}
+    for lo, hi in EDGE_BUCKETS:
+        bucket = [(e, p or 0.0) for e, p in rows if lo <= e < hi]
+        if len(bucket) < min_n:
+            factors[(lo, hi)] = 1.0
+            continue
+        avg_nominal = sum(e for e, _ in bucket) / len(bucket) / 100.0
+        avg_realized = sum(p for _, p in bucket) / len(bucket)
+        if avg_nominal <= 0:
+            factors[(lo, hi)] = 1.0
+            continue
+        factor = avg_realized / avg_nominal
+        factors[(lo, hi)] = max(0.0, min(1.0, factor))
+    return factors
+
+
+def make_edge_calibrator(
+    factors: dict[tuple[float, float], float] | None = None,
+) -> Callable[[float], float]:
+    """Build a piecewise edge calibrator from per-bucket realization factors.
+
+    When ``factors`` is None, returns the legacy static ``calibrated_edge``.
+    Otherwise returns a closure that looks up the bucket containing the
+    edge and multiplies. Edge values outside any defined bucket fall
+    through with factor=1.0 (no haircut).
+    """
+    if factors is None:
+        return calibrated_edge
+
+    # Pre-sort buckets for deterministic iteration order
+    sorted_buckets = sorted(factors.items(), key=lambda kv: kv[0][0])
+
+    def _cal(edge_pct: float) -> float:
+        edge = edge_pct / 100.0
+        for (lo, hi), factor in sorted_buckets:
+            if lo <= edge_pct < hi:
+                return edge * factor
+        return edge  # outside all buckets — neutral
+
+    return _cal
 
 
 # ── Loading & enrichment ───────────────────────────────────────────────
@@ -660,6 +755,7 @@ def score(
     df: pl.DataFrame,
     market_priors: dict[str, tuple[float, int]] | None = None,
     league_priors: dict[int, tuple[float, int]] | None = None,
+    edge_calibrator: Callable[[float], float] | None = None,
 ) -> pl.DataFrame:
     """Compute composite score per pick. Adds 'score' column.
 
@@ -673,9 +769,14 @@ def score(
 
     Markets/leagues unknown to the priors get the global prior (essentially
     a neutral score — they need other signals to break into Top-N).
+
+    ``edge_calibrator`` defaults to the legacy static ``calibrated_edge``
+    (50% haircut <15%). Pass a closure built by ``make_edge_calibrator``
+    to use per-bucket realization factors derived from picks.db.
     """
     market_priors = market_priors if market_priors is not None else DAY1_MARKET_ROI
     league_priors = league_priors if league_priors is not None else DAY1_LEAGUE_ROI
+    edge_cal = edge_calibrator if edge_calibrator is not None else calibrated_edge
 
     def _market_score(market: str) -> float:
         obs, n = market_priors.get(market, (GLOBAL_PRIOR_ROI, 0))
@@ -693,7 +794,7 @@ def score(
         (pl.col("league_id") if "league_id" in df.columns else pl.lit(None))
             .map_elements(_league_score, return_dtype=pl.Float64)
             .alias("_league_roi"),
-        pl.col("edge_pct").map_elements(calibrated_edge, return_dtype=pl.Float64)
+        pl.col("edge_pct").map_elements(edge_cal, return_dtype=pl.Float64)
             .alias("_cal_edge"),
         pl.col("logical_score").map_elements(
             logical_kernel, return_dtype=pl.Float64,
@@ -1107,25 +1208,43 @@ def _parse_args() -> argparse.Namespace:
 
 def _resolve_priors(
     args: argparse.Namespace,
-) -> tuple[dict[str, tuple[float, int]], dict[int, tuple[float, int]], str]:
+) -> tuple[
+    dict[str, tuple[float, int]],
+    dict[int, tuple[float, int]],
+    Callable[[float], float] | None,
+    str,
+]:
     """Pick the right priors source based on flags, log which one was used.
 
-    Returns (market_priors, league_priors, source_label).
+    Returns (market_priors, league_priors, edge_calibrator, source_label).
+    edge_calibrator is None when using static priors (legacy haircut applies).
     """
     if args.use_static_priors:
-        return DAY1_MARKET_ROI, DAY1_LEAGUE_ROI, "hardcoded Day-1 (static)"
+        return DAY1_MARKET_ROI, DAY1_LEAGUE_ROI, None, "hardcoded Day-1 (static)"
 
     print("[priors] computing live priors from picks.db")
     market = compute_market_priors_from_db(args.picks_db)
     league = compute_league_priors_from_db(args.picks_db, args.cache_root)
     if not market and not league:
         print("[priors] no graded picks yet — falling back to Day-1 hardcoded")
-        return DAY1_MARKET_ROI, DAY1_LEAGUE_ROI, "hardcoded Day-1 (live empty)"
+        return (
+            DAY1_MARKET_ROI, DAY1_LEAGUE_ROI, None,
+            "hardcoded Day-1 (live empty)",
+        )
 
     cache_path = cache_priors(market, league)
     print(f"[priors] cached {len(market)} markets + {len(league)} leagues "
           f"to {cache_path}")
-    return market, league, "live (recomputed from picks.db)"
+
+    # Dynamic edge calibration — also from picks.db
+    factors = compute_edge_buckets_from_db(args.picks_db)
+    edge_cal = make_edge_calibrator(factors)
+    factor_str = ", ".join(
+        f"({lo:.0f}-{hi:.0f}={f:.2f})" for (lo, hi), f in sorted(factors.items())
+    )
+    print(f"[edge-cal] dynamic haircut factors: {factor_str}")
+
+    return market, league, edge_cal, "live (recomputed from picks.db)"
 
 
 def main() -> int:
@@ -1154,10 +1273,11 @@ def main() -> int:
         print("[score] no survivors — nothing to score")
         return 1
 
-    market_priors, league_priors, source = _resolve_priors(args)
+    market_priors, league_priors, edge_cal, source = _resolve_priors(args)
     print(f"[score] priors source: {source}")
     scored = score(survivors, market_priors=market_priors,
-                   league_priors=league_priors)
+                   league_priors=league_priors,
+                   edge_calibrator=edge_cal)
     top = top_n(
         scored,
         n=args.top_n,

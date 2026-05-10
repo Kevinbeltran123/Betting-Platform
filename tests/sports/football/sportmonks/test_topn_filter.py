@@ -20,6 +20,7 @@ import pytest
 
 from scripts.spike.sportmonks.topn_filter import (
     DROP_LEAGUE_IDS,
+    EDGE_BUCKETS,
     EDGE_FLOOR_PCT,
     GLOBAL_PRIOR_ROI,
     KEEP_COND,
@@ -31,6 +32,7 @@ from scripts.spike.sportmonks.topn_filter import (
     apply_cascade,
     cache_priors,
     calibrated_edge,
+    compute_edge_buckets_from_db,
     compute_market_priors_from_db,
     dedup_picks,
     enrich_with_signals,
@@ -42,6 +44,7 @@ from scripts.spike.sportmonks.topn_filter import (
     f5_league_filter,
     load_cached_priors,
     logical_kernel,
+    make_edge_calibrator,
     odd_kernel,
     parse_logical_components,
     placement_schedule,
@@ -894,3 +897,146 @@ class TestPlacementSchedule:
         sched = placement_schedule(df, window_minutes=15)
         starts = [w["window_start"] for w in sched]
         assert starts == sorted(starts)
+
+
+# ── Dynamic edge calibration (Lote B) ─────────────────────────────────
+
+
+@pytest.fixture
+def edge_calibration_db(tmp_path: Path) -> Path:
+    """Synthetic DB with controlled per-bucket realizations.
+
+    Designed so each bucket lands on a known factor:
+      (8, 12):  10 picks, edge=10%, all lost (-1.0 each) → realized=-1.0
+                avg_nominal=0.10 → factor=-10 → clipped to 0.0
+      (12, 15): 10 picks, edge=13%, all won @ +0.50 each → realized=+0.50
+                avg_nominal=0.13 → factor=3.85 → clipped to 1.0
+      (15, 20): 10 picks, edge=17%, half won (+1.0), half lost (-1.0) → 0
+                avg_nominal=0.17 → factor=0 → 0.0
+      (20, 30): 10 picks, edge=25%, all won @ +0.20 each → realized=0.20
+                avg_nominal=0.25 → factor=0.80
+      (30+):    only 3 picks (below MIN_N) → factor=1.0
+    """
+    db = tmp_path / "edge.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("""
+            CREATE TABLE picks (
+                id INTEGER PRIMARY KEY, fixture_id INTEGER,
+                market TEXT, selection TEXT, minute INTEGER,
+                bookmaker_odd REAL, our_probability REAL,
+                edge_pct REAL, logical_score REAL,
+                status TEXT, profit_units REAL,
+                emitted_at TEXT
+            )
+        """)
+        rows = []
+        pid = 1
+        # Bucket (8, 12): 10 lost @ -1.0, edge=10%
+        for _ in range(10):
+            rows.append((pid, 1, "ou_3_5", "u", 30, 1.5, 0.7, 10.0, 0.6,
+                         "lost", -1.0, "2026-05-10T13:00:00Z"))
+            pid += 1
+        # Bucket (12, 15): 10 won @ +0.50, edge=13%
+        for _ in range(10):
+            rows.append((pid, 2, "ou_3_5", "u", 30, 1.5, 0.7, 13.0, 0.6,
+                         "won", 0.50, "2026-05-10T13:00:00Z"))
+            pid += 1
+        # Bucket (15, 20): 5 won + 5 lost, edge=17%
+        for k in range(10):
+            status = "won" if k < 5 else "lost"
+            pl_units = 1.0 if status == "won" else -1.0
+            rows.append((pid, 3, "ou_3_5", "u", 30, 2.0, 0.7, 17.0, 0.6,
+                         status, pl_units, "2026-05-10T13:00:00Z"))
+            pid += 1
+        # Bucket (20, 30): 10 won @ +0.20, edge=25%
+        for _ in range(10):
+            rows.append((pid, 4, "ou_3_5", "u", 30, 1.2, 0.85, 25.0, 0.6,
+                         "won", 0.20, "2026-05-10T13:00:00Z"))
+            pid += 1
+        # Bucket (30+): only 3 picks → below threshold
+        for _ in range(3):
+            rows.append((pid, 5, "ou_3_5", "u", 30, 1.5, 0.7, 35.0, 0.6,
+                         "won", 0.50, "2026-05-10T13:00:00Z"))
+            pid += 1
+        conn.executemany(
+            "INSERT INTO picks (id, fixture_id, market, selection, minute, "
+            "bookmaker_odd, our_probability, edge_pct, logical_score, "
+            "status, profit_units, emitted_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows,
+        )
+    return db
+
+
+class TestEdgeCalibration:
+
+    def test_compute_buckets_returns_one_factor_per_bucket(self,
+                                                            edge_calibration_db):
+        factors = compute_edge_buckets_from_db(edge_calibration_db)
+        assert set(factors.keys()) == set(EDGE_BUCKETS)
+
+    def test_anti_edge_bucket_clipped_to_zero(self, edge_calibration_db):
+        factors = compute_edge_buckets_from_db(edge_calibration_db)
+        # (8, 12): 10 picks all lost @ -1.0 → factor would be -10, clipped 0
+        assert factors[(8.0, 12.0)] == 0.0
+
+    def test_over_realizing_bucket_clipped_to_one(self, edge_calibration_db):
+        factors = compute_edge_buckets_from_db(edge_calibration_db)
+        # (12, 15): realized 0.50 / nominal 0.13 = 3.85 → clipped to 1.0
+        assert factors[(12.0, 15.0)] == 1.0
+
+    def test_break_even_bucket_zero_factor(self, edge_calibration_db):
+        factors = compute_edge_buckets_from_db(edge_calibration_db)
+        # (15, 20): 5W+5L → realized=0 → factor=0
+        assert factors[(15.0, 20.0)] == 0.0
+
+    def test_partial_realization_bucket(self, edge_calibration_db):
+        factors = compute_edge_buckets_from_db(edge_calibration_db)
+        # (20, 30): realized=0.20, nominal=0.25 → factor=0.80
+        assert factors[(20.0, 30.0)] == pytest.approx(0.80, abs=0.01)
+
+    def test_below_min_n_defaults_to_one(self, edge_calibration_db):
+        factors = compute_edge_buckets_from_db(edge_calibration_db)
+        # (30+): only 3 picks, below MIN_N=5 → factor=1.0
+        assert factors[(30.0, 1000.0)] == 1.0
+
+    def test_make_calibrator_none_returns_legacy(self):
+        cal = make_edge_calibrator(None)
+        # Legacy: 10% edge → 50% haircut → 0.05
+        assert cal(10.0) == pytest.approx(0.05)
+
+    def test_make_calibrator_applies_per_bucket_factor(self):
+        factors = {
+            (0.0, 8.0): 1.0,
+            (8.0, 12.0): 0.0,
+            (12.0, 15.0): 0.5,
+            (15.0, 20.0): 0.75,
+            (20.0, 30.0): 0.58,
+            (30.0, 1000.0): 0.39,
+        }
+        cal = make_edge_calibrator(factors)
+        # 10% edge in (8, 12) bucket → 0.0
+        assert cal(10.0) == 0.0
+        # 13.5% edge in (12, 15) → 0.135 * 0.5 = 0.0675
+        assert cal(13.5) == pytest.approx(0.0675)
+        # 25% edge in (20, 30) → 0.25 * 0.58 = 0.145
+        assert cal(25.0) == pytest.approx(0.145)
+        # 40% edge in (30+) → 0.40 * 0.39 = 0.156
+        assert cal(40.0) == pytest.approx(0.156)
+
+    def test_score_uses_passed_calibrator(self):
+        # Two identical picks except edge_pct. Custom calibrator zeros out
+        # the 10% pick (factor 0) and passes the 40% pick through (factor 1).
+        # 40% edge → cal=0.40, hits the score cap → contributes the full
+        # 0.20 weight. 10% pick contributes 0. Delta = 0.20.
+        rows = [
+            _make_pick(pick_id=1, edge_pct=10.0, market="ou_3_5",
+                       league_id=301),
+            _make_pick(pick_id=2, edge_pct=40.0, market="ou_3_5",
+                       league_id=301),
+        ]
+        df = _df(*rows)
+        factors = {(0.0, 12.0): 0.0, (12.0, 100.0): 1.0}
+        cal = make_edge_calibrator(factors)
+        out = score(df, edge_calibrator=cal)
+        s1, s2 = out.sort("id").get_column("score").to_list()
+        assert s2 - s1 == pytest.approx(0.20, abs=0.01)
