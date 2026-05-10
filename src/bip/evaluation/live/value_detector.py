@@ -839,9 +839,19 @@ class ValueDetector:
         """
         if state.snapshot_taken_at is None or odd.latest_bookmaker_update is None:
             return False
-        odd_age_seconds = (
-            state.snapshot_taken_at - odd.latest_bookmaker_update
-        ).total_seconds()
+        # Sportmonks frequently emits timestamps without timezone info;
+        # Pydantic parses them as tz-naive. Subtraction with our tz-aware
+        # snapshot_taken_at would raise. Defensive normalisation: assume
+        # UTC when naive (Sportmonks convention).
+        snap = state.snapshot_taken_at
+        odd_ts = odd.latest_bookmaker_update
+        if snap.tzinfo is None:
+            from datetime import timezone as _tz
+            snap = snap.replace(tzinfo=_tz.utc)
+        if odd_ts.tzinfo is None:
+            from datetime import timezone as _tz
+            odd_ts = odd_ts.replace(tzinfo=_tz.utc)
+        odd_age_seconds = (snap - odd_ts).total_seconds()
         # Negative age = odd is from the future relative to the snapshot
         # (clock skew); treat as fresh, not stale.
         if odd_age_seconds <= 0:

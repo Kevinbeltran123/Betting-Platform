@@ -181,12 +181,19 @@ def compute_team_form(
     total_scored = 0
     total_conceded = 0
 
-    # Form: last 5 chronologically (sort fixtures by starting_at desc)
-    completed_sorted = sorted(
-        completed,
-        key=lambda x: x[0].starting_at or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
+    # Form: last 5 chronologically (sort fixtures by starting_at desc).
+    # Sportmonks may emit starting_at as tz-naive — normalise so the sort
+    # key never mixes naive/aware datetimes (Python raises TypeError on
+    # comparison between mixed types).
+    def _sort_key(pair):
+        sa = pair[0].starting_at
+        if sa is None:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        if sa.tzinfo is None:
+            return sa.replace(tzinfo=timezone.utc)
+        return sa
+
+    completed_sorted = sorted(completed, key=_sort_key, reverse=True)
     last_5 = completed_sorted[:5]
     wins = draws = losses = 0
 
@@ -310,7 +317,14 @@ class TeamFormCache:
         if row is None:
             return None
         last_updated = datetime.fromisoformat(row["last_updated"])
+        # Defensive tz normalisation: legacy cache rows may lack timezone
+        # info even though current writes always include +00:00. Avoid
+        # the tz-aware-vs-naive subtraction crash.
+        if last_updated.tzinfo is None:
+            last_updated = last_updated.replace(tzinfo=timezone.utc)
         ref = now or datetime.now(timezone.utc)
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
         if ref - last_updated > self.ttl:
             return None
         return TeamForm(

@@ -214,7 +214,11 @@ class Event(BaseModel):
 
     id: int
     fixture_id: int
-    period_id: int
+    # Sportmonks emits null period_id for some events (e.g. pre-match
+    # cards, retroactive bookings, edge events without a clean period
+    # attribution). Made optional in 2026-05-10 hotfix after validation
+    # errors observed during the first live verification run.
+    period_id: int | None = None
     participant_id: int | None = None
     type_id: int
     minute: int | None = None
