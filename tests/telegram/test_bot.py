@@ -8,11 +8,24 @@ import pytest
 
 class TestBotInit:
     def test_init_no_polling(self):
-        """D-13 + drift risk #8: bot must NOT call updater.start_polling()."""
+        """D-13 + drift risk #8: bot.start() must NOT call updater.start_polling().
+
+        v2 adds opt-in polling via ``enable_interactivity()`` for the
+        callback-query/command handlers — that path is explicit and
+        gated by an operator user-id. We only enforce the invariant on
+        the default start path here.
+        """
         from bip.core.telegram.bot import TelegramBot
         TelegramBot(token="test-token", channel_id="-1001234567890")
-        src = inspect.getsource(TelegramBot)
+        src = inspect.getsource(TelegramBot.start)
         assert "start_polling" not in src
+
+    def test_enable_interactivity_opt_in_only(self):
+        """enable_interactivity must be a separate method, not invoked by start()."""
+        from bip.core.telegram.bot import TelegramBot
+        start_src = inspect.getsource(TelegramBot.start)
+        assert "enable_interactivity" not in start_src
+        assert hasattr(TelegramBot, "enable_interactivity")
 
     def test_aiorate_limiter_attached(self):
         """Pitfall 2 + Risks 2: AIORateLimiter must be wired (PTB 22.7 stores it on bot)."""
