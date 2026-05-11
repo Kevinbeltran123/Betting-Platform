@@ -27,18 +27,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from bip.core.telegram.bandwidth import TokenBucket
 from bip.evaluation.live.pick_tracker import DEFAULT_DB_PATH
 from bip.evaluation.live.telegram_alerts import (
     classify_tier,
+    format_burst_digest,
     format_jornada_summary,
     format_pick_alert_with_tier,
     format_pre_jornada_brief,
 )
-from bip.evaluation.live.telegram_state import Role, TelegramState
+from bip.evaluation.live.telegram_state import (
+    BurstReason,
+    Role,
+    TelegramState,
+)
 from bip.evaluation.live.value_detector import LivePick
 
 logger = logging.getLogger(__name__)
@@ -66,6 +73,8 @@ class LiveAlertSender:
         state: TelegramState | None = None,
         diag_channel_id: str | None = None,
         enable_keyboards: bool = True,
+        db_path: Path | None = None,
+        bandwidth: TokenBucket | None = None,
     ) -> None:
         self._bot = bot
         self.min_edge_pct_for_alert = min_edge_pct_for_alert
@@ -74,11 +83,24 @@ class LiveAlertSender:
         self.state = state
         self.diag_channel_id = diag_channel_id
         self.enable_keyboards = enable_keyboards and state is not None
+        self._db_path: Path | None = (
+            Path(db_path) if db_path is not None
+            else (DEFAULT_DB_PATH if state is not None else None)
+        )
+        # Bandwidth: token bucket replaces min_interval_seconds when state
+        # is configured (durable queue available). v1-only callers fall
+        # back to the legacy throttle.
+        self._bandwidth: TokenBucket | None = (
+            bandwidth if bandwidth is not None
+            else (TokenBucket() if state is not None else None)
+        )
         self._last_send_ts: float = 0.0
         self.n_sent = 0
         self.n_skipped = 0
         self.n_failed = 0
         self.n_muted = 0
+        self.n_queued = 0
+        self.n_digests_sent = 0
 
     @classmethod
     async def from_env(
@@ -190,6 +212,9 @@ class LiveAlertSender:
         return None
 
     async def _throttle(self) -> None:
+        """v1 legacy throttle. Skipped when token-bucket governor is active."""
+        if self._bandwidth is not None:
+            return
         if self.min_interval_seconds <= 0:
             return
         now = datetime.now(timezone.utc).timestamp()
@@ -230,9 +255,23 @@ class LiveAlertSender:
                 self.n_muted += 1
                 if pick_id is not None and self.state is not None:
                     # Queue muted pick so /resume can replay.
-                    from bip.evaluation.live.telegram_state import BurstReason
                     self.state.enqueue_burst(pick_id, BurstReason.MUTED)
             return False
+
+        # Bandwidth gate: if the token bucket is exhausted and we have a
+        # durable queue available, defer instead of throttling-and-sending.
+        # Tier 1 picks bypass the bucket — never delay high-conviction.
+        if (
+            self._bandwidth is not None
+            and self.state is not None
+            and pick_id is not None
+            and tier != 1
+            and not self._bandwidth.try_consume(cost=1.0)
+        ):
+            self.state.enqueue_burst(pick_id, BurstReason.BURST)
+            self.n_queued += 1
+            return False
+
         await self._throttle()
         try:
             text = format_pick_alert_with_tier(
@@ -279,6 +318,139 @@ class LiveAlertSender:
                 pick.market, pick.selection, exc,
             )
             return False
+
+    async def run_burst_flush_forever(
+        self, *, period_seconds: float = 30.0,
+        window_seconds: int = 60, batch_limit: int = 10,
+    ) -> None:
+        """Long-running task: periodically drain the burst queue.
+
+        Failure-safe: any exception in one tick is logged and the loop
+        continues. Cancel via the caller's task object.
+        """
+        while True:
+            try:
+                await self.flush_burst_queue(
+                    window_seconds=window_seconds, batch_limit=batch_limit,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("burst_flush_tick_failed err=%s", exc)
+            try:
+                await asyncio.sleep(period_seconds)
+            except asyncio.CancelledError:
+                return
+
+    async def flush_burst_queue(
+        self, *, window_seconds: int = 60, batch_limit: int = 10,
+    ) -> int:
+        """Drain queued picks and send a single burst-digest message.
+
+        Returns the number of picks included in the digest (0 if queue
+        empty or no tokens available). Failure-safe.
+
+        Requires both ``state`` and ``db_path`` to be configured;
+        otherwise it's a no-op.
+        """
+        if self.state is None or self._db_path is None:
+            return 0
+        if self.state.burst_queue_size() == 0:
+            return 0
+        # Each digest message costs 1 token. Skip if bucket dry; flush will
+        # be retried by the next periodic call.
+        if (
+            self._bandwidth is not None
+            and not self._bandwidth.try_consume(cost=1.0)
+        ):
+            return 0
+
+        pick_ids = self.state.drain_burst_queue(limit=batch_limit)
+        if not pick_ids:
+            return 0
+
+        picks, pid_order = self._load_picks_for_digest(pick_ids)
+        if not picks:
+            return 0
+
+        try:
+            from bip.core.telegram.keyboards import build_burst_digest_keyboard
+            text = format_burst_digest(picks, window_seconds=window_seconds)
+            keyboard = build_burst_digest_keyboard(pid_order)
+            message_id = await self._bot.send_html(
+                text,
+                reply_markup=keyboard,
+                disable_notification=True,
+            )
+            # Persist message_id per pick so outcome replies thread to
+            # the digest. Use role=BURST_DIGEST.
+            channel = str(self._bot.channel_id)
+            for pid in pid_order:
+                self.state.record_message(
+                    pick_id=pid, channel_id=channel,
+                    message_id=message_id,
+                    role=Role.BURST_DIGEST,
+                )
+            self.n_digests_sent += 1
+            return len(picks)
+        except Exception as exc:  # noqa: BLE001
+            # Re-queue the drained pick_ids so they're not lost.
+            for pid in pick_ids:
+                self.state.enqueue_burst(pid, BurstReason.RATE_LIMIT)
+            self.n_failed += 1
+            logger.warning("burst_digest_send_failed err=%s", exc)
+            return 0
+
+    def _load_picks_for_digest(
+        self, pick_ids: list[int],
+    ) -> tuple[list[LivePick], list[int]]:
+        """Reconstruct LivePick objects from picks.db rows.
+
+        Returns ``(picks, pid_order)`` where ``pid_order`` is parallel
+        to ``picks`` and carries the DB rowids — used downstream to
+        build the inline keyboard and write tg_messages rows.
+        """
+        if not pick_ids or self._db_path is None:
+            return [], []
+        placeholders = ",".join("?" * len(pick_ids))
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"""
+                SELECT id, fixture_id, minute, home_team, away_team,
+                       market, selection, bookmaker_id, bookmaker_odd,
+                       our_probability, fair_odd, edge_pct,
+                       kelly_fraction_full, suggested_stake_pct,
+                       market_description, snapshot_kind,
+                       flagged_reason, logical_score
+                FROM picks
+                WHERE id IN ({placeholders})
+                ORDER BY edge_pct DESC
+                """,
+                pick_ids,
+            ).fetchall()
+        picks: list[LivePick] = []
+        pid_order: list[int] = []
+        for r in rows:
+            picks.append(LivePick(
+                fixture_id=int(r["fixture_id"]),
+                minute=int(r["minute"]),
+                home_team=str(r["home_team"]),
+                away_team=str(r["away_team"]),
+                market=str(r["market"]),
+                selection=str(r["selection"]),
+                bookmaker_id=int(r["bookmaker_id"]),
+                bookmaker_odd=float(r["bookmaker_odd"]),
+                our_probability=float(r["our_probability"]),
+                fair_odd=float(r["fair_odd"]),
+                edge_pct=float(r["edge_pct"]),
+                kelly_fraction_full=float(r["kelly_fraction_full"]),
+                suggested_stake_pct=float(r["suggested_stake_pct"]),
+                market_description=r["market_description"],
+                snapshot_kind=str(r["snapshot_kind"]),
+                flagged_reason=r["flagged_reason"],
+                logical_score=float(r["logical_score"] or 1.0),
+            ))
+            pid_order.append(int(r["id"]))
+        return picks, pid_order
 
     async def send_brief_safe(self, **kwargs: Any) -> bool:
         try:

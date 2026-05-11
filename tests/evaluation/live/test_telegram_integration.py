@@ -416,6 +416,181 @@ class TestMuteRespect:
         assert state.drain_burst_queue() == [42]
 
 
+class TestBandwidthGovernor:
+    """B1 — token-bucket gating + burst-queue flush."""
+
+    @pytest.mark.asyncio
+    async def test_bucket_exhaustion_enqueues_tier2(self, state_and_db):
+        from bip.core.telegram.bandwidth import TokenBucket
+        state, db_path = state_and_db
+        bucket = TokenBucket(capacity=1, refill_seconds=600.0)
+        bot = _bot_returning()
+        sender = LiveAlertSender(
+            bot, min_interval_seconds=0.0, state=state, db_path=db_path,
+            bandwidth=bucket, min_edge_pct_for_alert=5.0,
+        )
+        # Tier 2 pick (L=0.85, edge=7 → drops below T1 edge floor)
+        def t2():
+            return LivePick(
+                fixture_id=1, minute=30, home_team="A", away_team="B",
+                market="ou", selection="o", bookmaker_id=2,
+                bookmaker_odd=1.85, our_probability=0.7, fair_odd=1.43,
+                edge_pct=7.0, kelly_fraction_full=0.1,
+                suggested_stake_pct=1.0, snapshot_kind="live",
+                flagged_reason=None, logical_score=0.85,
+                confidence_half_width=0.05, model_probability_raw=0.7,
+            )
+        # First send consumes the only token → succeeds
+        ok1 = await sender.send_pick_safe(t2(), pick_id=1)
+        # Second send finds bucket empty → enqueued
+        ok2 = await sender.send_pick_safe(t2(), pick_id=2)
+        assert ok1 is True
+        assert ok2 is False
+        assert sender.n_queued == 1
+        # Queue contains pick_id 2 (not 1)
+        assert state.drain_burst_queue() == [2]
+
+    @pytest.mark.asyncio
+    async def test_tier1_bypasses_bucket(self, state_and_db):
+        from bip.core.telegram.bandwidth import TokenBucket
+        state, db_path = state_and_db
+        bucket = TokenBucket(capacity=1, refill_seconds=600.0)
+        bucket.reset_for_test(tokens=0.0)  # bucket starts empty
+        bot = _bot_returning()
+        sender = LiveAlertSender(
+            bot, min_interval_seconds=0.0, state=state, db_path=db_path,
+            bandwidth=bucket, min_edge_pct_for_alert=5.0,
+        )
+        # Tier 1: L=0.90, edge=15 → bypasses bucket
+        ok = await sender.send_pick_safe(_make_tier1_pick(), pick_id=10)
+        assert ok is True
+        assert sender.n_queued == 0
+        bot.send_html.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_min_interval_skipped_when_bucket_active(self, state_and_db):
+        """Token bucket replaces v1 min_interval — no extra sleep."""
+        from bip.core.telegram.bandwidth import TokenBucket
+        state, db_path = state_and_db
+        bucket = TokenBucket(capacity=5, refill_seconds=6.0)
+        bot = _bot_returning()
+        sender = LiveAlertSender(
+            bot, min_interval_seconds=10.0,  # would block 10s in v1
+            state=state, db_path=db_path, bandwidth=bucket,
+            min_edge_pct_for_alert=5.0,
+        )
+        # Should NOT block. Test by measuring elapsed.
+        import time
+        t0 = time.monotonic()
+        await sender.send_pick_safe(_make_tier1_pick(), pick_id=1)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.5, f"min_interval should be bypassed (elapsed={elapsed})"
+
+
+class TestFlushBurstQueue:
+    @pytest.mark.asyncio
+    async def test_flush_empty_queue_no_op(self, state_and_db):
+        state, db_path = state_and_db
+        bot = _bot_returning()
+        sender = LiveAlertSender(
+            bot, min_interval_seconds=0.0, state=state, db_path=db_path,
+        )
+        n = await sender.flush_burst_queue()
+        assert n == 0
+        bot.send_html.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_flush_drains_and_sends_one_digest(self, state_and_db):
+        from bip.evaluation.live.pick_tracker import PickTracker
+        state, db_path = state_and_db
+        tracker = PickTracker(db_path=db_path)
+        # Record 3 picks and enqueue them
+        pid1, _ = tracker.record(_make_pick(edge_pct=12.0))
+        pid2, _ = tracker.record(LivePick(
+            fixture_id=2, minute=30, home_team="C", away_team="D",
+            market="m2", selection="x", bookmaker_id=2,
+            bookmaker_odd=1.85, our_probability=0.7, fair_odd=1.43,
+            edge_pct=9.0, kelly_fraction_full=0.1,
+            suggested_stake_pct=1.0, snapshot_kind="live",
+            flagged_reason=None, logical_score=0.80,
+            confidence_half_width=0.05, model_probability_raw=0.7,
+        ))
+        pid3, _ = tracker.record(LivePick(
+            fixture_id=3, minute=30, home_team="E", away_team="F",
+            market="m3", selection="y", bookmaker_id=2,
+            bookmaker_odd=1.85, our_probability=0.7, fair_odd=1.43,
+            edge_pct=15.0, kelly_fraction_full=0.1,
+            suggested_stake_pct=1.0, snapshot_kind="live",
+            flagged_reason=None, logical_score=0.80,
+            confidence_half_width=0.05, model_probability_raw=0.7,
+        ))
+        from bip.evaluation.live.telegram_state import BurstReason
+        for pid in (pid1, pid2, pid3):
+            state.enqueue_burst(pid, BurstReason.BURST)
+
+        bot = _bot_returning(message_id=77000)
+        sender = LiveAlertSender(
+            bot, min_interval_seconds=0.0, state=state, db_path=db_path,
+        )
+        n = await sender.flush_burst_queue(window_seconds=30)
+        assert n == 3
+        assert sender.n_digests_sent == 1
+        # Exactly ONE send_html call carrying all 3 picks
+        bot.send_html.assert_awaited_once()
+        text = bot.send_html.await_args.args[0]
+        assert "BURST" in text
+        assert "3 picks" in text
+        # All 3 pick_ids now have a BURST_DIGEST row pointing at the same msg_id
+        for pid in (pid1, pid2, pid3):
+            ref = state.find_message(pick_id=pid, role=Role.BURST_DIGEST)
+            assert ref is not None
+            assert ref.message_id == 77000
+
+    @pytest.mark.asyncio
+    async def test_flush_re_enqueues_on_send_failure(self, state_and_db):
+        from bip.evaluation.live.pick_tracker import PickTracker
+        state, db_path = state_and_db
+        tracker = PickTracker(db_path=db_path)
+        pid, _ = tracker.record(_make_pick())
+        from bip.evaluation.live.telegram_state import BurstReason
+        state.enqueue_burst(pid, BurstReason.BURST)
+
+        bot = _bot_returning()
+        bot.send_html.side_effect = RuntimeError("network down")
+        sender = LiveAlertSender(
+            bot, min_interval_seconds=0.0, state=state, db_path=db_path,
+        )
+        n = await sender.flush_burst_queue()
+        assert n == 0
+        # Queue must NOT have lost the pick
+        assert state.burst_queue_size() == 1
+        assert state.drain_burst_queue() == [pid]
+
+    @pytest.mark.asyncio
+    async def test_flush_respects_bandwidth_budget(self, state_and_db):
+        """No tokens → no flush, even when queue has items."""
+        from bip.core.telegram.bandwidth import TokenBucket
+        from bip.evaluation.live.pick_tracker import PickTracker
+        from bip.evaluation.live.telegram_state import BurstReason
+        state, db_path = state_and_db
+        tracker = PickTracker(db_path=db_path)
+        pid, _ = tracker.record(_make_pick())
+        state.enqueue_burst(pid, BurstReason.BURST)
+
+        bucket = TokenBucket(capacity=1, refill_seconds=600.0)
+        bucket.reset_for_test(tokens=0.0)
+        bot = _bot_returning()
+        sender = LiveAlertSender(
+            bot, min_interval_seconds=0.0, state=state, db_path=db_path,
+            bandwidth=bucket,
+        )
+        n = await sender.flush_burst_queue()
+        assert n == 0
+        bot.send_html.assert_not_awaited()
+        # Pick still in queue
+        assert state.burst_queue_size() == 1
+
+
 class TestBuildKeyboard:
     """Smoke-test the keyboard builder works for all tiers."""
 

@@ -436,6 +436,7 @@ async def watch_loop(
     detector = ValueDetector(min_edge_pct=min_edge, **detector_kwargs)
     telegram_sender: LiveAlertSender | None = None
     outcome_task: asyncio.Task[None] | None = None
+    burst_flush_task: asyncio.Task[None] | None = None
     outcome_watcher = None  # OutcomeWatcher | None — typed lazily to avoid import on disabled path
     if telegram_enabled:
         telegram_sender = await LiveAlertSender.from_env(
@@ -459,11 +460,22 @@ async def watch_loop(
                     state=telegram_sender.state,
                     db_path=db_path,
                     primary_channel_id=telegram_sender.bot.channel_id,
+                    diag_channel_id=telegram_sender.diag_channel_id,
                 )
                 outcome_task = asyncio.create_task(
                     outcome_watcher.run_forever(period_seconds=60.0)
                 )
-                print("📢 OutcomeWatcher ON (period=60s, scoreboard enabled)")
+                burst_flush_task = asyncio.create_task(
+                    telegram_sender.run_burst_flush_forever(
+                        period_seconds=30.0, window_seconds=60,
+                    )
+                )
+                print(
+                    "📢 OutcomeWatcher ON (period=60s, scoreboard enabled)"
+                )
+                print(
+                    "📢 BurstFlush ON (period=30s, token bucket capacity=5)"
+                )
     form_cache: TeamFormCache | None = None
     if form_cache_enabled:
         form_cache = TeamFormCache(
@@ -552,14 +564,25 @@ async def watch_loop(
             print(
                 f"📢 OutcomeWatcher: outcomes={outcome_watcher.n_outcome_replies_sent} "
                 f"scoreboard_updates={outcome_watcher.n_scoreboard_updates} "
+                f"streak_alerts={outcome_watcher.n_streak_alerts_sent} "
+                f"drawdown_alerts={outcome_watcher.n_drawdown_alerts_sent} "
                 f"failures={outcome_watcher.n_failures}"
             )
+
+    if burst_flush_task is not None:
+        burst_flush_task.cancel()
+        try:
+            await burst_flush_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
 
     if telegram_sender is not None:
         print(
             f"📢 Telegram alerts: sent={telegram_sender.n_sent} "
             f"skipped={telegram_sender.n_skipped} "
             f"muted={telegram_sender.n_muted} "
+            f"queued={telegram_sender.n_queued} "
+            f"digests={telegram_sender.n_digests_sent} "
             f"failed={telegram_sender.n_failed}"
         )
         await telegram_sender.shutdown()
