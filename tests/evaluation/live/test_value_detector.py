@@ -7,6 +7,7 @@ import pytest
 import numpy as np
 
 from bip.evaluation.live.calibration import IsotonicProbabilityCalibrator
+from bip.evaluation.live.commentary import CommentaryEvent, CommentaryEventType
 from bip.evaluation.live.match_state import LiveMatchState
 from bip.evaluation.live.predictor import (
     MARKET_AWAY_OU_15,
@@ -592,3 +593,130 @@ class TestCalibratorIntegration:
         picks = det.evaluate(probs, odds, home_team_name="A", away_team_name="B")
         # Calibrated to 0 → drop pre-edge OR below_min_edge
         assert picks == []
+
+
+# ── Commentary cool-off gate (Tier 1.6) ─────────────────────────────────────
+
+
+def _state_with_commentary(
+    events: list[CommentaryEvent],
+    *,
+    minute: int = 35,
+    home_goals: int = 0, away_goals: int = 1,
+) -> LiveMatchState:
+    """LiveMatchState carrying commentary events, with no recent material event."""
+    return LiveMatchState(
+        fixture_id=1, home_team_id=10, away_team_id=20,
+        home_team_name="A", away_team_name="B",
+        home_goals=home_goals, away_goals=away_goals,
+        minute=minute, period_id=2 if minute >= 45 else 1,
+        is_live=True, is_half_time=False, is_finished=False,
+        commentary_events=events,
+    )
+
+
+class TestCommentaryCooloffGate:
+    def test_var_check_blocks_picks_in_window(self):
+        # VAR at min 30, current min 31 → within 3-min window → drop
+        events = [CommentaryEvent(
+            minute=30, extra_minute=0,
+            event_type=CommentaryEventType.VAR_CHECK,
+            is_important=True, text="VAR",
+        )]
+        state = _state_with_commentary(events, minute=31)
+        probs = _probs(market_probs={
+            MARKET_FULLTIME_RESULT: {"home": 0.55, "draw": 0.25, "away": 0.20},
+        }, minute=31)
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="2.00")]
+        det = ValueDetector(min_edge_pct=3.0)
+        picks = det.evaluate(
+            probs, odds, home_team_name="A", away_team_name="B", state=state,
+        )
+        assert picks == []
+
+    def test_var_check_outside_window_allows_picks(self):
+        # VAR at min 30, current min 34 → outside 3-min window → allow
+        events = [CommentaryEvent(
+            minute=30, extra_minute=0,
+            event_type=CommentaryEventType.VAR_CHECK,
+            is_important=True, text="VAR",
+        )]
+        state = _state_with_commentary(events, minute=34)
+        probs = _probs(market_probs={
+            MARKET_FULLTIME_RESULT: {"home": 0.55, "draw": 0.25, "away": 0.20},
+        }, minute=34)
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="2.00")]
+        det = ValueDetector(min_edge_pct=3.0)
+        picks = det.evaluate(
+            probs, odds, home_team_name="A", away_team_name="B", state=state,
+        )
+        assert len(picks) == 1
+
+    def test_injury_short_cooloff(self):
+        # Injury at min 20, current min 22 → outside 1-min window
+        events = [CommentaryEvent(
+            minute=20, extra_minute=0,
+            event_type=CommentaryEventType.INJURY_DELAY,
+            is_important=False, text="injury",
+        )]
+        state = _state_with_commentary(events, minute=22)
+        probs = _probs(market_probs={
+            MARKET_FULLTIME_RESULT: {"home": 0.55, "draw": 0.25, "away": 0.20},
+        }, minute=22)
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="2.00")]
+        det = ValueDetector(min_edge_pct=3.0)
+        picks = det.evaluate(
+            probs, odds, home_team_name="A", away_team_name="B", state=state,
+        )
+        assert len(picks) == 1
+
+    def test_disabled_via_kwarg(self):
+        events = [CommentaryEvent(
+            minute=30, extra_minute=0,
+            event_type=CommentaryEventType.VAR_CHECK,
+            is_important=True, text="VAR",
+        )]
+        state = _state_with_commentary(events, minute=31)
+        probs = _probs(market_probs={
+            MARKET_FULLTIME_RESULT: {"home": 0.55, "draw": 0.25, "away": 0.20},
+        }, minute=31)
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="2.00")]
+        det = ValueDetector(min_edge_pct=3.0, enforce_commentary_cooloff=False)
+        picks = det.evaluate(
+            probs, odds, home_team_name="A", away_team_name="B", state=state,
+        )
+        assert len(picks) == 1
+
+    def test_drop_reason_recorded(self):
+        events = [CommentaryEvent(
+            minute=30, extra_minute=0,
+            event_type=CommentaryEventType.GOAL_DISALLOWED,
+            is_important=True, text="disallowed",
+        )]
+        state = _state_with_commentary(events, minute=31)
+        probs = _probs(market_probs={
+            MARKET_FULLTIME_RESULT: {"home": 0.55, "draw": 0.25, "away": 0.20},
+        }, minute=31)
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="2.00")]
+        recorded: list[dict] = []
+        det = ValueDetector(min_edge_pct=3.0)
+        det.evaluate(
+            probs, odds, home_team_name="A", away_team_name="B",
+            state=state,
+            on_decision=lambda **kw: recorded.append(kw),
+        )
+        reasons = {r.get("drop_reason") for r in recorded}
+        assert any("commentary_cooloff" in (r or "") for r in reasons)
+
+    def test_no_commentary_events_no_effect(self):
+        # Empty commentary_events → gate is a no-op
+        state = _state_with_commentary([], minute=30)
+        probs = _probs(market_probs={
+            MARKET_FULLTIME_RESULT: {"home": 0.55, "draw": 0.25, "away": 0.20},
+        }, minute=30)
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="2.00")]
+        det = ValueDetector(min_edge_pct=3.0)
+        picks = det.evaluate(
+            probs, odds, home_team_name="A", away_team_name="B", state=state,
+        )
+        assert len(picks) == 1

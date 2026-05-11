@@ -46,6 +46,11 @@ from bip.evaluation.live.calibration import (
     IsotonicProbabilityCalibrator,
     PerMarketCalibrator,
 )
+from bip.evaluation.live.commentary import (
+    DEFAULT_COOLOFF_MINUTES,
+    CommentaryEventType,
+    recent_event as _recent_commentary_event,
+)
 from bip.evaluation.live.match_state import LiveMatchState
 from bip.evaluation.live.predictor import (
     MARKET_AWAY_CLEAN_SHEET,
@@ -242,6 +247,10 @@ DEFAULT_DROP_OVER_ZERO_ZERO = True
 DEFAULT_ZERO_ZERO_MIN_MINUTE = 30
 DEFAULT_HIGH_PROB_HAIRCUT_THRESHOLD = 0.85
 DEFAULT_HIGH_PROB_HAIRCUT_SLOPE = 0.65
+# Tier 1.6: commentary cool-off gate (Day-1 post-Tier-2 ship).
+# Suppresses picks during VAR / disallowed-goal / injury / penalty /
+# red-card disruption windows. See bip.evaluation.live.commentary.
+DEFAULT_ENFORCE_COMMENTARY_COOLOFF = True
 # Material-event blackout (seconds after last goal / red card).
 MATERIAL_EVENT_BLACKOUT_SECONDS = 90
 # Stale-odd tolerance after a material event: when an event landed in the
@@ -511,6 +520,8 @@ class ValueDetector:
         high_prob_haircut_threshold: float = DEFAULT_HIGH_PROB_HAIRCUT_THRESHOLD,
         high_prob_haircut_slope: float = DEFAULT_HIGH_PROB_HAIRCUT_SLOPE,
         calibrator: IsotonicProbabilityCalibrator | PerMarketCalibrator | None = None,
+        enforce_commentary_cooloff: bool = DEFAULT_ENFORCE_COMMENTARY_COOLOFF,
+        commentary_cooloff_minutes: dict[CommentaryEventType, int] | None = None,
     ) -> None:
         self.min_edge_pct = min_edge_pct
         self.max_stake_pct = max_stake_pct
@@ -535,6 +546,12 @@ class ValueDetector:
         self.high_prob_haircut_threshold = high_prob_haircut_threshold
         self.high_prob_haircut_slope = high_prob_haircut_slope
         self.calibrator = calibrator
+        self.enforce_commentary_cooloff = enforce_commentary_cooloff
+        self.commentary_cooloff_minutes = (
+            commentary_cooloff_minutes
+            if commentary_cooloff_minutes is not None
+            else DEFAULT_COOLOFF_MINUTES
+        )
 
     def evaluate(
         self,
@@ -913,6 +930,20 @@ class ValueDetector:
         last_min = self._last_material_event_minute(state)
         if last_min is not None and state.minute - last_min <= 1:
             return "post_event_blackout"
+        # Commentary cool-off (Tier 1.6): suppress picks within window
+        # of a disruptive narrative event (VAR check, disallowed goal,
+        # injury delay, penalty awarded, red card from commentary).
+        if (
+            self.enforce_commentary_cooloff
+            and getattr(state, "commentary_events", None)
+        ):
+            ev = _recent_commentary_event(
+                state.commentary_events,
+                current_minute=state.minute,
+                cooloff=self.commentary_cooloff_minutes,
+            )
+            if ev is not None:
+                return f"commentary_cooloff:{ev.event_type.value}"
         return None
 
     @staticmethod

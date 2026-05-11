@@ -135,6 +135,13 @@ class LiveMatchState:
     # lone defensive sub at 80' = locking the result.
     substitution_events: list[tuple[int, int, int]] = field(default_factory=list)
 
+    # Commentary-narrative events (VAR_CHECK, RED_CARD, INJURY_DELAY, etc.)
+    # extracted from raw.comments via commentary.extract_events. Used by
+    # ValueDetector's commentary cool-off gate to suppress picks during
+    # market-disruption windows. Empty when raw_comments not provided to
+    # from_fixture(), preserving backwards compatibility.
+    commentary_events: list = field(default_factory=list)
+
     # Snapshot meta (best-effort; not always emitted by Sportmonks).
     snapshot_taken_at: datetime | None = None
     league_id: int | None = None
@@ -705,6 +712,7 @@ class LiveMatchState:
         *,
         pressure_window_minutes: int = 10,
         snapshot_taken_at: datetime | None = None,
+        raw_comments: list[dict] | None = None,
     ) -> LiveMatchState:
         """Build a state from an enriched Fixture.
 
@@ -758,6 +766,13 @@ class LiveMatchState:
             if t.participant_id in team_ids
         ]
 
+        # Commentary-narrative events (optional — extracted from raw payload
+        # when caller passes raw_comments). Lazy import to avoid coupling.
+        commentary_events: list = []
+        if raw_comments:
+            from bip.evaluation.live.commentary import extract_events
+            commentary_events = extract_events(raw_comments)
+
         return cls(
             fixture_id=fixture.id,
             home_team_id=home.id,
@@ -782,6 +797,7 @@ class LiveMatchState:
             red_card_events=red_card_events,
             yellow_card_events=yellow_events,
             substitution_events=sub_events,
+            commentary_events=commentary_events,
             snapshot_taken_at=snapshot_taken_at,
             league_id=fixture.league_id,
             season_id=fixture.season_id,
