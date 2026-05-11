@@ -263,7 +263,9 @@ class TestTelegramFormattersOnRealPicks:
         text = format_pick_alert(
             picks[0], home_score=1, away_score=0,
         )
-        assert "LIVE PICK" in text
+        # v2 templates: Tier 1 label is "TIER 1 — HIGH-CONVICTION PICK";
+        # Tier 2 label is just "PICK". Both contain "PICK".
+        assert "PICK" in text
         assert "home" in text
         # HTML escape works on standard team names
         assert "&lt;" not in text  # nothing escape-needed in 'A' / 'B'
