@@ -60,7 +60,10 @@ from bip.evaluation.live.team_form import (  # noqa: E402
     TeamFormCache,
 )
 from bip.evaluation.live.telegram_integration import LiveAlertSender  # noqa: E402
-from bip.evaluation.live.value_detector import LivePick  # noqa: E402
+from bip.evaluation.live.value_detector import (  # noqa: E402
+    LivePick,
+    make_best_stack_detector,
+)
 from bip.sports.football.sportmonks.cache import (  # noqa: E402
     DEFAULT_CACHE_ROOT,
     SportmonksCache,
@@ -429,11 +432,22 @@ async def watch_loop(
     form_cache_enabled: bool = True,
     telegram_enabled: bool = False,
     telegram_min_edge_pct: float = 5.0,
+    calibrator_path: Path | None = None,
 ) -> None:
     cache = SportmonksCache(root=cache_root)
     tracker = PickTracker(db_path=db_path)
     predictor = LiveMatchPredictor()
-    detector = ValueDetector(min_edge_pct=min_edge, **detector_kwargs)
+    if calibrator_path is not None:
+        detector = make_best_stack_detector(
+            calibrator_path=str(calibrator_path),
+            min_edge_pct=min_edge,
+            **detector_kwargs,
+        )
+    else:
+        detector = make_best_stack_detector(
+            min_edge_pct=min_edge,
+            **detector_kwargs,
+        )
     telegram_sender: LiveAlertSender | None = None
     outcome_task: asyncio.Task[None] | None = None
     burst_flush_task: asyncio.Task[None] | None = None
@@ -702,6 +716,20 @@ def _parse_args() -> argparse.Namespace:
         help="Minimum edge_pct for Telegram alerts (separate from "
              "--min-edge which controls emit). Default 5.0%%.",
     )
+    p.add_argument(
+        "--calibrator-path", type=Path,
+        default=Path("data/calibration/isotonic_v1.json"),
+        help="Path to a global or per-market isotonic calibrator JSON. "
+             "Wired through make_best_stack_detector (auto-detects shape, "
+             "auto-disables Tier 1.4 haircut). Default: global isotonic "
+             "(CV ROI +43%% ± 8 — lower variance than per-market).",
+    )
+    p.add_argument(
+        "--no-calibrator", action="store_true",
+        help="Disable calibrator loading entirely (Tier 1 gates only, "
+             "Tier 1.4 haircut stays ON). CV ROI ≈ +32%% ± 9. Use for "
+             "A/B comparison or rollback if calibrator regresses.",
+    )
     return p.parse_args()
 
 
@@ -755,6 +783,19 @@ def main() -> int:
         print(f"   Team-form cache: ON  ({args.form_db_path})")
     else:
         print("   Team-form cache: OFF")
+    calibrator_path = None if args.no_calibrator else args.calibrator_path
+    if calibrator_path is not None:
+        exists = calibrator_path.exists()
+        marker = "✓" if exists else "✗ MISSING"
+        print(f"   Calibrator: {marker}  {calibrator_path}")
+        if not exists:
+            print(
+                f"   ⚠ calibrator path does not exist — "
+                f"make_best_stack_detector will raise. "
+                f"Re-run fit_calibrator.py or pass --no-calibrator."
+            )
+    else:
+        print("   Calibrator: OFF (Tier 1 gates only — CV ROI ≈ +32%)")
 
     # Log Sportmonks subscription / quota info at start so we know our
     # plan ceiling and can detect surprise rate-limit events post-run.
@@ -791,6 +832,7 @@ def main() -> int:
         form_cache_enabled=not args.no_form_cache,
         telegram_enabled=args.telegram,
         telegram_min_edge_pct=args.telegram_min_edge,
+        calibrator_path=calibrator_path,
     ))
     return 0
 
