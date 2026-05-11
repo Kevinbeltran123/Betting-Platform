@@ -47,6 +47,17 @@ from bip.evaluation.live.engine_v3.no_bet_gate import GateResult, run_gate
 from bip.evaluation.live.engine_v3.thesis import Thesis
 from bip.evaluation.live.match_state import LiveMatchState
 
+# Phase-3 surfaces. Imported lazily-as-types to keep Phase-1/2 callers
+# (which never wire a promoter) free of any phase3 import overhead.
+try:  # pragma: no cover — type-only import path
+    from bip.evaluation.live.engine_v3.phase3.tier_promoter import (
+        PromotedPick,
+        TierDPromoter,
+    )
+except ImportError:  # pragma: no cover
+    PromotedPick = None  # type: ignore[assignment]
+    TierDPromoter = None  # type: ignore[assignment]
+
 
 @dataclass(frozen=True)
 class ShadowPick:
@@ -67,6 +78,10 @@ class PipelineOutput:
 
     Sec 7.2 requires that **every** rejected candidate be logged with
     its rule number. ``gate_results`` carries that.
+
+    ``promoted_picks`` is populated only when a Phase-3 ``TierDPromoter``
+    is wired to the pipeline. Otherwise it stays empty — Phase 1/2
+    callers see no behaviour change.
     """
 
     gsv: GameStateVector
@@ -74,6 +89,7 @@ class PipelineOutput:
     candidates: list[MarketCandidate]
     gate_results: list[GateResult]
     allowed_picks: list[ShadowPick]
+    promoted_picks: list = field(default_factory=list)
 
 
 class V3Pipeline:
@@ -85,6 +101,7 @@ class V3Pipeline:
         *,
         gsv_builder: GSVBuilder | None = None,
         conditional_predictor: ConditionalPredictor | None = None,
+        tier_promoter: "TierDPromoter | None" = None,
         mes_threshold: float = 0.6,
         target_stake: float = 100.0,
         line_max_age_sec: float = 60.0,
@@ -94,6 +111,7 @@ class V3Pipeline:
     ) -> None:
         self.gsv_builder = gsv_builder or GSVBuilder()
         self.predictor = conditional_predictor or ConditionalPredictor.default()
+        self.tier_promoter = tier_promoter
         self.mes_threshold = mes_threshold
         self.target_stake = target_stake
         self.line_max_age_sec = line_max_age_sec
@@ -149,12 +167,19 @@ class V3Pipeline:
             for r in gate_results
             if r.verdict.allowed
         ]
+        promoted: list = []
+        if self.tier_promoter is not None:
+            for r in gate_results:
+                if not r.verdict.allowed:
+                    continue
+                promoted.append(self.tier_promoter.promote(r.candidate, gsv))
         return PipelineOutput(
             gsv=gsv,
             theses=theses,
             candidates=candidates,
             gate_results=gate_results,
             allowed_picks=allowed,
+            promoted_picks=promoted,
         )
 
 
