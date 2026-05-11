@@ -2,11 +2,17 @@
 
 See ``Papers/LIVE_ENGINE_V3_DESIGN.md`` for the architectural blueprint.
 
-Phase-1 surface (this commit): GSV primitives + rule-layer hypothesis
-generation. The MES / Market Selector / No-Bet Gate / pipeline /
-recorders land in follow-up commits.
+Phase-2 surface (this commit adds): MES, Market Selector, Conditional
+Predictor (corners + goals families), No-Bet Policy Gate. The pipeline
++ recorders land in the next commit.
 """
 from bip.evaluation.live.engine_v3.archetypes import generate_theses
+from bip.evaluation.live.engine_v3.conditional_predictor import (
+    ConditionalPredictor,
+    CornersPredictor,
+    Goals2HPredictor,
+    PredictionPoint,
+)
 from bip.evaluation.live.engine_v3.gsv import (
     CardsState,
     CornerState,
@@ -24,6 +30,18 @@ from bip.evaluation.live.engine_v3.gsv import (
     XGState,
 )
 from bip.evaluation.live.engine_v3.gsv_builder import GSVBuilder
+from bip.evaluation.live.engine_v3.market_selector import (
+    MarketCandidate,
+    family_for_market_id,
+    select_markets,
+)
+from bip.evaluation.live.engine_v3.mes import MESResult, compute_mes
+from bip.evaluation.live.engine_v3.no_bet_gate import (
+    GateResult,
+    NoBetVerdict,
+    allowed_candidates,
+    run_gate,
+)
 from bip.evaluation.live.engine_v3.thesis import (
     CausalChain,
     CausalStep,
@@ -41,19 +59,27 @@ __all__ = [
     "CardsState",
     "CausalChain",
     "CausalStep",
+    "ConditionalPredictor",
     "ConditionalShift",
     "CornerState",
+    "CornersPredictor",
     "CriticalEvent",
     "FlowState",
     "GSVBuilder",
     "GSVPredicate",
     "GameStateVector",
+    "GateResult",
+    "Goals2HPredictor",
     "InvalidationTrigger",
+    "MESResult",
+    "MarketCandidate",
     "MarketFamily",
     "MarketLine",
     "MarketSnapshot",
+    "NoBetVerdict",
     "NumericalState",
     "PreMatchPriors",
+    "PredictionPoint",
     "RosterState",
     "ScoreState",
     "TacticalState",
@@ -63,5 +89,10 @@ __all__ = [
     "TimeState",
     "TimeWindow",
     "XGState",
+    "allowed_candidates",
+    "compute_mes",
+    "family_for_market_id",
     "generate_theses",
+    "run_gate",
+    "select_markets",
 ]
