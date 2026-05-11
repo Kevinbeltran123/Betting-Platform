@@ -59,6 +59,7 @@ from bip.evaluation.live.team_form import (  # noqa: E402
     DEFAULT_FORM_DB_PATH,
     TeamFormCache,
 )
+from bip.evaluation.live.telegram_integration import LiveAlertSender  # noqa: E402
 from bip.evaluation.live.value_detector import LivePick  # noqa: E402
 from bip.sports.football.sportmonks.cache import (  # noqa: E402
     DEFAULT_CACHE_ROOT,
@@ -159,6 +160,7 @@ async def scan_round(
     form_cache: TeamFormCache | None = None,
     seen_fixtures: set[int] | None = None,
     prematch_odds_seen: set[int] | None = None,
+    telegram_sender: LiveAlertSender | None = None,
 ) -> tuple[int, int]:
     """One full scan round. Returns (picks_emitted, picks_new).
 
@@ -393,6 +395,14 @@ async def scan_round(
                             macos_notify(title, body)
                         if beep:
                             terminal_beep()
+                    # Telegram alert (failure-safe — never crashes the loop).
+                    # Sender applies its own filters (min_edge, skip_flagged).
+                    if telegram_sender is not None:
+                        await telegram_sender.send_pick_safe(
+                            pick,
+                            home_score=state.home_goals,
+                            away_score=state.away_goals,
+                        )
 
             except Exception as exc:  # noqa: BLE001
                 logger.warning("scan_failed fixture=%d err=%s", f.id, exc)
@@ -416,11 +426,28 @@ async def watch_loop(
     leagues_blocklist: frozenset[int] | None = None,
     form_db_path: Path | None = None,
     form_cache_enabled: bool = True,
+    telegram_enabled: bool = False,
+    telegram_min_edge_pct: float = 5.0,
 ) -> None:
     cache = SportmonksCache(root=cache_root)
     tracker = PickTracker(db_path=db_path)
     predictor = LiveMatchPredictor()
     detector = ValueDetector(min_edge_pct=min_edge, **detector_kwargs)
+    telegram_sender: LiveAlertSender | None = None
+    if telegram_enabled:
+        telegram_sender = await LiveAlertSender.from_env(
+            min_edge_pct_for_alert=telegram_min_edge_pct,
+        )
+        if telegram_sender is None:
+            print(
+                "⚠ Telegram requested but TELEGRAM_BOT_TOKEN / "
+                "TELEGRAM_CHANNEL_ID missing or bot init failed — "
+                "continuing without alerts."
+            )
+        else:
+            print(
+                f"📢 Telegram alerts ON (min_edge={telegram_min_edge_pct}%)"
+            )
     form_cache: TeamFormCache | None = None
     if form_cache_enabled:
         form_cache = TeamFormCache(
@@ -454,6 +481,7 @@ async def watch_loop(
                 form_cache=form_cache,
                 seen_fixtures=seen_fixtures,
                 prematch_odds_seen=prematch_odds_seen,
+                telegram_sender=telegram_sender,
             )
             now = datetime.now(timezone.utc).strftime("%H:%M:%S")
             elapsed = datetime.now(timezone.utc).timestamp() - t0
@@ -495,6 +523,14 @@ async def watch_loop(
                         )
         except Exception as exc:  # noqa: BLE001
             logger.warning("exit_pickup_loop_failed err=%s", exc)
+
+    if telegram_sender is not None:
+        print(
+            f"📢 Telegram alerts: sent={telegram_sender.n_sent} "
+            f"skipped={telegram_sender.n_skipped} "
+            f"failed={telegram_sender.n_failed}"
+        )
+        await telegram_sender.shutdown()
 
 
 def _parse_args() -> argparse.Namespace:
@@ -563,6 +599,17 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--beep", action="store_true",
                    help="Terminal BEL on each new pick")
     p.add_argument("--log-level", type=str, default="WARNING")
+    p.add_argument(
+        "--telegram", action="store_true",
+        help="Enable Telegram alerts (requires TELEGRAM_BOT_TOKEN + "
+             "TELEGRAM_CHANNEL_ID in env). Failure-safe — watch loop "
+             "continues if Telegram is unreachable.",
+    )
+    p.add_argument(
+        "--telegram-min-edge", type=float, default=5.0,
+        help="Minimum edge_pct for Telegram alerts (separate from "
+             "--min-edge which controls emit). Default 5.0%%.",
+    )
     return p.parse_args()
 
 
@@ -650,6 +697,8 @@ def main() -> int:
         leagues_blocklist=leagues_blocklist,
         form_db_path=args.form_db_path,
         form_cache_enabled=not args.no_form_cache,
+        telegram_enabled=args.telegram,
+        telegram_min_edge_pct=args.telegram_min_edge,
     ))
     return 0
 
