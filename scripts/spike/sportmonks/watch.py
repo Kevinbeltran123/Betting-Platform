@@ -437,7 +437,9 @@ async def watch_loop(
     telegram_sender: LiveAlertSender | None = None
     outcome_task: asyncio.Task[None] | None = None
     burst_flush_task: asyncio.Task[None] | None = None
+    clv_task: asyncio.Task[None] | None = None
     outcome_watcher = None  # OutcomeWatcher | None — typed lazily to avoid import on disabled path
+    clv_sampler = None      # CLVSampler | None
     if telegram_enabled:
         telegram_sender = await LiveAlertSender.from_env(
             min_edge_pct_for_alert=telegram_min_edge_pct,
@@ -470,11 +472,30 @@ async def watch_loop(
                         period_seconds=30.0, window_seconds=60,
                     )
                 )
+                # CLVSampler: re-queries cached odds for open picks every
+                # 2 min and edits the alert footer when |drift| > 5%.
+                from bip.evaluation.live.cache_odds_resolver import (
+                    make_cache_odds_resolver,
+                )
+                from bip.evaluation.live.clv_sampler import CLVSampler
+                clv_sampler = CLVSampler(
+                    bot=telegram_sender.bot,
+                    state=telegram_sender.state,
+                    db_path=db_path,
+                    odds_resolver=make_cache_odds_resolver(cache),
+                )
+                clv_task = asyncio.create_task(
+                    clv_sampler.run_forever(period_seconds=120.0)
+                )
                 print(
                     "📢 OutcomeWatcher ON (period=60s, scoreboard enabled)"
                 )
                 print(
                     "📢 BurstFlush ON (period=30s, token bucket capacity=5)"
+                )
+                print(
+                    "📢 CLVSampler ON (period=120s, threshold=5%, "
+                    "Sportmonks cache resolver)"
                 )
     form_cache: TeamFormCache | None = None
     if form_cache_enabled:
@@ -575,6 +596,22 @@ async def watch_loop(
             await burst_flush_task
         except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
+
+    if clv_task is not None:
+        if clv_sampler is not None:
+            clv_sampler.stop()
+        clv_task.cancel()
+        try:
+            await clv_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+        if clv_sampler is not None:
+            print(
+                f"📢 CLVSampler: samples={clv_sampler.n_samples} "
+                f"edits={clv_sampler.n_edits} "
+                f"resolver_errors={clv_sampler.n_resolver_errors} "
+                f"edit_errors={clv_sampler.n_edit_errors}"
+            )
 
     if telegram_sender is not None:
         print(
