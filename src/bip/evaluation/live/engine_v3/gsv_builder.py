@@ -1,0 +1,462 @@
+"""GSV builder — projects ``LiveMatchState`` + priors + market snapshot
+into a typed ``GameStateVector``.
+
+Architectural role: the builder is the **single point** where loose
+Sportmonks data crystallizes into structured causal signals. Any
+downstream consumer (hypothesis generator, market selector, predictor)
+reads ONLY the GSV — never raw Sportmonks types. This is what makes the
+v3 pipeline auditable and testable independently of the API surface.
+
+Uses the **advanced stats** that Sportmonks Pro exposes:
+- ``BIG_CHANCES_CREATED`` / ``BIG_CHANCES_MISSED`` — primary xG proxy
+- ``SHOTS_INSIDEBOX`` — territorial domination signal
+- ``DANGEROUS_ATTACKS`` — pressure proxy in absence of xG feed
+- ``KEY_PASSES`` — chance creation, lags shot-rate by 30-60s
+- ``TOTAL_CROSSES`` / ``ACCURATE_CROSSES`` — set-piece intensity
+- ``FOULS`` + ``YELLOW_CARDS`` + ``ref_card_rate_prior`` — cards regime
+
+The tactical phase enums (``parking_bus``/``controlling``/``pressing``/
+``chasing``/``collapsing``) are inferred from a small decision-tree
+over these signals — not learned. They are deliberately **lossy** per
+sec 4 of the design doc: enums beat dense vectors for auditability,
+which is the whole point of v3.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from bip.evaluation.live.engine_v3.gsv import (
+    CardsState,
+    CornerState,
+    CriticalEvent,
+    FlowState,
+    GamePhase,
+    GameStateVector,
+    MarketSnapshot,
+    NumericalState,
+    PreMatchPriors,
+    PressingIntensity,
+    RosterState,
+    ScoreState,
+    SubstitutionEvent,
+    TacticalState,
+    TeamPhase,
+    Tempo,
+    TimeState,
+    XGState,
+)
+from bip.evaluation.live.match_state import LiveMatchState
+from bip.sports.football.sportmonks.types import StatType
+
+# Expected xG-diff conditional on goal-diff: empirical anchor used to
+# derive ``xg.xg_vs_score_divergence``. Pulled from a top-5-league
+# rolling sample (2024-2025) — see Papers/SYNTHESIS.md §3.2. The
+# magnitude of divergence above this baseline is what archetype #5
+# (regression to xG) fires on.
+_EXPECTED_XG_DIFF_FOR_SCORE: dict[int, float] = {
+    -3: -2.4,
+    -2: -1.6,
+    -1: -0.8,
+    0: 0.0,
+    1: 0.8,
+    2: 1.6,
+    3: 2.4,
+}
+
+
+def _expected_xg_diff(goal_diff: int) -> float:
+    """Bounded linear ≈ 0.8 × goal_diff, clipped at ±3."""
+    if goal_diff >= 3:
+        return _EXPECTED_XG_DIFF_FOR_SCORE[3]
+    if goal_diff <= -3:
+        return _EXPECTED_XG_DIFF_FOR_SCORE[-3]
+    return _EXPECTED_XG_DIFF_FOR_SCORE.get(goal_diff, 0.8 * goal_diff)
+
+
+def _live_xg_advanced(stats: dict[int, float]) -> float:
+    """Compute live xG using Sportmonks advanced stats.
+
+    The hierarchy (best signal first):
+    1. ``BIG_CHANCES_CREATED`` × 0.28 (each big chance ≈ a tap-in xG)
+    2. ``SHOTS_INSIDEBOX`` × 0.10
+    3. ``SHOTS_ON_TARGET`` outside box ≈ 0.05 (= total OT − inside box ot)
+    4. ``DANGEROUS_ATTACKS`` × 0.003 as a tail signal
+
+    The weights are conservative anchors — the real calibration happens
+    in the conditional predictor downstream, where these proxies are
+    blended with Sportmonks' own ``xg`` prediction when emitted.
+    """
+    bc = stats.get(StatType.BIG_CHANCES_CREATED, 0.0)
+    sib = stats.get(StatType.SHOTS_INSIDEBOX, 0.0)
+    sot = stats.get(StatType.SHOTS_ON_TARGET, 0.0)
+    sout = max(0.0, sot - sib * 0.6)  # rough fraction of OT that came from outside box
+    da = stats.get(StatType.DANGEROUS_ATTACKS, 0.0)
+    return 0.28 * bc + 0.10 * sib + 0.05 * sout + 0.003 * da
+
+
+def _pressing_intensity(state: LiveMatchState, side: str) -> PressingIntensity:
+    """Derive a 3-level pressing-intensity enum from advanced stats.
+
+    Two signal paths, blended:
+
+    1. Rolling-window (preferred when trends are available):
+       - ``DANGEROUS_ATTACKS`` rate in the last 10 minutes
+       - ``KEY_PASSES`` rate in the same window
+       - average pressure (when emitted)
+    2. Match-level fallback (when no trends emitted by the league):
+       - Per-minute aggregate rates of the same stats, normalised so a
+         well-pressing team registers as ``mid``/``high`` regardless of
+         trend availability.
+
+    The fallback prevents the predictor from collapsing the entire match
+    to ``low``-pressure ``controlling`` phase when a league happens not
+    to emit trend records — a real gap encountered in lower-tier
+    competitions covered by Sportmonks.
+    """
+    da10 = state.dangerous_attacks_in_last_window(side, window=10)
+    kp10 = state.key_passes_in_last_window(side, window=10)
+    avg_pressure = (
+        state.home_pressure_avg if side == "home" else state.away_pressure_avg
+    )
+    window_signal = da10 + 2.0 * kp10 + 0.3 * avg_pressure
+
+    # Fallback: per-minute rate × 10 (so 10 minutes of typical play)
+    if state.minute > 0:
+        stats = state.home_stats if side == "home" else state.away_stats
+        da_total = stats.get(StatType.DANGEROUS_ATTACKS, 0.0)
+        kp_total = stats.get(StatType.KEY_PASSES, 0.0)
+        rate_signal = (da_total + 2.0 * kp_total) * 10.0 / max(1, state.minute)
+    else:
+        rate_signal = 0.0
+
+    # Take the stronger signal — we want the conservative case where
+    # both signals agree on "low" to actually land at "low".
+    signal = max(window_signal, rate_signal)
+    if signal < 8:
+        return "low"
+    if signal < 20:
+        return "mid"
+    return "high"
+
+
+def _team_phase(
+    state: LiveMatchState,
+    side: str,
+    *,
+    own_goals: int,
+    opp_goals: int,
+    is_dominant: bool,
+) -> TeamPhase:
+    """Map a side's situational signals to a 5-level enum.
+
+    The decision tree, in priority order:
+    - score-state already collapsing (down 2+ with <15m) → ``collapsing``
+    - trailing AND high pressing → ``chasing``
+    - leading AND killing-clock detector AND late game → ``parking_bus``
+    - leading or controlling with high possession → ``controlling``
+    - high pressing intensity → ``pressing``
+    - default → ``controlling``
+    """
+    minute = state.minute
+    pi = _pressing_intensity(state, side)
+    trailing = own_goals < opp_goals
+    diff = own_goals - opp_goals
+
+    if diff <= -2 and minute >= 75:
+        return "collapsing"
+    if trailing and pi == "high":
+        return "chasing"
+    if (diff >= 1 and state.is_killing_clock(side)) or (
+        diff >= 1 and minute >= 75 and pi == "low" and is_dominant
+    ):
+        return "parking_bus"
+    if pi == "high":
+        return "pressing"
+    return "controlling"
+
+
+def _game_phase(home: TeamPhase, away: TeamPhase, minute: int) -> GamePhase:
+    """Compose a global game-phase enum from each side's phase.
+
+    Definitions:
+    - ``desperate``: a side is collapsing OR chasing while we're past 80'
+    - ``cruise``: leader is parking_bus AND past 75'
+    - ``cagey_closed``: both controlling AND past 70' (low-tempo late stalemate)
+    - ``cagey_open``: both controlling AND before minute 30 (slow start)
+    - ``open_attacking``: anything else
+    """
+    if "collapsing" in (home, away):
+        return "desperate"
+    if (home == "chasing" or away == "chasing") and minute >= 80:
+        return "desperate"
+    if "parking_bus" in (home, away) and minute >= 75:
+        return "cruise"
+    if home == "controlling" and away == "controlling":
+        if minute >= 70:
+            return "cagey_closed"
+        if minute < 30:
+            return "cagey_open"
+    return "open_attacking"
+
+
+def _tempo(state: LiveMatchState) -> Tempo:
+    """Tempo = total shots rate. Anchored to ~26 shots/match = 0.29/min."""
+    total = state.home_shots_total + state.away_shots_total
+    if state.minute <= 0:
+        return "medium"
+    rate = total / state.minute
+    if rate < 0.20:
+        return "low"
+    if rate < 0.40:
+        return "medium"
+    return "high"
+
+
+def _xg_per_min_last_15(state: LiveMatchState, side: str) -> float:
+    """Approximate live xG rate over the last 15 minutes using
+    big_chances + inside-box shots from the trends stream."""
+    bc15 = state.stat_in_last_window(side, StatType.BIG_CHANCES_CREATED, window=15)
+    sib15 = state.stat_in_last_window(side, StatType.SHOTS_INSIDEBOX, window=15)
+    window = min(15, max(1, state.minute))
+    return (0.28 * bc15 + 0.10 * sib15) / window
+
+
+def _role_signal_for_sub(state: LiveMatchState, sub_minute: int, team_id: int) -> str:
+    """Best-effort defensive-vs-offensive sub inference.
+
+    Without per-player position data, we approximate: a sub in the last
+    20 minutes by the leading team when goal_diff>=1 is more likely
+    defensive (Archetype #4). A sub by the trailing team is more likely
+    offensive. This is a placeholder until we wire player-position data.
+    """
+    is_home = team_id == state.home_team_id
+    own = state.home_goals if is_home else state.away_goals
+    opp = state.away_goals if is_home else state.home_goals
+    if own > opp and sub_minute >= 60:
+        return "defensive"
+    if own < opp and sub_minute >= 60:
+        return "offensive"
+    return "unknown"
+
+
+def _ref_period(minute: int, is_finished: bool, is_half_time: bool) -> str:
+    if is_finished:
+        return "FT"
+    if is_half_time:
+        return "HT"
+    if minute == 0:
+        return "NS"
+    if minute <= 45:
+        return "1H"
+    if minute <= 90:
+        return "2H"
+    if minute <= 105:
+        return "ET1"
+    if minute <= 120:
+        return "ET2"
+    return "PEN"
+
+
+class GSVBuilder:
+    """Stateful builder: tracks ``state_version`` per fixture so callers
+    can detect frame transitions without re-keying timestamps."""
+
+    def __init__(self) -> None:
+        self._versions: dict[int, int] = {}
+
+    def build(
+        self,
+        state: LiveMatchState,
+        priors: PreMatchPriors,
+        markets: MarketSnapshot,
+        *,
+        dominant_team_id: int | None = None,
+        last_critical_event: CriticalEvent | None = None,
+        last_critical_event_age_sec: float | None = None,
+        ref_card_rate_prior: float = 0.0,
+        now_utc: datetime | None = None,
+    ) -> GameStateVector:
+        """Construct a single GSV frame from current snapshots.
+
+        Arguments:
+            dominant_team_id: pre-match favorite ID. If ``None``, the
+                builder picks the side with the higher prior ``λ`` from
+                ``priors``.
+            last_critical_event: most recent goal / red / key sub seen.
+                Drives ``has_recent_critical_event`` (no-bet rule #3).
+            ref_card_rate_prior: referee's career cards-per-game baseline.
+                Drives archetype #6.
+        """
+        ts = now_utc or datetime.now(timezone.utc)
+
+        # Pick the dominant team — explicit arg wins, else fall back to priors.
+        if dominant_team_id is None:
+            home_dom = priors.lambda_home_prematch >= priors.lambda_away_prematch
+            dominant_team_id = state.home_team_id if home_dom else state.away_team_id
+
+        # Score state — dominant_losing is the load-bearing predicate.
+        leader_goals = state.home_goals if dominant_team_id == state.home_team_id else state.away_goals
+        follower_goals = state.away_goals if dominant_team_id == state.home_team_id else state.home_goals
+        dominant_losing = leader_goals < follower_goals
+        last_goal_minute = state.goal_events[-1][0] if state.goal_events else None
+        last_goal_team_id = state.goal_events[-1][1] if state.goal_events else None
+        minutes_since_last_goal = (
+            float(state.minute - last_goal_minute) if last_goal_minute is not None else float(state.minute)
+        )
+
+        score = ScoreState(
+            home_goals=state.home_goals,
+            away_goals=state.away_goals,
+            goal_diff=state.home_goals - state.away_goals,
+            dominant_team_id=dominant_team_id,
+            dominant_losing=dominant_losing,
+            last_goal_minute=last_goal_minute,
+            last_goal_team_id=last_goal_team_id,
+            last_goal_xg=None,
+            minutes_since_last_goal=minutes_since_last_goal,
+        )
+
+        time = TimeState(
+            minute=state.minute,
+            period=_ref_period(state.minute, state.is_finished, state.is_half_time),
+            time_remaining_half=max(0.0, (45 - state.minute) if state.minute < 45 else (90 - state.minute)),
+            time_remaining_match=float(state.remaining_minutes),
+        )
+
+        numerical = NumericalState(
+            home_players=max(0, 11 - sum(1 for _m, t in state.red_card_events if t == state.home_team_id)),
+            away_players=max(0, 11 - sum(1 for _m, t in state.red_card_events if t == state.away_team_id)),
+            numerical_advantage=(
+                sum(1 for _m, t in state.red_card_events if t == state.away_team_id)
+                - sum(1 for _m, t in state.red_card_events if t == state.home_team_id)
+            ),
+            red_cards_home=sum(1 for _m, t in state.red_card_events if t == state.home_team_id),
+            red_cards_away=sum(1 for _m, t in state.red_card_events if t == state.away_team_id),
+        )
+
+        # xG — prefer advanced-stat computation; xg_vs_score_divergence is derived.
+        home_xg = _live_xg_advanced(state.home_stats)
+        away_xg = _live_xg_advanced(state.away_stats)
+        xg_diff = home_xg - away_xg
+        expected = _expected_xg_diff(score.goal_diff)
+        xg = XGState(
+            home_xg_total=home_xg,
+            away_xg_total=away_xg,
+            xg_diff=xg_diff,
+            xg_per_min_home_last_15=_xg_per_min_last_15(state, "home"),
+            xg_per_min_away_last_15=_xg_per_min_last_15(state, "away"),
+            xg_vs_score_divergence=xg_diff - expected,
+            shots_total=(state.home_shots_total, state.away_shots_total),
+            shots_on_target=(
+                int(state.home_stats.get(StatType.SHOTS_ON_TARGET, 0)),
+                int(state.away_stats.get(StatType.SHOTS_ON_TARGET, 0)),
+            ),
+            shots_in_box=(
+                int(state.home_stats.get(StatType.SHOTS_INSIDEBOX, 0)),
+                int(state.away_stats.get(StatType.SHOTS_INSIDEBOX, 0)),
+            ),
+            big_chances=(
+                int(state.home_stats.get(StatType.BIG_CHANCES_CREATED, 0)),
+                int(state.away_stats.get(StatType.BIG_CHANCES_CREATED, 0)),
+            ),
+        )
+
+        flow = FlowState(
+            possession_home_5min=state.home_possession,
+            possession_home_match=state.home_possession,
+            attacks_last_10min=(
+                state.stat_in_last_window("home", StatType.ATTACKS, window=10),
+                state.stat_in_last_window("away", StatType.ATTACKS, window=10),
+            ),
+            dangerous_attacks_last_10min=(
+                state.dangerous_attacks_in_last_window("home", window=10),
+                state.dangerous_attacks_in_last_window("away", window=10),
+            ),
+            attack_zone_dominant=None,
+            pressing_intensity=(
+                _pressing_intensity(state, "home")
+                if home_xg + away_xg < 0.01 or home_xg >= away_xg
+                else _pressing_intensity(state, "away")
+            ),
+        )
+
+        corners = CornerState(
+            corners_home=state.home_corners,
+            corners_away=state.away_corners,
+            corner_rate_last_15min=float(
+                state.corners_in_last_window("home", window=15)
+                + state.corners_in_last_window("away", window=15)
+            ) / 15.0,
+        )
+
+        cards = CardsState(
+            yellows=(state.yellow_card_count_home, state.yellow_card_count_away),
+            reds=(numerical.red_cards_home, numerical.red_cards_away),
+            card_rate_last_15min=float(
+                state.yellow_cards_in_last_window("home", window=15)
+                + state.yellow_cards_in_last_window("away", window=15)
+            ) / 15.0,
+            ref_card_rate_prior=ref_card_rate_prior,
+        )
+
+        recent_subs = [
+            SubstitutionEvent(
+                minute=m,
+                team_id=t,
+                player_in_id=p or None,
+                role_signal=_role_signal_for_sub(state, m, t),  # type: ignore[arg-type]
+            )
+            for m, t, p in state.substitution_events
+            if state.minute - m <= 5
+        ]
+        roster = RosterState(
+            subs_used=(state.substitutions_home, state.substitutions_away),
+            subs_remaining=(max(0, 5 - state.substitutions_home), max(0, 5 - state.substitutions_away)),
+            recent_subs_5min=recent_subs,
+        )
+
+        home_phase = _team_phase(
+            state, "home",
+            own_goals=state.home_goals, opp_goals=state.away_goals,
+            is_dominant=dominant_team_id == state.home_team_id,
+        )
+        away_phase = _team_phase(
+            state, "away",
+            own_goals=state.away_goals, opp_goals=state.home_goals,
+            is_dominant=dominant_team_id == state.away_team_id,
+        )
+        tactical = TacticalState(
+            home_phase=home_phase,
+            away_phase=away_phase,
+            game_phase=_game_phase(home_phase, away_phase, state.minute),
+            tempo=_tempo(state),
+        )
+
+        version = self._versions.get(state.fixture_id, 0) + 1
+        self._versions[state.fixture_id] = version
+
+        return GameStateVector(
+            fixture_id=state.fixture_id,
+            state_version=version,
+            timestamp_utc=ts,
+            home_team_id=state.home_team_id,
+            away_team_id=state.away_team_id,
+            home_team_name=state.home_team_name,
+            away_team_name=state.away_team_name,
+            score=score,
+            time=time,
+            numerical=numerical,
+            xg=xg,
+            flow=flow,
+            corners=corners,
+            cards=cards,
+            roster=roster,
+            tactical=tactical,
+            priors=priors,
+            markets=markets,
+            last_critical_event=last_critical_event,
+            last_critical_event_age_sec=last_critical_event_age_sec,
+        )
+
+
+__all__ = ["GSVBuilder"]
