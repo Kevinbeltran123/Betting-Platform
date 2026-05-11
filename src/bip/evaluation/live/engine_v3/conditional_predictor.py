@@ -232,14 +232,32 @@ class ConditionalPredictor:
     def predict(
         self, thesis: Thesis, market_id: str, gsv: GameStateVector
     ) -> PredictionPoint | None:
-        """Dispatch using the thesis's predicted family, then fall back
-        to BTTS/next_goal routing into goals."""
+        """Dispatch using the thesis's predicted family.
+
+        Routing order:
+        - CORNERS / NEXT_CORNER → CornersPredictor (single instance)
+        - CARDS → CardsPredictor (Phase 3) if registered
+        - PROPS → PlayerPropsPredictor (Phase 3, shadow-mode) if registered
+        - NEXT_GOAL → NextGoalPredictor (Phase 3 hazard) if registered,
+          else fallback to Goals2HPredictor (P(any future goal))
+        - GOALS / BTTS → Goals2HPredictor
+        """
         family = thesis.prediction.family
-        # Route NEXT_CORNER + CORNERS to the corners predictor.
         if family in (MarketFamily.CORNERS, MarketFamily.NEXT_CORNER):
-            return self._predictors[MarketFamily.CORNERS].predict(thesis, market_id, gsv)
-        # Route NEXT_GOAL/BTTS/GOALS to the goals predictor.
-        if family in (MarketFamily.GOALS, MarketFamily.BTTS, MarketFamily.NEXT_GOAL):
+            p = self._predictors.get(MarketFamily.CORNERS)
+            return p.predict(thesis, market_id, gsv) if p else None
+        if family == MarketFamily.CARDS:
+            p = self._predictors.get(MarketFamily.CARDS)
+            return p.predict(thesis, market_id, gsv) if p else None
+        if family == MarketFamily.PROPS:
+            p = self._predictors.get(MarketFamily.PROPS)
+            return p.predict(thesis, market_id, gsv) if p else None
+        if family == MarketFamily.NEXT_GOAL:
+            ng = self._predictors.get(MarketFamily.NEXT_GOAL)
+            if ng:
+                return ng.predict(thesis, market_id, gsv)
+            return self._predictors[MarketFamily.GOALS].predict(thesis, market_id, gsv)
+        if family in (MarketFamily.GOALS, MarketFamily.BTTS):
             return self._predictors[MarketFamily.GOALS].predict(thesis, market_id, gsv)
         return None
 
