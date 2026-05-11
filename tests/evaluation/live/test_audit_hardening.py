@@ -409,8 +409,12 @@ class TestClusterEBundleDedup:
             _odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="2.20"),
             _odd(market_id=MarketID.BOTH_TEAMS_TO_SCORE, label="Yes", value="1.80"),
         ]
+        # Opt out of Day-1 audit gates: this test exercises cluster-based
+        # bundle dedup, not the post-audit cascade rules.
         picks = ValueDetector(
             min_edge_pct=3.0, enforce_ci_gate=False,
+            market_blacklist=frozenset(),
+            ban_positive_side_binaries=False,
         ).evaluate(
             probs, odds, home_team_name="A", away_team_name="B", state=state,
         )
@@ -1285,6 +1289,10 @@ class TestPhase1aBackoutBugs:
             min_edge_pct=0.0,  # accept any edge so we test only the gate
             enforce_ci_gate=False, drop_extreme=False,
             min_logical_score_emit=0.0, min_logical_score_flag=0.0,
+            # Opt out of post-audit gates: this test exercises the
+            # correct-score-disagrees tolerance gate only.
+            ban_positive_side_binaries=False,
+            drop_over_zero_zero=False,
         ).evaluate(
             probs, odds, home_team_name="A", away_team_name="B", state=state,
         )

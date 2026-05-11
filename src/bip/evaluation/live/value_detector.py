@@ -207,6 +207,37 @@ DEFAULT_INFO_DENSITY_FLOOR = 0.20
 # Logical-score thresholds for the EMIT/FLAG/DROP cascade.
 DEFAULT_MIN_LOGICAL_SCORE_EMIT = 0.70
 DEFAULT_MIN_LOGICAL_SCORE_FLAG = 0.40
+
+# ── Day-1 wrong-side audit gates (2026-05-10) ───────────────────────────────
+# Justification: reports/sportmonks_live/exploratory/05_day5_action_plan.md
+#   • Tier 1.1: market `btts` was −89.6% ROI on 38 picks (98% confidence in
+#     negative); flipping to "no" recovers +78.5% — for now, blacklist.
+#   • Tier 1.3: `away_ou_1_5` both sides negative; `cards_total_3_5` −78%.
+#   • Tier 1.2: positive-side (over/yes) on binary markets is −91% ROI on
+#     105 picks while negative-side is +42% on 410. Defensive upstream ban.
+#   • Tier 1.4: D9-D10 (predicted p≥0.87) overconfident by 17pp; apply
+#     linear Kelly haircut until isotonic/Platt calibrator ships.
+#   • Tier 1.5: 57% of Over picks emit at 0-0; gate Over@0-0 after min 30.
+DEFAULT_MARKET_BLACKLIST: frozenset[str] = frozenset({
+    MARKET_BTTS,             # Tier 1.1
+    MARKET_AWAY_OU_15,       # Tier 1.3 — both sides lose
+    MARKET_CARDS_TOTAL_3_5,  # Tier 1.3 — −78% ROI
+})
+DEFAULT_BAN_POSITIVE_SIDE_BINARIES = True
+_BINARY_MARKETS_FOR_SIDE_BAN: frozenset[str] = frozenset({
+    MARKET_OU_05, MARKET_OU_15, MARKET_OU_25, MARKET_OU_35,
+    MARKET_FIRST_HALF_OU_05, MARKET_FIRST_HALF_OU_15,
+    MARKET_HOME_OU_15, MARKET_AWAY_OU_15,
+    MARKET_BTTS, MARKET_BTTS_FIRST_HALF, MARKET_BTTS_SECOND_HALF,
+    MARKET_CARDS_TOTAL_3_5, MARKET_CARDS_TOTAL_4_5, MARKET_CARDS_TOTAL_5_5,
+    MARKET_CORNERS_TOTAL_8_5, MARKET_CORNERS_TOTAL_9_5,
+    MARKET_CORNERS_TOTAL_10_5, MARKET_CORNERS_TOTAL_11_5,
+})
+_POSITIVE_SIDE_SELECTIONS: frozenset[str] = frozenset({"over", "yes"})
+DEFAULT_DROP_OVER_ZERO_ZERO = True
+DEFAULT_ZERO_ZERO_MIN_MINUTE = 30
+DEFAULT_HIGH_PROB_HAIRCUT_THRESHOLD = 0.85
+DEFAULT_HIGH_PROB_HAIRCUT_SLOPE = 0.65
 # Material-event blackout (seconds after last goal / red card).
 MATERIAL_EVENT_BLACKOUT_SECONDS = 90
 # Stale-odd tolerance after a material event: when an event landed in the
@@ -466,6 +497,12 @@ class ValueDetector:
         min_logical_score_emit: float = DEFAULT_MIN_LOGICAL_SCORE_EMIT,
         min_logical_score_flag: float = DEFAULT_MIN_LOGICAL_SCORE_FLAG,
         bundle_dedup: bool = True,
+        market_blacklist: frozenset[str] = DEFAULT_MARKET_BLACKLIST,
+        ban_positive_side_binaries: bool = DEFAULT_BAN_POSITIVE_SIDE_BINARIES,
+        drop_over_zero_zero: bool = DEFAULT_DROP_OVER_ZERO_ZERO,
+        zero_zero_min_minute: int = DEFAULT_ZERO_ZERO_MIN_MINUTE,
+        high_prob_haircut_threshold: float = DEFAULT_HIGH_PROB_HAIRCUT_THRESHOLD,
+        high_prob_haircut_slope: float = DEFAULT_HIGH_PROB_HAIRCUT_SLOPE,
     ) -> None:
         self.min_edge_pct = min_edge_pct
         self.max_stake_pct = max_stake_pct
@@ -483,6 +520,12 @@ class ValueDetector:
         self.min_logical_score_emit = min_logical_score_emit
         self.min_logical_score_flag = min_logical_score_flag
         self.bundle_dedup = bundle_dedup
+        self.market_blacklist = market_blacklist
+        self.ban_positive_side_binaries = ban_positive_side_binaries
+        self.drop_over_zero_zero = drop_over_zero_zero
+        self.zero_zero_min_minute = zero_zero_min_minute
+        self.high_prob_haircut_threshold = high_prob_haircut_threshold
+        self.high_prob_haircut_slope = high_prob_haircut_slope
 
     def evaluate(
         self,
@@ -630,6 +673,46 @@ class ValueDetector:
                     )
                     continue
 
+                # ── Day-1 wrong-side audit gates (Tier 1.1, 1.2, 1.3, 1.5) ─
+                # Tier 1.1 + 1.3: market blacklist (btts, away_ou_1_5, cards_total_3_5)
+                if market_key in self.market_blacklist:
+                    _emit_drop(
+                        market=market_key, selection=sel,
+                        bookmaker_id=odd.bookmaker_id, bookmaker_odd=d,
+                        our_probability=our_prob,
+                        drop_reason="market_blacklist",
+                    )
+                    continue
+                # Tier 1.2: positive-side ban on binary markets
+                if (
+                    self.ban_positive_side_binaries
+                    and market_key in _BINARY_MARKETS_FOR_SIDE_BAN
+                    and sel in _POSITIVE_SIDE_SELECTIONS
+                ):
+                    _emit_drop(
+                        market=market_key, selection=sel,
+                        bookmaker_id=odd.bookmaker_id, bookmaker_odd=d,
+                        our_probability=our_prob,
+                        drop_reason="positive_side_binary_ban",
+                    )
+                    continue
+                # Tier 1.5: score-state 0-0 Over gate
+                if (
+                    self.drop_over_zero_zero
+                    and sel == "over"
+                    and state is not None
+                    and state.home_goals == 0
+                    and state.away_goals == 0
+                    and state.minute >= self.zero_zero_min_minute
+                ):
+                    _emit_drop(
+                        market=market_key, selection=sel,
+                        bookmaker_id=odd.bookmaker_id, bookmaker_odd=d,
+                        our_probability=our_prob,
+                        drop_reason="zero_zero_over_gate",
+                    )
+                    continue
+
                 ev = our_prob * d - 1.0
                 edge_pct = ev * 100.0
                 if edge_pct < self.min_edge_pct:
@@ -665,8 +748,23 @@ class ValueDetector:
                 b = d - 1.0
                 if b <= 0:
                     continue
+                # Diagnostic Kelly fraction (from raw our_prob, no haircut).
                 f_star = (b * our_prob - (1 - our_prob)) / b
-                f_kelly = max(0.0, f_star) * self.kelly_fraction
+                # Tier 1.4: high-probability haircut on the STAKE only.
+                # Day-1 calibration audit: D9-D10 (predicted p ≥ 0.87) are 17pp
+                # overconfident; linear taper reduces Kelly size on exactly the
+                # picks the model is most wrong about. Removable once isotonic
+                # calibration ships.
+                if our_prob > self.high_prob_haircut_threshold:
+                    kelly_prob = (
+                        self.high_prob_haircut_threshold
+                        + self.high_prob_haircut_slope
+                        * (our_prob - self.high_prob_haircut_threshold)
+                    )
+                    f_star_hc = (b * kelly_prob - (1 - kelly_prob)) / b
+                else:
+                    f_star_hc = f_star
+                f_kelly = max(0.0, f_star_hc) * self.kelly_fraction
                 stake_pct = min(f_kelly * 100.0, self.max_stake_pct)
                 fair_odd = 1.0 / our_prob
 
