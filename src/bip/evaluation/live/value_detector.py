@@ -42,7 +42,10 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
-from bip.evaluation.live.calibration import IsotonicProbabilityCalibrator
+from bip.evaluation.live.calibration import (
+    IsotonicProbabilityCalibrator,
+    PerMarketCalibrator,
+)
 from bip.evaluation.live.match_state import LiveMatchState
 from bip.evaluation.live.predictor import (
     MARKET_AWAY_CLEAN_SHEET,
@@ -507,7 +510,7 @@ class ValueDetector:
         zero_zero_min_minute: int = DEFAULT_ZERO_ZERO_MIN_MINUTE,
         high_prob_haircut_threshold: float = DEFAULT_HIGH_PROB_HAIRCUT_THRESHOLD,
         high_prob_haircut_slope: float = DEFAULT_HIGH_PROB_HAIRCUT_SLOPE,
-        calibrator: IsotonicProbabilityCalibrator | None = None,
+        calibrator: IsotonicProbabilityCalibrator | PerMarketCalibrator | None = None,
     ) -> None:
         self.min_edge_pct = min_edge_pct
         self.max_stake_pct = max_stake_pct
@@ -660,7 +663,9 @@ class ValueDetector:
                 # When no calibrator is loaded, the Tier 1.4 Kelly haircut
                 # (below) provides a coarser stopgap correction.
                 if self.calibrator is not None:
-                    our_prob = self.calibrator.transform(our_prob_raw)
+                    our_prob = self.calibrator.transform(
+                        our_prob_raw, market=market_key,
+                    )
                     if our_prob <= 0.0:
                         continue
                 else:

@@ -86,12 +86,16 @@ class IsotonicProbabilityCalibrator:
         self.ece_before = ece_before
         self.ece_after = ece_after
 
-    def transform(self, p: float) -> float:
+    def transform(self, p: float, *, market: str | None = None) -> float:
         """Map raw probability to calibrated probability.
+
+        ``market`` is accepted for interface compatibility with
+        ``PerMarketCalibrator`` but ignored — this is a global calibrator.
 
         Clips to the fitted x-range, then linearly interpolates between
         breakpoints. Output is clipped to [0, 1] for numerical safety.
         """
+        del market  # unused — global calibrator
         if p <= self._x[0]:
             return float(np.clip(self._y[0], 0.0, 1.0))
         if p >= self._x[-1]:
@@ -170,6 +174,185 @@ class IsotonicProbabilityCalibrator:
             f"IsotonicProbabilityCalibrator(n_train={self.n_train}, "
             f"breakpoints={len(self._x)}, ece={self.ece_before:.4f}->"
             f"{self.ece_after:.4f})"
+        )
+
+
+class PerMarketCalibrator:
+    """Per-market isotonic calibrator with a global fallback.
+
+    Each market with at least ``min_samples_per_market`` settled picks
+    gets its own ``IsotonicProbabilityCalibrator``. Markets below the
+    threshold (or unseen markets at inference time) fall back to the
+    global isotonic fit across the full dataset.
+
+    Day-1 motivation: Phase 2C found `btts` swings 168pp if flipped
+    (yes -> no). A global calibrator can't represent this because the
+    correction depends on market. Per-market calibration captures the
+    structural bias surgically — and is the natural form of the
+    "BTTS coefficient recalibration" item from the standard TODO.
+
+    Implements the same ``transform(p, *, market=None) -> float``
+    interface as ``IsotonicProbabilityCalibrator``, so a ValueDetector
+    can use either type interchangeably.
+    """
+
+    __slots__ = (
+        "fallback", "per_market", "min_samples_per_market", "fitted_at",
+        "n_train_total", "markets_with_own_fit", "markets_using_fallback",
+    )
+
+    def __init__(
+        self,
+        *,
+        fallback: IsotonicProbabilityCalibrator,
+        per_market: dict[str, IsotonicProbabilityCalibrator],
+        min_samples_per_market: int = 25,
+        fitted_at: str | None = None,
+        n_train_total: int = 0,
+        markets_with_own_fit: list[str] | None = None,
+        markets_using_fallback: list[str] | None = None,
+    ) -> None:
+        self.fallback = fallback
+        self.per_market = dict(per_market)
+        self.min_samples_per_market = int(min_samples_per_market)
+        self.fitted_at = fitted_at or datetime.now(UTC).isoformat()
+        self.n_train_total = int(n_train_total)
+        self.markets_with_own_fit = list(
+            markets_with_own_fit
+            if markets_with_own_fit is not None
+            else sorted(per_market.keys())
+        )
+        self.markets_using_fallback = list(markets_using_fallback or [])
+
+    def transform(self, p: float, *, market: str | None = None) -> float:
+        """Map raw probability to calibrated probability.
+
+        Uses the per-market calibrator when ``market`` is provided and
+        has a fitted calibrator; otherwise falls back to the global fit.
+        """
+        if market is not None:
+            cal = self.per_market.get(market)
+            if cal is not None:
+                return cal.transform(p)
+        return self.fallback.transform(p)
+
+    @classmethod
+    def fit(
+        cls,
+        raw_probs: np.ndarray,
+        outcomes: np.ndarray,
+        markets: list[str] | np.ndarray,
+        *,
+        min_samples_per_market: int = 25,
+    ) -> PerMarketCalibrator:
+        """Fit one isotonic per market (when n >= threshold) + global fallback."""
+        raw_probs = np.asarray(raw_probs, dtype=float)
+        outcomes = np.asarray(outcomes, dtype=float)
+        markets_arr = np.asarray(markets, dtype=object)
+        if not (len(raw_probs) == len(outcomes) == len(markets_arr)):
+            raise ValueError(
+                f"Mismatched lengths: probs={len(raw_probs)}, "
+                f"outcomes={len(outcomes)}, markets={len(markets_arr)}"
+            )
+        fallback = IsotonicProbabilityCalibrator.fit(
+            raw_probs, outcomes, n_train=len(raw_probs),
+        )
+        per_market: dict[str, IsotonicProbabilityCalibrator] = {}
+        with_own_fit: list[str] = []
+        using_fallback: list[str] = []
+        unique_markets = np.unique(markets_arr)
+        for m in unique_markets:
+            mask = markets_arr == m
+            n_m = int(mask.sum())
+            if n_m < min_samples_per_market:
+                using_fallback.append(str(m))
+                continue
+            try:
+                per_market[str(m)] = IsotonicProbabilityCalibrator.fit(
+                    raw_probs[mask], outcomes[mask], n_train=n_m,
+                )
+                with_own_fit.append(str(m))
+            except ValueError:
+                # Edge cases (all-zero outcomes, etc.) — fallback
+                using_fallback.append(str(m))
+        return cls(
+            fallback=fallback,
+            per_market=per_market,
+            min_samples_per_market=min_samples_per_market,
+            n_train_total=len(raw_probs),
+            markets_with_own_fit=sorted(with_own_fit),
+            markets_using_fallback=sorted(using_fallback),
+        )
+
+    def save_json(self, path: Path | str) -> None:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({
+            "type": "per_market",
+            "version": 1,
+            "min_samples_per_market": self.min_samples_per_market,
+            "fitted_at": self.fitted_at,
+            "n_train_total": self.n_train_total,
+            "markets_with_own_fit": self.markets_with_own_fit,
+            "markets_using_fallback": self.markets_using_fallback,
+            "fallback": {
+                "x_thresholds": self.fallback._x.tolist(),  # type: ignore[attr-defined]
+                "y_thresholds": self.fallback._y.tolist(),  # type: ignore[attr-defined]
+                "n_train": self.fallback.n_train,
+                "ece_before": self.fallback.ece_before,
+                "ece_after": self.fallback.ece_after,
+            },
+            "per_market": {
+                mkt: {
+                    "x_thresholds": cal._x.tolist(),  # type: ignore[attr-defined]
+                    "y_thresholds": cal._y.tolist(),  # type: ignore[attr-defined]
+                    "n_train": cal.n_train,
+                    "ece_before": cal.ece_before,
+                    "ece_after": cal.ece_after,
+                }
+                for mkt, cal in self.per_market.items()
+            },
+        }, indent=2))
+
+    @classmethod
+    def load_json(cls, path: Path | str) -> PerMarketCalibrator:
+        p = Path(path)
+        d = json.loads(p.read_text())
+        if d.get("type") != "per_market":
+            raise ValueError(
+                f"Expected calibrator type='per_market', got {d.get('type')!r}"
+            )
+        fb = d["fallback"]
+        fallback = IsotonicProbabilityCalibrator(
+            fb["x_thresholds"], fb["y_thresholds"],
+            n_train=int(fb.get("n_train", 0)),
+            ece_before=float(fb.get("ece_before", 0.0)),
+            ece_after=float(fb.get("ece_after", 0.0)),
+        )
+        per_market = {
+            mkt: IsotonicProbabilityCalibrator(
+                spec["x_thresholds"], spec["y_thresholds"],
+                n_train=int(spec.get("n_train", 0)),
+                ece_before=float(spec.get("ece_before", 0.0)),
+                ece_after=float(spec.get("ece_after", 0.0)),
+            )
+            for mkt, spec in d.get("per_market", {}).items()
+        }
+        return cls(
+            fallback=fallback,
+            per_market=per_market,
+            min_samples_per_market=int(d.get("min_samples_per_market", 25)),
+            fitted_at=d.get("fitted_at"),
+            n_train_total=int(d.get("n_train_total", 0)),
+            markets_with_own_fit=list(d.get("markets_with_own_fit", [])),
+            markets_using_fallback=list(d.get("markets_using_fallback", [])),
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"PerMarketCalibrator(n={self.n_train_total}, "
+            f"per_market_fits={len(self.per_market)}, "
+            f"fallback={len(self.markets_using_fallback)} markets)"
         )
 
 
