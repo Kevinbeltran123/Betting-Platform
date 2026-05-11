@@ -2,9 +2,18 @@
 
 See ``Papers/LIVE_ENGINE_V3_DESIGN.md`` for the architectural blueprint.
 
-Phase-2 surface (this commit adds): MES, Market Selector, Conditional
-Predictor (corners + goals families), No-Bet Policy Gate. The pipeline
-+ recorders land in the next commit.
+End-to-end surface: GSV primitives, hypothesis layer (12 archetypes),
+MES routing, family-specific conditional predictors, 8-rule No-Bet
+Gate, line recorder, shadow logger, and the composing ``V3Pipeline``.
+
+Usage::
+
+    from bip.evaluation.live.engine_v3 import V3Pipeline, PreMatchPriors
+
+    pipeline = V3Pipeline()
+    out = pipeline.run(live_state, priors=priors, markets=markets)
+    for pick in out.allowed_picks:
+        log.info("v3 shadow pick: %s", pick)
 """
 from bip.evaluation.live.engine_v3.archetypes import generate_theses
 from bip.evaluation.live.engine_v3.conditional_predictor import (
@@ -30,6 +39,7 @@ from bip.evaluation.live.engine_v3.gsv import (
     XGState,
 )
 from bip.evaluation.live.engine_v3.gsv_builder import GSVBuilder
+from bip.evaluation.live.engine_v3.line_recorder import LineRecorder
 from bip.evaluation.live.engine_v3.market_selector import (
     MarketCandidate,
     family_for_market_id,
@@ -42,6 +52,12 @@ from bip.evaluation.live.engine_v3.no_bet_gate import (
     allowed_candidates,
     run_gate,
 )
+from bip.evaluation.live.engine_v3.pipeline import (
+    PipelineOutput,
+    ShadowPick,
+    V3Pipeline,
+)
+from bip.evaluation.live.engine_v3.shadow_logger import ShadowLogger
 from bip.evaluation.live.engine_v3.thesis import (
     CausalChain,
     CausalStep,
@@ -71,6 +87,7 @@ __all__ = [
     "GateResult",
     "Goals2HPredictor",
     "InvalidationTrigger",
+    "LineRecorder",
     "MESResult",
     "MarketCandidate",
     "MarketFamily",
@@ -78,16 +95,20 @@ __all__ = [
     "MarketSnapshot",
     "NoBetVerdict",
     "NumericalState",
+    "PipelineOutput",
     "PreMatchPriors",
     "PredictionPoint",
     "RosterState",
     "ScoreState",
+    "ShadowLogger",
+    "ShadowPick",
     "TacticalState",
     "Thesis",
     "ThesisArchetype",
     "ThesisSource",
     "TimeState",
     "TimeWindow",
+    "V3Pipeline",
     "XGState",
     "allowed_candidates",
     "compute_mes",
