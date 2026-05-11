@@ -1469,3 +1469,69 @@ def _picks_strongly_correlated(a: LivePick, b: LivePick) -> bool:
     """
     pair = frozenset({(a.market, a.selection), (b.market, b.selection)})
     return any(pair == cp for cp in _CORRELATED_PAIRS)
+
+
+# ── Best-stack deployment factory ───────────────────────────────────────────
+
+
+def make_best_stack_detector(
+    *,
+    calibrator_path: str | None = None,
+    use_per_market: bool = True,
+    **overrides: Any,
+) -> ValueDetector:
+    """Build a ValueDetector with the Day-1 best-stack configuration.
+
+    Encapsulates the deployment recommendation from CV honesty pass
+    (commit d08ebcd / report 11_cv_validation.md):
+
+    - All Tier 1 gates ON (blacklist, positive-side ban, 0-0 over, etc.)
+    - Per-market calibrator loaded when `calibrator_path` provided
+    - Tier 1.4 high-prob haircut auto-disabled when calibrator is present
+      (the calibrator subsumes it; running both would double-correct)
+    - Commentary cool-off gate ON
+    - Logical-score / CI / coherence / blackout / stale-odd gates ON
+
+    Arguments:
+        calibrator_path: Path to per-market or global calibrator JSON.
+            When None, no calibration applied (Tier 1.4 haircut stays on
+            as the only overconfidence corrector).
+        use_per_market: When True (default), expects a per-market JSON;
+            falls back to global if the JSON `type` field says 'isotonic'.
+        **overrides: Any ValueDetector kwarg to override the defaults.
+
+    Returns:
+        A configured ValueDetector ready for production.
+
+    Example:
+        >>> from bip.evaluation.live.value_detector import make_best_stack_detector
+        >>> det = make_best_stack_detector(
+        ...     calibrator_path="data/calibration/per_market_v1.json",
+        ... )
+    """
+    calibrator: IsotonicProbabilityCalibrator | PerMarketCalibrator | None = None
+    if calibrator_path is not None:
+        try:
+            if use_per_market:
+                calibrator = PerMarketCalibrator.load_json(calibrator_path)
+            else:
+                calibrator = IsotonicProbabilityCalibrator.load_json(
+                    calibrator_path
+                )
+        except ValueError:
+            # JSON is of the other type — fall back gracefully.
+            try:
+                calibrator = IsotonicProbabilityCalibrator.load_json(
+                    calibrator_path
+                )
+            except ValueError:
+                calibrator = PerMarketCalibrator.load_json(calibrator_path)
+
+    kwargs: dict[str, Any] = {
+        "calibrator": calibrator,
+    }
+    # When calibrator is loaded, disable Tier 1.4 haircut (subsumed).
+    if calibrator is not None:
+        kwargs["high_prob_haircut_threshold"] = 1.01
+    kwargs.update(overrides)
+    return ValueDetector(**kwargs)

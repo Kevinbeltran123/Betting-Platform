@@ -23,6 +23,7 @@ from bip.evaluation.live.value_detector import (
     DEFAULT_MAX_STAKE_PCT,
     LivePick,
     ValueDetector,
+    make_best_stack_detector,
 )
 from bip.sports.football.sportmonks.schemas import Odd
 from bip.sports.football.sportmonks.types import MarketID
@@ -720,3 +721,58 @@ class TestCommentaryCooloffGate:
             probs, odds, home_team_name="A", away_team_name="B", state=state,
         )
         assert len(picks) == 1
+
+
+# ── make_best_stack_detector factory ────────────────────────────────────────
+
+
+class TestBestStackFactory:
+    def test_no_calibrator_default(self):
+        det = make_best_stack_detector()
+        assert det.calibrator is None
+        from bip.evaluation.live.value_detector import (
+            DEFAULT_HIGH_PROB_HAIRCUT_THRESHOLD,
+        )
+        # Without calibrator, Tier 1.4 haircut stays ON at default threshold.
+        assert det.high_prob_haircut_threshold == DEFAULT_HIGH_PROB_HAIRCUT_THRESHOLD
+
+    def test_with_calibrator_disables_haircut(self, tmp_path):
+        # Build a small calibrator and persist
+        rng = np.random.default_rng(11)
+        probs = np.linspace(0.1, 0.9, 100)
+        outcomes = (rng.uniform(size=100) < probs).astype(float)
+        cal = IsotonicProbabilityCalibrator.fit(probs, outcomes)
+        path = tmp_path / "cal.json"
+        cal.save_json(path)
+        det = make_best_stack_detector(
+            calibrator_path=str(path), use_per_market=False,
+        )
+        assert det.calibrator is not None
+        # Tier 1.4 haircut effectively disabled (threshold above 1.0).
+        assert det.high_prob_haircut_threshold > 1.0
+
+    def test_per_market_load_with_global_json_falls_back(self, tmp_path):
+        # Persist a global JSON but request use_per_market=True.
+        # Factory falls back to global gracefully.
+        rng = np.random.default_rng(12)
+        probs = np.linspace(0.1, 0.9, 100)
+        outcomes = (rng.uniform(size=100) < probs).astype(float)
+        cal = IsotonicProbabilityCalibrator.fit(probs, outcomes)
+        path = tmp_path / "global.json"
+        cal.save_json(path)
+        det = make_best_stack_detector(
+            calibrator_path=str(path), use_per_market=True,
+        )
+        assert det.calibrator is not None
+
+    def test_overrides_propagate(self):
+        det = make_best_stack_detector(min_edge_pct=5.0)
+        assert det.min_edge_pct == 5.0
+
+    def test_default_tier1_gates_active(self):
+        # Tier 1 gates are ON by default in the factory
+        det = make_best_stack_detector()
+        assert det.market_blacklist
+        assert det.ban_positive_side_binaries is True
+        assert det.drop_over_zero_zero is True
+        assert det.enforce_commentary_cooloff is True
