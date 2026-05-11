@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+import numpy as np
+
+from bip.evaluation.live.calibration import IsotonicProbabilityCalibrator
 from bip.evaluation.live.match_state import LiveMatchState
 from bip.evaluation.live.predictor import (
     MARKET_AWAY_OU_15,
@@ -475,3 +478,117 @@ class TestHighProbabilityKellyHaircut:
             probs, odds, home_team_name="A", away_team_name="B",
         )[0]
         assert with_low.suggested_stake_pct < without_low.suggested_stake_pct
+
+
+# ── Calibrator integration ──────────────────────────────────────────────────
+
+
+def _overconfident_calibrator() -> IsotonicProbabilityCalibrator:
+    """Build a calibrator that pulls high probabilities down.
+
+    Training data: predicted 0.90 but actual win-rate 0.65, plus
+    well-calibrated mid/low range. Mimics the Day-1 D9-D10 pattern.
+    """
+    rng = np.random.default_rng(7)
+    # Well-calibrated low/mid
+    mid_probs = np.full(150, 0.50)
+    mid_out = (rng.uniform(size=150) < 0.50).astype(float)
+    low_probs = np.full(150, 0.30)
+    low_out = (rng.uniform(size=150) < 0.30).astype(float)
+    # Overconfident high
+    hi_probs = np.full(150, 0.90)
+    hi_out = (rng.uniform(size=150) < 0.65).astype(float)
+    probs = np.concatenate([low_probs, mid_probs, hi_probs])
+    outcomes = np.concatenate([low_out, mid_out, hi_out])
+    return IsotonicProbabilityCalibrator.fit(probs, outcomes)
+
+
+class TestCalibratorIntegration:
+    def test_no_calibrator_default(self):
+        # Without calibrator, our_probability == model_probability_raw
+        probs = _probs(market_probs={
+            MARKET_FULLTIME_RESULT: {"home": 0.55, "draw": 0.25, "away": 0.20},
+        })
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="2.00")]
+        det = ValueDetector(min_edge_pct=3.0)
+        picks = det.evaluate(probs, odds, home_team_name="A", away_team_name="B")
+        assert len(picks) == 1
+        assert picks[0].our_probability == pytest.approx(0.55)
+        assert picks[0].model_probability_raw == pytest.approx(0.55)
+
+    def test_calibrator_pulls_high_prob_down(self):
+        # p=0.90 raw → calibrator pulls toward ~0.65. Use a generous odd
+        # (2.00) so the calibrated edge still passes min_edge_pct=3.0:
+        # edge_cal ≈ 0.65*2.00 - 1 = 0.30 = +30%.
+        probs = _probs(market_probs={
+            MARKET_FULLTIME_RESULT: {"home": 0.90, "draw": 0.05, "away": 0.05},
+        })
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="2.00")]
+        cal = _overconfident_calibrator()
+        det = ValueDetector(
+            min_edge_pct=3.0, calibrator=cal,
+            enforce_ci_gate=False,
+            min_logical_score_emit=0.0, min_logical_score_flag=0.0,
+        )
+        picks = det.evaluate(probs, odds, home_team_name="A", away_team_name="B")
+        assert len(picks) == 1
+        # Raw preserved
+        assert picks[0].model_probability_raw == pytest.approx(0.90)
+        # Calibrated below raw
+        assert picks[0].our_probability < 0.90
+        # And below what the Tier 1.4 haircut would have produced
+        # (haircut would map 0.90 → 0.85 + 0.65×0.05 = 0.8825)
+        assert picks[0].our_probability < 0.85
+
+    def test_calibrator_edge_uses_calibrated_prob(self):
+        # p_raw=0.90, odd=1.40. Raw edge = 0.90*1.40 - 1 = 0.26
+        # Calibrated p (around 0.65): edge ≈ 0.65*1.40 - 1 = -0.09
+        # So the pick should NOT pass min_edge_pct=3.0 with the calibrator.
+        probs = _probs(market_probs={
+            MARKET_FULLTIME_RESULT: {"home": 0.90, "draw": 0.05, "away": 0.05},
+        })
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="1.40")]
+        cal = _overconfident_calibrator()
+        det = ValueDetector(
+            min_edge_pct=3.0, calibrator=cal,
+            # Bypass logical_score / CI so we isolate edge gate
+            min_logical_score_emit=0.0, min_logical_score_flag=0.0,
+            enforce_ci_gate=False,
+        )
+        picks = det.evaluate(probs, odds, home_team_name="A", away_team_name="B")
+        # Calibrated edge is negative → dropped by below_min_edge
+        assert picks == []
+
+    def test_calibrator_persistence_roundtrip(self, tmp_path):
+        cal = _overconfident_calibrator()
+        path = tmp_path / "cal.json"
+        cal.save_json(path)
+        loaded = IsotonicProbabilityCalibrator.load_json(path)
+        # Use loaded calibrator in detector
+        probs = _probs(market_probs={
+            MARKET_FULLTIME_RESULT: {"home": 0.90, "draw": 0.05, "away": 0.05},
+        })
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="1.40")]
+        det = ValueDetector(min_edge_pct=3.0, calibrator=loaded)
+        picks = det.evaluate(probs, odds, home_team_name="A", away_team_name="B")
+        if picks:
+            assert picks[0].model_probability_raw == pytest.approx(0.90)
+            assert picks[0].our_probability < 0.90
+
+    def test_calibrator_drops_pick_when_calibrated_prob_zero(self):
+        # If calibrator collapses to 0 (degenerate case), pick is dropped
+        # before any Kelly computation.
+        rng = np.random.default_rng(99)
+        # All probs 0.5 but everyone loses → calibrator maps everything to 0
+        loser_cal = IsotonicProbabilityCalibrator.fit(
+            np.array([0.5] * 50 + [0.6] * 50),
+            np.array([0.0] * 100),
+        )
+        probs = _probs(market_probs={
+            MARKET_FULLTIME_RESULT: {"home": 0.50, "draw": 0.25, "away": 0.25},
+        })
+        odds = [_odd(market_id=MarketID.FULLTIME_RESULT, label="Home", value="2.00")]
+        det = ValueDetector(min_edge_pct=3.0, calibrator=loser_cal)
+        picks = det.evaluate(probs, odds, home_team_name="A", away_team_name="B")
+        # Calibrated to 0 → drop pre-edge OR below_min_edge
+        assert picks == []

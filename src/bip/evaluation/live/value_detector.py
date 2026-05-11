@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+from bip.evaluation.live.calibration import IsotonicProbabilityCalibrator
 from bip.evaluation.live.match_state import LiveMatchState
 from bip.evaluation.live.predictor import (
     MARKET_AWAY_CLEAN_SHEET,
@@ -473,6 +474,9 @@ class LivePick:
     logical_components: dict[str, float] = field(default_factory=dict)
     # Confidence half-width on our_probability (decimal, e.g. 0.04 = ±4pp)
     confidence_half_width: float = 0.0
+    # Raw model probability before calibration. Equals `our_probability`
+    # when no calibrator is loaded. Preserved for diagnostics and audit.
+    model_probability_raw: float = 0.0
 
 
 class ValueDetector:
@@ -503,6 +507,7 @@ class ValueDetector:
         zero_zero_min_minute: int = DEFAULT_ZERO_ZERO_MIN_MINUTE,
         high_prob_haircut_threshold: float = DEFAULT_HIGH_PROB_HAIRCUT_THRESHOLD,
         high_prob_haircut_slope: float = DEFAULT_HIGH_PROB_HAIRCUT_SLOPE,
+        calibrator: IsotonicProbabilityCalibrator | None = None,
     ) -> None:
         self.min_edge_pct = min_edge_pct
         self.max_stake_pct = max_stake_pct
@@ -526,6 +531,7 @@ class ValueDetector:
         self.zero_zero_min_minute = zero_zero_min_minute
         self.high_prob_haircut_threshold = high_prob_haircut_threshold
         self.high_prob_haircut_slope = high_prob_haircut_slope
+        self.calibrator = calibrator
 
     def evaluate(
         self,
@@ -645,9 +651,20 @@ class ValueDetector:
                 sel = matcher(odd)
                 if sel is None:
                     continue
-                our_prob = market_probs.get(sel)
-                if our_prob is None or our_prob <= 0.0:
+                our_prob_raw = market_probs.get(sel)
+                if our_prob_raw is None or our_prob_raw <= 0.0:
                     continue
+                # Apply probability calibrator if loaded. Day-1 audit found
+                # D9-D10 (raw p >= 0.87) are 17pp overconfident; isotonic
+                # calibration corrects this without retraining the predictor.
+                # When no calibrator is loaded, the Tier 1.4 Kelly haircut
+                # (below) provides a coarser stopgap correction.
+                if self.calibrator is not None:
+                    our_prob = self.calibrator.transform(our_prob_raw)
+                    if our_prob <= 0.0:
+                        continue
+                else:
+                    our_prob = our_prob_raw
                 d = odd.decimal_odd
                 if d is None or d < self.min_odd or d > self.max_odd:
                     if d is not None:
@@ -855,6 +872,7 @@ class ValueDetector:
                     logical_score=logical_score,
                     logical_components=components,
                     confidence_half_width=ci,
+                    model_probability_raw=our_prob_raw,
                 )
 
                 # Drop flagged picks entirely if configured (CLI flag)
