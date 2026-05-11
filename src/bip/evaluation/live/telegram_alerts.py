@@ -329,6 +329,104 @@ def format_scoreboard(
     )
 
 
+# ── CLV drift footer ────────────────────────────────────────────────────────
+
+
+def format_clv_footer(
+    *,
+    emit_odd: float,
+    current_odd: float,
+    drift_pct: float,
+    backing_side: str = "selection",
+) -> str:
+    """Short italicized note appended to a pick alert when the line moves.
+
+    Drift sign tells the operator whether the market moved WITH or
+    AGAINST our pick:
+    - Backing an Over / Under: drift > 0 = price up = line moving WITH us
+    - Backing a result (1X2, BTTS): same — higher current odd = better entry
+
+    ``backing_side`` is unused in the text (the operator already knows
+    what they backed); kept as a parameter so future versions can route
+    it to a side-aware steam marker.
+    """
+    direction = "with us" if drift_pct > 0 else "against us"
+    if abs(drift_pct) < 0.5:
+        direction = "flat"
+    return (
+        f"<i>CLV: emitted {emit_odd:.2f} → now {current_odd:.2f} "
+        f"({drift_pct:+.1f}% · {direction})</i>"
+    )
+
+
+# ── Drawdown alert ──────────────────────────────────────────────────────────
+
+
+def format_drawdown_alert(
+    *,
+    today_pl_units: float,
+    threshold_pct: float,
+    bankroll_baseline_units: float | None = None,
+    n_settled_today: int = 0,
+    loss_streak: int = 0,
+    worst_pick_summary: str | None = None,
+) -> str:
+    """Alert when today's P/L crosses a drawdown threshold.
+
+    ``threshold_pct`` is the absolute percentage (e.g. ``3.0`` for -3%).
+    If ``bankroll_baseline_units`` is provided, P/L is contextualized
+    as a percentage; otherwise raw units only.
+    """
+    pct_line = ""
+    if bankroll_baseline_units and bankroll_baseline_units > 0:
+        pct = today_pl_units / bankroll_baseline_units * 100.0
+        pct_line = f" ({pct:+.2f}% bankroll)"
+    streak_line = (
+        f"\nLoss streak: <b>{loss_streak}</b>" if loss_streak >= 2 else ""
+    )
+    worst_line = (
+        f"\nLargest loser today: {_e(worst_pick_summary)}"
+        if worst_pick_summary else ""
+    )
+    return (
+        "<b>DRAWDOWN ALERT</b>\n"
+        "\n"
+        f"Today P/L <b>{today_pl_units:+.2f}u</b>{pct_line}\n"
+        f"Crossed <b>-{threshold_pct:.1f}%</b> threshold."
+        f"{streak_line}{worst_line}\n"
+        f"\n<i>Picks settled today: {n_settled_today}. "
+        "Consider /mute 30 and re-evaluate next jornada.</i>"
+    )
+
+
+# ── Streak alert (HOT / COLD) ───────────────────────────────────────────────
+
+
+def format_streak_alert(
+    *,
+    kind: str,                  # 'win' | 'loss'
+    count: int,
+    recent_picks_summary: list[str] | None = None,
+) -> str:
+    """3+ wins or 3+ losses in a row — operator confidence signal."""
+    label = "HOT STREAK" if kind == "win" else "COLD STREAK"
+    suffix = (
+        "Confidence check — review stake sizing."
+        if kind == "win" else
+        "Possible model drift — check /bankroll and consider /mute 30."
+    )
+    recent_block = ""
+    if recent_picks_summary:
+        rows = "\n".join(f"  {_e(s)}" for s in recent_picks_summary[:3])
+        recent_block = f"\n\nRecent:\n{rows}"
+    return (
+        f"<b>{label}</b>\n"
+        "\n"
+        f"<b>{count}</b> {kind}s in a row.{recent_block}\n"
+        f"\n<i>{suffix}</i>"
+    )
+
+
 # ── Pre-jornada brief ───────────────────────────────────────────────────────
 
 

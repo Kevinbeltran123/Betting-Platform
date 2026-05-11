@@ -312,6 +312,58 @@ class TestScoreboard:
         assert snap["n_emit"] == 1
 
     @pytest.mark.asyncio
+    async def test_day_rollover_reposts_fresh_pin(
+        self, watcher, bot, tracker, state,
+    ):
+        """When scoreboard_date is older than today, abandon and repost."""
+        tracker.record(_pick(fixture_id=1))
+        state.set_state("scoreboard_msg_id", 55555)
+        state.set_state("scoreboard_date", "2020-01-01")
+        bot.send_html.return_value = 99999
+
+        await watcher.update_scoreboard()
+        # Should NOT edit (yesterday's pin abandoned)
+        bot.edit_html.assert_not_awaited()
+        # Should send fresh
+        bot.send_html.assert_awaited_once()
+        # State updated to today's date + new msg id
+        assert state.get_state("scoreboard_msg_id") == 99999
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).date().isoformat()
+        assert state.get_state("scoreboard_date") == today
+
+    @pytest.mark.asyncio
+    async def test_day_rollover_resets_daily_peak(
+        self, watcher, bot, tracker, state,
+    ):
+        """today_peak_pl is per-day; rollover clears it so drawdown
+        recomputes against today's path, not yesterday's high-water.
+        """
+        tracker.record(_pick(fixture_id=1))
+        state.set_state("scoreboard_msg_id", 55555)
+        state.set_state("scoreboard_date", "2020-01-01")
+        state.set_state("today_peak_pl", 12.5)
+        state.set_state("drawdown_alerted_date", "2020-01-01")
+
+        await watcher.update_scoreboard()
+        assert state.get_state("today_peak_pl") in (None, 0.0)
+        assert state.get_state("drawdown_alerted_date") is None
+
+    @pytest.mark.asyncio
+    async def test_same_day_does_not_rollover(
+        self, watcher, bot, tracker, state,
+    ):
+        tracker.record(_pick(fixture_id=1))
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).date().isoformat()
+        state.set_state("scoreboard_msg_id", 55555)
+        state.set_state("scoreboard_date", today)
+
+        await watcher.update_scoreboard()
+        bot.edit_html.assert_awaited_once()
+        bot.send_html.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_pl_placed_won(
         self, watcher, bot, tracker, db_path,
     ):
@@ -330,6 +382,240 @@ class TestScoreboard:
 
 
 # ── tick() composes both ────────────────────────────────────────────────────
+
+
+# ── V2.1: streak alerts (B4) ────────────────────────────────────────────────
+
+
+class TestStreakAlerts:
+    @pytest.mark.asyncio
+    async def test_win_streak_fires_at_exactly_3(
+        self, watcher, bot, tracker, state, db_path,
+    ):
+        # Pre-record three wins, each with a pick message
+        pids = []
+        for i in range(3):
+            pid, _ = tracker.record(_pick(fixture_id=i + 1))
+            state.record_message(
+                pick_id=pid, channel_id="-100PRIMARY",
+                message_id=500 + i, role=Role.PICK, tier=2,
+            )
+            _settle(db_path, pid, status="won", profit_units=1.0)
+            pids.append(pid)
+        await watcher.tick()
+        # One streak alert + 3 outcome replies + 1 scoreboard repost
+        streak_sends = [
+            c for c in bot.send_html.await_args_list
+            if c.args and "HOT STREAK" in c.args[0]
+        ]
+        assert len(streak_sends) == 1
+        # 3 in a row
+        assert "3" in streak_sends[0].args[0]
+
+    @pytest.mark.asyncio
+    async def test_loss_streak_fires_at_exactly_3(
+        self, watcher, bot, tracker, state, db_path,
+    ):
+        for i in range(3):
+            pid, _ = tracker.record(_pick(fixture_id=i + 1))
+            state.record_message(
+                pick_id=pid, channel_id="-100PRIMARY",
+                message_id=500 + i, role=Role.PICK, tier=2,
+            )
+            _settle(db_path, pid, status="lost", profit_units=-1.0)
+        await watcher.tick()
+        streak_sends = [
+            c for c in bot.send_html.await_args_list
+            if c.args and "COLD STREAK" in c.args[0]
+        ]
+        assert len(streak_sends) == 1
+
+    @pytest.mark.asyncio
+    async def test_streak_alert_debounced_at_4_and_5(
+        self, watcher, bot, tracker, state, db_path,
+    ):
+        # Cross threshold, then settle 2 more wins — must NOT re-alert.
+        for i in range(5):
+            pid, _ = tracker.record(_pick(fixture_id=i + 1))
+            state.record_message(
+                pick_id=pid, channel_id="-100PRIMARY",
+                message_id=500 + i, role=Role.PICK, tier=2,
+            )
+            _settle(db_path, pid, status="won", profit_units=1.0)
+        await watcher.tick()
+        streak_sends = [
+            c for c in bot.send_html.await_args_list
+            if c.args and "HOT STREAK" in c.args[0]
+        ]
+        assert len(streak_sends) == 1, \
+            "Only one alert per streak, regardless of how long it gets"
+
+    @pytest.mark.asyncio
+    async def test_streak_resets_on_opposite_outcome(
+        self, watcher, bot, tracker, state, db_path,
+    ):
+        # 3 wins → fire HOT, then a loss → streak resets to loss/1.
+        for i, status in enumerate(["won", "won", "won", "lost"]):
+            pid, _ = tracker.record(_pick(fixture_id=i + 1))
+            state.record_message(
+                pick_id=pid, channel_id="-100PRIMARY",
+                message_id=500 + i, role=Role.PICK, tier=2,
+            )
+            _settle(db_path, pid, status=status,
+                    profit_units=1.0 if status == "won" else -1.0)
+        await watcher.tick()
+        streak = state.get_state("current_streak")
+        assert streak["kind"] == "loss"
+        assert streak["count"] == 1
+        # No COLD alert yet (count<3)
+        cold_sends = [
+            c for c in bot.send_html.await_args_list
+            if c.args and "COLD STREAK" in c.args[0]
+        ]
+        assert cold_sends == []
+
+    @pytest.mark.asyncio
+    async def test_void_does_not_break_streak(
+        self, watcher, bot, tracker, state, db_path,
+    ):
+        # 2 wins, then a void, then 1 more win → should fire HOT at win 3.
+        for i, status in enumerate(["won", "won", "void", "won"]):
+            pid, _ = tracker.record(_pick(fixture_id=i + 1))
+            state.record_message(
+                pick_id=pid, channel_id="-100PRIMARY",
+                message_id=500 + i, role=Role.PICK, tier=2,
+            )
+            pl = (1.0 if status == "won"
+                  else 0.0 if status == "void"
+                  else -1.0)
+            _settle(db_path, pid, status=status, profit_units=pl)
+        await watcher.tick()
+        hot_sends = [
+            c for c in bot.send_html.await_args_list
+            if c.args and "HOT STREAK" in c.args[0]
+        ]
+        assert len(hot_sends) == 1
+        assert state.get_state("current_streak")["kind"] == "win"
+        assert state.get_state("current_streak")["count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_streak_routes_to_diag_channel(
+        self, bot, state, db_path, tracker,
+    ):
+        # Construct watcher with explicit diag channel
+        watcher = OutcomeWatcher(
+            bot=bot, state=state, db_path=db_path,
+            primary_channel_id="-100PRIMARY",
+            diag_channel_id="-100DIAG",
+        )
+        for i in range(3):
+            pid, _ = tracker.record(_pick(fixture_id=i + 1))
+            state.record_message(
+                pick_id=pid, channel_id="-100PRIMARY",
+                message_id=500 + i, role=Role.PICK, tier=2,
+            )
+            _settle(db_path, pid, status="won", profit_units=1.0)
+        await watcher.tick()
+        streak_call = next(
+            c for c in bot.send_html.await_args_list
+            if c.args and "HOT STREAK" in c.args[0]
+        )
+        assert streak_call.kwargs.get("chat_id") == "-100DIAG"
+
+
+# ── V2.1: drawdown alerts (B4) ──────────────────────────────────────────────
+
+
+class TestDrawdownAlerts:
+    @pytest.mark.asyncio
+    async def test_fires_below_units_fallback(
+        self, watcher, bot, tracker, state, db_path,
+    ):
+        # No baseline → -3.0u absolute fallback
+        for i in range(4):
+            pid, _ = tracker.record(_pick(fixture_id=i + 1))
+            state.record_message(
+                pick_id=pid, channel_id="-100PRIMARY",
+                message_id=500 + i, role=Role.PICK, tier=2,
+            )
+            _settle(db_path, pid, status="lost", profit_units=-1.0)
+        await watcher.tick()
+        dd_sends = [
+            c for c in bot.send_html.await_args_list
+            if c.args and "DRAWDOWN ALERT" in c.args[0]
+        ]
+        assert len(dd_sends) == 1
+
+    @pytest.mark.asyncio
+    async def test_fires_below_pct_threshold_when_baseline_set(
+        self, watcher, bot, tracker, state, db_path,
+    ):
+        state.set_state("bankroll_baseline", 100.0)
+        # P/L = -4u of 100u = -4% → past -3% threshold
+        for i in range(4):
+            pid, _ = tracker.record(_pick(fixture_id=i + 1))
+            state.record_message(
+                pick_id=pid, channel_id="-100PRIMARY",
+                message_id=500 + i, role=Role.PICK, tier=2,
+            )
+            _settle(db_path, pid, status="lost", profit_units=-1.0)
+        await watcher.tick()
+        dd_sends = [
+            c for c in bot.send_html.await_args_list
+            if c.args and "DRAWDOWN ALERT" in c.args[0]
+        ]
+        assert len(dd_sends) == 1
+        # P/L line should include bankroll percentage
+        assert "bankroll" in dd_sends[0].args[0]
+
+    @pytest.mark.asyncio
+    async def test_no_fire_when_above_threshold(
+        self, watcher, bot, tracker, state, db_path,
+    ):
+        state.set_state("bankroll_baseline", 100.0)
+        # P/L = -1u of 100u = -1% → above -3% threshold
+        pid, _ = tracker.record(_pick(fixture_id=1))
+        state.record_message(
+            pick_id=pid, channel_id="-100PRIMARY",
+            message_id=500, role=Role.PICK, tier=2,
+        )
+        _settle(db_path, pid, status="lost", profit_units=-1.0)
+        await watcher.tick()
+        dd_sends = [
+            c for c in bot.send_html.await_args_list
+            if c.args and "DRAWDOWN ALERT" in c.args[0]
+        ]
+        assert dd_sends == []
+
+    @pytest.mark.asyncio
+    async def test_debounced_once_per_day(
+        self, watcher, bot, tracker, state, db_path,
+    ):
+        # Two ticks, both with crossing P/L — second tick must NOT re-fire.
+        for i in range(4):
+            pid, _ = tracker.record(_pick(fixture_id=i + 1))
+            state.record_message(
+                pick_id=pid, channel_id="-100PRIMARY",
+                message_id=500 + i, role=Role.PICK, tier=2,
+            )
+            _settle(db_path, pid, status="lost", profit_units=-1.0)
+        await watcher.tick()
+        bot.send_html.reset_mock()
+
+        # Settle one more loss; tick again.
+        pid, _ = tracker.record(_pick(fixture_id=99))
+        state.record_message(
+            pick_id=pid, channel_id="-100PRIMARY",
+            message_id=999, role=Role.PICK, tier=2,
+        )
+        _settle(db_path, pid, status="lost", profit_units=-1.0)
+        await watcher.tick()
+        dd_sends = [
+            c for c in bot.send_html.await_args_list
+            if c.args and "DRAWDOWN ALERT" in c.args[0]
+        ]
+        assert dd_sends == [], \
+            "Drawdown debounced after first crossing per day"
 
 
 class TestTickComposition:

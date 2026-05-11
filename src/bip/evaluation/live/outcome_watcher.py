@@ -24,8 +24,10 @@ from pathlib import Path
 from typing import Any
 
 from bip.evaluation.live.telegram_alerts import (
+    format_drawdown_alert,
     format_outcome_reply,
     format_scoreboard,
+    format_streak_alert,
 )
 from bip.evaluation.live.telegram_state import (
     Action,
@@ -35,6 +37,18 @@ from bip.evaluation.live.telegram_state import (
 
 
 logger = logging.getLogger(__name__)
+
+
+# ── Alert thresholds (tunable) ──────────────────────────────────────────────
+#
+# Drawdown alert fires once per day when today's P/L crosses below
+# -DRAWDOWN_THRESHOLD_PCT of bankroll baseline. When no baseline is
+# configured, the absolute-units fallback is used.
+DRAWDOWN_THRESHOLD_PCT: float = 3.0
+DRAWDOWN_FALLBACK_UNITS: float = -3.0
+
+# Streak alert fires when a consecutive win/loss run reaches this many.
+STREAK_ALERT_THRESHOLD: int = 3
 
 
 class OutcomeWatcher:
@@ -60,17 +74,30 @@ class OutcomeWatcher:
         state: TelegramState,
         db_path: Path,
         primary_channel_id: str,
+        diag_channel_id: str | None = None,
         scoreboard_enabled: bool = True,
+        alerts_enabled: bool = True,
     ) -> None:
         self._bot = bot
         self._state = state
         self._db_path = Path(db_path)
         self._primary_channel_id = str(primary_channel_id)
+        self._diag_channel_id = (
+            str(diag_channel_id) if diag_channel_id else None
+        )
         self._scoreboard_enabled = scoreboard_enabled
+        self._alerts_enabled = alerts_enabled
         self.n_outcome_replies_sent = 0
         self.n_scoreboard_updates = 0
+        self.n_drawdown_alerts_sent = 0
+        self.n_streak_alerts_sent = 0
         self.n_failures = 0
         self._stopped = False
+
+    @property
+    def _alert_channel(self) -> str:
+        """Diag if configured, else primary (drawdown/streak alerts)."""
+        return self._diag_channel_id or self._primary_channel_id
 
     # ── one-tick API ────────────────────────────────────────────────────
 
@@ -125,6 +152,26 @@ class OutcomeWatcher:
                     "outcome_reply_send_failed pick_id=%s err=%s",
                     row["pick_id"], exc,
                 )
+                continue
+            # Best-effort: update streak + check drawdown after each
+            # successful outcome reply. Failures here don't affect the
+            # outcome-reply contract.
+            if self._alerts_enabled:
+                try:
+                    await self._update_streak_and_alert(row)
+                except Exception as exc:  # noqa: BLE001
+                    self.n_failures += 1
+                    logger.warning(
+                        "streak_alert_failed pick_id=%s err=%s",
+                        row["pick_id"], exc,
+                    )
+                try:
+                    await self._check_drawdown_and_alert()
+                except Exception as exc:  # noqa: BLE001
+                    self.n_failures += 1
+                    logger.warning(
+                        "drawdown_alert_failed err=%s", exc,
+                    )
         return n_sent
 
     def _fetch_pending_outcome_rows(self) -> list[sqlite3.Row]:
@@ -204,10 +251,192 @@ class OutcomeWatcher:
             role=Role.OUTCOME,
         )
 
+    # ── streak detection ────────────────────────────────────────────────
+
+    async def _update_streak_and_alert(self, row: sqlite3.Row) -> None:
+        """Update consecutive-outcome streak; alert when crossing threshold.
+
+        Void picks are neutral: streak is paused, neither extended nor
+        broken. Alert fires once per streak when count crosses
+        ``STREAK_ALERT_THRESHOLD`` (not on subsequent picks of the same
+        streak).
+        """
+        status = row["status"]
+        if status == "void":
+            return
+        new_kind = "win" if status == "won" else "loss"
+
+        prev = self._state.get_state("current_streak", default=None) or {}
+        prev_kind = prev.get("kind")
+        prev_count = int(prev.get("count", 0))
+        prev_alerted_at = int(prev.get("alerted_at_count", 0))
+
+        if prev_kind == new_kind:
+            new_count = prev_count + 1
+            alerted_at = prev_alerted_at
+        else:
+            new_count = 1
+            alerted_at = 0  # streak reset → re-arm alert
+
+        self._state.set_state("current_streak", {
+            "kind": new_kind,
+            "count": new_count,
+            "alerted_at_count": alerted_at,
+        })
+
+        # Fire alert at the threshold-crossing only.
+        if new_count == STREAK_ALERT_THRESHOLD and alerted_at < STREAK_ALERT_THRESHOLD:
+            recent = self._recent_settled_summary(
+                kind_filter=status, limit=STREAK_ALERT_THRESHOLD,
+            )
+            text = format_streak_alert(
+                kind=new_kind, count=new_count,
+                recent_picks_summary=recent,
+            )
+            try:
+                await self._bot.send_html(
+                    text, chat_id=self._alert_channel,
+                    disable_notification=True,
+                )
+                self.n_streak_alerts_sent += 1
+            except Exception as exc:  # noqa: BLE001
+                self.n_failures += 1
+                logger.warning("streak_alert_send_failed err=%s", exc)
+                return
+            # Mark this streak as already alerted at this count so future
+            # picks in the same streak don't re-fire.
+            self._state.set_state("current_streak", {
+                "kind": new_kind,
+                "count": new_count,
+                "alerted_at_count": new_count,
+            })
+
+    def _recent_settled_summary(
+        self, *, kind_filter: str, limit: int,
+    ) -> list[str]:
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT market, selection, bookmaker_odd, profit_units
+                FROM picks
+                WHERE status = ?
+                ORDER BY settled_at DESC
+                LIMIT ?
+                """,
+                (kind_filter, limit),
+            ).fetchall()
+        return [
+            f"{r['market']}/{r['selection']} @ {r['bookmaker_odd']:.2f} "
+            f"-> {float(r['profit_units'] or 0):+.2f}u"
+            for r in rows
+        ]
+
+    # ── drawdown detection ──────────────────────────────────────────────
+
+    async def _check_drawdown_and_alert(self) -> None:
+        """Fire one drawdown alert per day when today P/L crosses threshold."""
+        today = datetime.now(timezone.utc).date().isoformat()
+        if self._state.get_state("drawdown_alerted_date") == today:
+            return
+
+        snap = self._compute_scoreboard_snapshot()
+        today_pl = snap["pl_emit"]
+        baseline = self._state.get_state("bankroll_baseline", default=None)
+
+        crossed = False
+        baseline_units = None
+        if baseline is not None:
+            try:
+                baseline_units = float(baseline)
+                if baseline_units > 0:
+                    pct = today_pl / baseline_units * 100.0
+                    crossed = pct <= -DRAWDOWN_THRESHOLD_PCT
+            except (ValueError, TypeError):
+                pass
+        if baseline_units is None or baseline_units <= 0:
+            # Fallback: absolute-units threshold (e.g., -3.0u).
+            crossed = today_pl <= DRAWDOWN_FALLBACK_UNITS
+
+        if not crossed:
+            return
+
+        loss_streak = self._current_streak_count_if("loss")
+        worst = self._worst_pick_today_summary()
+        text = format_drawdown_alert(
+            today_pl_units=today_pl,
+            threshold_pct=DRAWDOWN_THRESHOLD_PCT,
+            bankroll_baseline_units=baseline_units,
+            n_settled_today=snap["n_settled"],
+            loss_streak=loss_streak,
+            worst_pick_summary=worst,
+        )
+        try:
+            await self._bot.send_html(
+                text, chat_id=self._alert_channel,
+                disable_notification=False,  # drawdown wants attention
+            )
+            self.n_drawdown_alerts_sent += 1
+            self._state.set_state("drawdown_alerted_date", today)
+        except Exception as exc:  # noqa: BLE001
+            self.n_failures += 1
+            logger.warning("drawdown_alert_send_failed err=%s", exc)
+
+    def _current_streak_count_if(self, kind: str) -> int:
+        streak = self._state.get_state("current_streak", default=None) or {}
+        if streak.get("kind") == kind:
+            return int(streak.get("count", 0))
+        return 0
+
+    def _worst_pick_today_summary(self) -> str | None:
+        today = datetime.now(timezone.utc).date().isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT market, selection, bookmaker_odd, profit_units
+                FROM picks
+                WHERE status IN ('won','lost') AND DATE(emitted_at) = ?
+                ORDER BY profit_units ASC
+                LIMIT 1
+                """,
+                (today,),
+            ).fetchone()
+        if row is None or row["profit_units"] is None:
+            return None
+        return (
+            f"{row['market']}/{row['selection']} @ "
+            f"{row['bookmaker_odd']:.2f} "
+            f"({float(row['profit_units']):+.2f}u)"
+        )
+
     # ── scoreboard ──────────────────────────────────────────────────────
 
     async def update_scoreboard(self) -> None:
-        """Refresh (or create) the pinned scoreboard for today."""
+        """Refresh (or create) the pinned scoreboard for today.
+
+        Day-rollover: when ``tg_state['scoreboard_date']`` is older than
+        today (UTC), the existing pin is abandoned (best-effort unpin),
+        per-day drawdown peak is reset, and a fresh message is sent and
+        pinned.
+        """
+        today = datetime.now(timezone.utc).date().isoformat()
+        existing_id = self._state.get_state("scoreboard_msg_id")
+        existing_date = self._state.get_state("scoreboard_date")
+        rolled_over = (
+            existing_id is not None
+            and existing_date is not None
+            and existing_date != today
+        )
+
+        if rolled_over:
+            # New day — reset daily peak (drawdown is per-day) and try
+            # to unpin yesterday's scoreboard. Failure is non-fatal.
+            self._state.delete_state("today_peak_pl")
+            self._state.delete_state("drawdown_alerted_date")
+            await self._unpin_safely(int(existing_id))
+            existing_id = None  # force re-post path below
+
         snapshot = self._compute_scoreboard_snapshot()
         text = format_scoreboard(
             date=snapshot["date"],
@@ -222,7 +451,6 @@ class OutcomeWatcher:
             updated_at=datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
         )
 
-        existing_id = self._state.get_state("scoreboard_msg_id")
         if existing_id:
             try:
                 await self._bot.edit_html(
@@ -243,10 +471,35 @@ class OutcomeWatcher:
             disable_notification=True,
         )
         self._state.set_state("scoreboard_msg_id", message_id)
-        self._state.set_state(
-            "scoreboard_date", datetime.now(timezone.utc).date().isoformat(),
-        )
+        self._state.set_state("scoreboard_date", today)
+        # Best-effort pin so it stays at the top of the channel.
+        await self._pin_safely(message_id)
         self.n_scoreboard_updates += 1
+
+    async def _pin_safely(self, message_id: int) -> None:
+        bot = getattr(self._bot, "bot", None)
+        if bot is None:
+            return
+        try:
+            await bot.pin_chat_message(
+                chat_id=int(self._primary_channel_id),
+                message_id=int(message_id),
+                disable_notification=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("scoreboard_pin_skipped err=%s", exc)
+
+    async def _unpin_safely(self, message_id: int) -> None:
+        bot = getattr(self._bot, "bot", None)
+        if bot is None:
+            return
+        try:
+            await bot.unpin_chat_message(
+                chat_id=int(self._primary_channel_id),
+                message_id=int(message_id),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("scoreboard_unpin_skipped err=%s", exc)
 
     def _compute_scoreboard_snapshot(self) -> dict[str, Any]:
         today = datetime.now(timezone.utc).date().isoformat()
