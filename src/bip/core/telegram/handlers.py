@@ -444,6 +444,227 @@ async def cmd_placed(
     )
 
 
+async def cmd_odd(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """`/odd <pick_id> <odd>` — record the Betano fill price for a placed pick.
+
+    The fill price is needed to compute the operator's *actual* P/L
+    (which can diverge from the emit-universe P/L by 1-3% per pick).
+    """
+    args = ctx.args or []
+    if len(args) < 2:
+        await update.message.reply_html(
+            "<i>Usage: /odd &lt;pick_id&gt; &lt;betano_odd&gt;</i>"
+        )
+        return
+    try:
+        pick_id = int(args[0])
+        betano_odd = float(args[1])
+    except (ValueError, TypeError):
+        await update.message.reply_html(
+            "<i>Bad arguments. Both pick_id and odd must be numeric.</i>"
+        )
+        return
+    if betano_odd <= 1.0:
+        await update.message.reply_html(
+            f"<i>Odd {betano_odd:.2f} must be greater than 1.0.</i>"
+        )
+        return
+
+    # Verify the pick exists AND was placed
+    state = _state(ctx)
+    if state.get_action(pick_id=pick_id, action=Action.PLACED) is None:
+        await update.message.reply_html(
+            f"<i>Pick #{pick_id} not placed yet. "
+            "Use /placed first or click PLACE on the alert.</i>"
+        )
+        return
+
+    with _connect(ctx) as conn:
+        cur = conn.execute(
+            "UPDATE picks SET betano_odd = ? WHERE id = ?",
+            (betano_odd, pick_id),
+        )
+        rowcount = cur.rowcount
+    if rowcount == 0:
+        await update.message.reply_html(
+            f"<i>Pick #{pick_id} not found in picks.db.</i>"
+        )
+        return
+    await update.message.reply_html(
+        f"<b>Fill price recorded</b> · pick #{pick_id} @ "
+        f"<b>{betano_odd:.2f}</b>"
+    )
+
+
+async def cmd_undo_place(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """`/undo_place <pick_id>` — revert a placement.
+
+    Removes the ``placed`` action from ``tg_actions`` and resets
+    ``picks.placed_at_betano``. Use when the operator clicked PLACE by
+    accident or wants to switch to a different stake.
+    """
+    args = ctx.args or []
+    if len(args) < 1:
+        await update.message.reply_html(
+            "<i>Usage: /undo_place &lt;pick_id&gt;</i>"
+        )
+        return
+    try:
+        pick_id = int(args[0])
+    except (ValueError, TypeError):
+        await update.message.reply_html(
+            "<i>pick_id must be numeric.</i>"
+        )
+        return
+
+    state = _state(ctx)
+    prior = state.get_action(pick_id=pick_id, action=Action.PLACED)
+    if prior is None:
+        await update.message.reply_html(
+            f"<i>Pick #{pick_id} not placed — nothing to undo.</i>"
+        )
+        return
+
+    with _connect(ctx) as conn:
+        conn.execute(
+            "DELETE FROM tg_actions WHERE pick_id = ? AND action = ?",
+            (pick_id, Action.PLACED),
+        )
+        conn.execute(
+            "UPDATE picks SET placed_at_betano = 0, "
+            "actual_stake_units = NULL, betano_odd = NULL "
+            "WHERE id = ?",
+            (pick_id,),
+        )
+    stake = f"{prior.stake_pct:.2f}%" if prior.stake_pct else "?"
+    await update.message.reply_html(
+        f"<b>Placement undone</b> · pick #{pick_id} (was {stake})"
+    )
+
+
+async def cmd_missed(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """`/missed` — picks that resolved WON but the operator never acted on.
+
+    "Acted on" means: no PLACED, SKIPPED, or DISMISSED row in tg_actions.
+    These are picks the operator likely missed during a mute window or
+    while their phone was buried. Tells the operator what their
+    inattention cost.
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    with _connect(ctx) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT p.id, p.home_team, p.away_team, p.market, p.selection,
+                   p.bookmaker_odd, p.profit_units
+            FROM picks p
+            LEFT JOIN tg_actions a
+              ON a.pick_id = p.id
+                 AND a.action IN
+                     ('{Action.PLACED}', '{Action.SKIPPED}', '{Action.DISMISSED}')
+            WHERE p.status = 'won'
+              AND DATE(p.emitted_at) = ?
+              AND a.pick_id IS NULL
+            ORDER BY p.profit_units DESC
+            LIMIT 10
+            """,
+            (today,),
+        ).fetchall()
+    if not rows:
+        await update.message.reply_html(
+            "<i>No missed-and-won picks today. Caught everything.</i>"
+        )
+        return
+
+    total_missed_pl = sum(float(r["profit_units"] or 0) for r in rows)
+    lines = [
+        f"<b>MISSED</b> · {len(rows)} unplaced won picks today",
+        f"Sum P/L if placed: <b>{total_missed_pl:+.2f}u</b>",
+        "",
+    ]
+    for r in rows:
+        lines.append(
+            f"#{r['id']} {r['home_team']} vs {r['away_team']}\n"
+            f"   <code>{r['market']}</code> <b>{r['selection']}</b> "
+            f"@ {r['bookmaker_odd']:.2f} "
+            f"→ <b>{float(r['profit_units']):+.2f}u</b>"
+        )
+    await update.message.reply_html("\n".join(lines))
+
+
+async def cmd_mute_market(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """`/mute_market <market> [minutes]` — suppress alerts for one market.
+
+    All tiers are suppressed (including Tier 1) — the operator's intent
+    is "I don't want this market at all". Defaults to 60 minutes.
+    Use `/mute_market <market> 0` (or `/resume_market <market>`) to clear.
+    """
+    args = ctx.args or []
+    if len(args) < 1:
+        # List currently muted markets when called with no args.
+        muted = _state(ctx).muted_markets()
+        if not muted:
+            await update.message.reply_html(
+                "<i>No markets currently muted.</i>\n"
+                "<i>Usage: /mute_market &lt;market_key&gt; [minutes]</i>"
+            )
+            return
+        lines = ["<b>MUTED MARKETS</b>"]
+        for market, until in muted.items():
+            lines.append(f"<code>{market}</code> until {until}")
+        await update.message.reply_html("\n".join(lines))
+        return
+
+    market = args[0].strip()
+    minutes = 60
+    if len(args) >= 2:
+        try:
+            minutes = int(args[1])
+        except (ValueError, TypeError):
+            await update.message.reply_html(
+                "<i>Minutes must be a non-negative integer.</i>"
+            )
+            return
+
+    state = _state(ctx)
+    if minutes <= 0:
+        state.clear_market_mute(market)
+        await update.message.reply_html(
+            f"<b>Unmuted</b> market <code>{market}</code>."
+        )
+        return
+    until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    state.set_market_mute(market, until)
+    await update.message.reply_html(
+        f"<b>Muted</b> market <code>{market}</code> for {minutes}m "
+        f"(until {until.strftime('%H:%M')} UTC)."
+    )
+
+
+async def cmd_resume_market(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """`/resume_market <market>` — clear a per-market mute."""
+    args = ctx.args or []
+    if len(args) < 1:
+        await update.message.reply_html(
+            "<i>Usage: /resume_market &lt;market_key&gt;</i>"
+        )
+        return
+    market = args[0].strip()
+    _state(ctx).clear_market_mute(market)
+    await update.message.reply_html(
+        f"<b>Unmuted</b> market <code>{market}</code>."
+    )
+
+
 # ── Registration entry point ────────────────────────────────────────────────
 
 
@@ -468,3 +689,15 @@ def register_handlers(
     app.add_handler(CommandHandler("resume", cmd_resume, filters=user_filter))
     app.add_handler(CommandHandler("bankroll", cmd_bankroll, filters=user_filter))
     app.add_handler(CommandHandler("placed", cmd_placed, filters=user_filter))
+    # Tier C commands
+    app.add_handler(CommandHandler("odd", cmd_odd, filters=user_filter))
+    app.add_handler(
+        CommandHandler("undo_place", cmd_undo_place, filters=user_filter),
+    )
+    app.add_handler(CommandHandler("missed", cmd_missed, filters=user_filter))
+    app.add_handler(
+        CommandHandler("mute_market", cmd_mute_market, filters=user_filter),
+    )
+    app.add_handler(
+        CommandHandler("resume_market", cmd_resume_market, filters=user_filter),
+    )

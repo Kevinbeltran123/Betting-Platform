@@ -23,11 +23,16 @@ import pytest
 
 from bip.core.telegram.handlers import (
     cmd_bankroll,
+    cmd_missed,
     cmd_mute,
+    cmd_mute_market,
+    cmd_odd,
     cmd_placed,
     cmd_resume,
+    cmd_resume_market,
     cmd_status,
     cmd_top,
+    cmd_undo_place,
     decode_callback,
     encode_callback,
     on_callback_query,
@@ -465,3 +470,314 @@ class TestPlacedCommand:
         await cmd_placed(update, ctx)
         msg = update.message.reply_html.await_args.args[0]
         assert "already placed" in msg
+
+
+# ── Tier C: /odd ────────────────────────────────────────────────────────────
+
+
+class TestOddCommand:
+    @pytest.mark.asyncio
+    async def test_records_fill_price(
+        self, ctx: MagicMock, tracker: PickTracker, state: TelegramState,
+        db_path: Path,
+    ):
+        pid, _ = tracker.record(_pick())
+        state.record_action(
+            pick_id=pid, action=Action.PLACED, operator_user_id=12345,
+            callback_id="cb-1", stake_pct=1.5,
+        )
+        update = _make_update_message()
+        ctx.args = [str(pid), "2.05"]
+        await cmd_odd(update, ctx)
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT betano_odd FROM picks WHERE id=?", (pid,),
+            ).fetchone()
+        assert row["betano_odd"] == pytest.approx(2.05)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "Fill price recorded" in msg
+
+    @pytest.mark.asyncio
+    async def test_rejects_unplaced_pick(
+        self, ctx: MagicMock, tracker: PickTracker,
+    ):
+        pid, _ = tracker.record(_pick())
+        update = _make_update_message()
+        ctx.args = [str(pid), "2.05"]
+        await cmd_odd(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "not placed" in msg
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_args(self, ctx: MagicMock):
+        update = _make_update_message()
+        ctx.args = ["42"]
+        await cmd_odd(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "Usage" in msg
+
+    @pytest.mark.asyncio
+    async def test_rejects_odd_le_one(
+        self, ctx: MagicMock, tracker: PickTracker, state: TelegramState,
+    ):
+        pid, _ = tracker.record(_pick())
+        state.record_action(
+            pick_id=pid, action=Action.PLACED, operator_user_id=12345,
+            callback_id="cb-1", stake_pct=1.5,
+        )
+        update = _make_update_message()
+        ctx.args = [str(pid), "0.95"]
+        await cmd_odd(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "greater than 1.0" in msg
+
+    @pytest.mark.asyncio
+    async def test_rejects_garbage_args(self, ctx: MagicMock):
+        update = _make_update_message()
+        ctx.args = ["abc", "xyz"]
+        await cmd_odd(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "Bad arguments" in msg
+
+
+# ── Tier C: /undo_place ─────────────────────────────────────────────────────
+
+
+class TestUndoPlaceCommand:
+    @pytest.mark.asyncio
+    async def test_removes_action_and_resets_db(
+        self, ctx: MagicMock, tracker: PickTracker, state: TelegramState,
+        db_path: Path,
+    ):
+        pid, _ = tracker.record(_pick())
+        state.record_action(
+            pick_id=pid, action=Action.PLACED, operator_user_id=12345,
+            callback_id="cb-1", stake_pct=1.5,
+        )
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE picks SET placed_at_betano=1, "
+                "actual_stake_units=1.5, betano_odd=2.05 WHERE id=?", (pid,),
+            )
+        update = _make_update_message()
+        ctx.args = [str(pid)]
+        await cmd_undo_place(update, ctx)
+        # tg_actions row gone
+        assert state.get_action(pick_id=pid, action=Action.PLACED) is None
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT placed_at_betano, actual_stake_units, betano_odd "
+                "FROM picks WHERE id=?", (pid,),
+            ).fetchone()
+        assert row["placed_at_betano"] == 0
+        assert row["actual_stake_units"] is None
+        assert row["betano_odd"] is None
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_undo(
+        self, ctx: MagicMock, tracker: PickTracker,
+    ):
+        pid, _ = tracker.record(_pick())
+        update = _make_update_message()
+        ctx.args = [str(pid)]
+        await cmd_undo_place(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "nothing to undo" in msg
+
+    @pytest.mark.asyncio
+    async def test_after_undo_can_replace(
+        self, ctx: MagicMock, tracker: PickTracker, state: TelegramState,
+    ):
+        pid, _ = tracker.record(_pick())
+        state.record_action(
+            pick_id=pid, action=Action.PLACED, operator_user_id=12345,
+            callback_id="cb-1", stake_pct=1.5,
+        )
+        ctx.args = [str(pid)]
+        await cmd_undo_place(_make_update_message(), ctx)
+        # Now /placed should succeed
+        ctx.args = [str(pid), "0.75"]
+        await cmd_placed(_make_update_message(), ctx)
+        rec = state.get_action(pick_id=pid, action=Action.PLACED)
+        assert rec is not None
+        assert rec.stake_pct == pytest.approx(0.75)
+
+
+# ── Tier C: /missed ─────────────────────────────────────────────────────────
+
+
+class TestMissedCommand:
+    @pytest.mark.asyncio
+    async def test_empty_when_nothing_missed(self, ctx: MagicMock):
+        update = _make_update_message()
+        await cmd_missed(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "Caught everything" in msg
+
+    @pytest.mark.asyncio
+    async def test_lists_won_picks_with_no_action(
+        self, ctx: MagicMock, tracker: PickTracker, db_path: Path,
+    ):
+        pid, _ = tracker.record(_pick())
+        # Settle as won, no action recorded
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE picks SET status='won', profit_units=1.5, "
+                "settled_at=? WHERE id=?", (_utc_iso(), pid),
+            )
+        update = _make_update_message()
+        await cmd_missed(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "MISSED" in msg
+        assert "1 unplaced" in msg
+        assert "+1.50u" in msg
+
+    @pytest.mark.asyncio
+    async def test_excludes_won_picks_that_were_placed(
+        self, ctx: MagicMock, tracker: PickTracker, state: TelegramState,
+        db_path: Path,
+    ):
+        pid, _ = tracker.record(_pick())
+        state.record_action(
+            pick_id=pid, action=Action.PLACED, operator_user_id=12345,
+            callback_id="cb-1", stake_pct=1.5,
+        )
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE picks SET status='won', profit_units=1.5, "
+                "settled_at=? WHERE id=?", (_utc_iso(), pid),
+            )
+        update = _make_update_message()
+        await cmd_missed(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "Caught everything" in msg
+
+    @pytest.mark.asyncio
+    async def test_excludes_won_picks_that_were_skipped(
+        self, ctx: MagicMock, tracker: PickTracker, state: TelegramState,
+        db_path: Path,
+    ):
+        pid, _ = tracker.record(_pick())
+        state.record_action(
+            pick_id=pid, action=Action.SKIPPED, operator_user_id=12345,
+            callback_id="cb-1",
+        )
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE picks SET status='won', profit_units=1.5, "
+                "settled_at=? WHERE id=?", (_utc_iso(), pid),
+            )
+        update = _make_update_message()
+        await cmd_missed(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "Caught everything" in msg
+
+    @pytest.mark.asyncio
+    async def test_excludes_lost_picks(
+        self, ctx: MagicMock, tracker: PickTracker, db_path: Path,
+    ):
+        pid, _ = tracker.record(_pick())
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE picks SET status='lost', profit_units=-1.0, "
+                "settled_at=? WHERE id=?", (_utc_iso(), pid),
+            )
+        update = _make_update_message()
+        await cmd_missed(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        # Lost picks shouldn't appear in the regret list
+        assert "Caught everything" in msg
+
+
+# ── Tier C: /mute_market ────────────────────────────────────────────────────
+
+
+class TestMuteMarketCommand:
+    @pytest.mark.asyncio
+    async def test_default_60m_when_no_minutes(
+        self, ctx: MagicMock, state: TelegramState,
+    ):
+        update = _make_update_message()
+        ctx.args = ["ou_2_5"]
+        await cmd_mute_market(update, ctx)
+        assert state.is_market_muted("ou_2_5") is True
+        msg = update.message.reply_html.await_args.args[0]
+        assert "60m" in msg
+
+    @pytest.mark.asyncio
+    async def test_custom_minutes(
+        self, ctx: MagicMock, state: TelegramState,
+    ):
+        update = _make_update_message()
+        ctx.args = ["btts", "30"]
+        await cmd_mute_market(update, ctx)
+        assert state.is_market_muted("btts") is True
+
+    @pytest.mark.asyncio
+    async def test_zero_minutes_clears(
+        self, ctx: MagicMock, state: TelegramState,
+    ):
+        from datetime import datetime, timedelta, timezone
+        state.set_market_mute(
+            "ou_2_5", datetime.now(timezone.utc) + timedelta(minutes=30),
+        )
+        update = _make_update_message()
+        ctx.args = ["ou_2_5", "0"]
+        await cmd_mute_market(update, ctx)
+        assert state.is_market_muted("ou_2_5") is False
+
+    @pytest.mark.asyncio
+    async def test_no_args_lists_muted_markets(
+        self, ctx: MagicMock, state: TelegramState,
+    ):
+        from datetime import datetime, timedelta, timezone
+        state.set_market_mute(
+            "ou_2_5", datetime.now(timezone.utc) + timedelta(minutes=30),
+        )
+        update = _make_update_message()
+        ctx.args = []
+        await cmd_mute_market(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "MUTED MARKETS" in msg
+        assert "ou_2_5" in msg
+
+    @pytest.mark.asyncio
+    async def test_no_args_no_mutes(self, ctx: MagicMock):
+        update = _make_update_message()
+        ctx.args = []
+        await cmd_mute_market(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "No markets currently muted" in msg
+
+    @pytest.mark.asyncio
+    async def test_rejects_garbage_minutes(self, ctx: MagicMock):
+        update = _make_update_message()
+        ctx.args = ["ou_2_5", "abc"]
+        await cmd_mute_market(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "non-negative integer" in msg
+
+
+class TestResumeMarketCommand:
+    @pytest.mark.asyncio
+    async def test_clears_mute(
+        self, ctx: MagicMock, state: TelegramState,
+    ):
+        from datetime import datetime, timedelta, timezone
+        state.set_market_mute(
+            "ou_2_5", datetime.now(timezone.utc) + timedelta(minutes=30),
+        )
+        update = _make_update_message()
+        ctx.args = ["ou_2_5"]
+        await cmd_resume_market(update, ctx)
+        assert state.is_market_muted("ou_2_5") is False
+
+    @pytest.mark.asyncio
+    async def test_no_args_rejects(self, ctx: MagicMock):
+        update = _make_update_message()
+        ctx.args = []
+        await cmd_resume_market(update, ctx)
+        msg = update.message.reply_html.await_args.args[0]
+        assert "Usage" in msg

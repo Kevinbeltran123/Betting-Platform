@@ -382,9 +382,74 @@ class TelegramState:
         if until.tzinfo is None:
             until = until.replace(tzinfo=timezone.utc)
         self.set_state("mute_until", until.isoformat())
+        # Track the window's start for /missed reporting.
+        self.set_state(
+            "mute_started_at",
+            datetime.now(timezone.utc).isoformat(),
+        )
 
     def clear_mute(self) -> None:
         self.delete_state("mute_until")
+        # mute_started_at is preserved so /missed can look back at the
+        # most recent window even after /resume.
+
+    def last_mute_window(self) -> tuple[str, str] | None:
+        """Return (started_at_iso, until_iso) of the most recent mute,
+        or None if no mute has ever been set.
+        """
+        started = self.get_state("mute_started_at")
+        until = self.get_state("mute_until")
+        if started is None or until is None:
+            return None
+        return (started, until)
+
+    # Convenience: per-market mute ────────────────────────────────────────
+
+    def set_market_mute(self, market: str, until: datetime) -> None:
+        """Mute a specific market key (e.g. 'ou_2_5') until ``until``."""
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        muted = self.get_state("muted_markets", default={}) or {}
+        muted[market] = until.isoformat()
+        self.set_state("muted_markets", muted)
+
+    def is_market_muted(
+        self, market: str, *, now: datetime | None = None,
+    ) -> bool:
+        muted = self.get_state("muted_markets", default={}) or {}
+        until_iso = muted.get(market)
+        if until_iso is None:
+            return False
+        try:
+            until_dt = datetime.fromisoformat(until_iso)
+        except (TypeError, ValueError):
+            return False
+        if until_dt.tzinfo is None:
+            until_dt = until_dt.replace(tzinfo=timezone.utc)
+        now = now or datetime.now(timezone.utc)
+        return now < until_dt
+
+    def clear_market_mute(self, market: str) -> None:
+        muted = self.get_state("muted_markets", default={}) or {}
+        if market in muted:
+            del muted[market]
+            self.set_state("muted_markets", muted)
+
+    def muted_markets(self) -> dict[str, str]:
+        """Return active market mutes as {market: until_iso}, expired pruned."""
+        muted = self.get_state("muted_markets", default={}) or {}
+        now = datetime.now(timezone.utc)
+        active: dict[str, str] = {}
+        for market, until_iso in muted.items():
+            try:
+                until_dt = datetime.fromisoformat(until_iso)
+                if until_dt.tzinfo is None:
+                    until_dt = until_dt.replace(tzinfo=timezone.utc)
+                if now < until_dt:
+                    active[market] = until_iso
+            except (TypeError, ValueError):
+                continue
+        return active
 
     # ── tg_burst_queue ──────────────────────────────────────────────────
 

@@ -252,6 +252,64 @@ class TestState:
         assert tg.get_state("k") == "v2"
 
 
+class TestMarketMute:
+    def test_set_and_check(self, tg: TelegramState):
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        tg.set_market_mute("ou_2_5", future)
+        assert tg.is_market_muted("ou_2_5") is True
+        assert tg.is_market_muted("btts") is False
+
+    def test_expired_returns_false(self, tg: TelegramState):
+        past = datetime.now(timezone.utc) - timedelta(seconds=1)
+        tg.set_market_mute("ou_2_5", past)
+        assert tg.is_market_muted("ou_2_5") is False
+
+    def test_clear_market_mute(self, tg: TelegramState):
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        tg.set_market_mute("ou_2_5", future)
+        tg.clear_market_mute("ou_2_5")
+        assert tg.is_market_muted("ou_2_5") is False
+
+    def test_muted_markets_prunes_expired(self, tg: TelegramState):
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        past = datetime.now(timezone.utc) - timedelta(seconds=1)
+        tg.set_market_mute("ou_2_5", future)
+        tg.set_market_mute("btts", past)
+        active = tg.muted_markets()
+        assert "ou_2_5" in active
+        assert "btts" not in active
+
+    def test_independent_markets(self, tg: TelegramState):
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        tg.set_market_mute("ou_2_5", future)
+        tg.set_market_mute("btts", future)
+        tg.clear_market_mute("ou_2_5")
+        assert tg.is_market_muted("ou_2_5") is False
+        assert tg.is_market_muted("btts") is True
+
+
+class TestMuteWindowTracking:
+    def test_mute_records_started_at(self, tg: TelegramState):
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        tg.set_mute_until(future)
+        window = tg.last_mute_window()
+        assert window is not None
+        started_at, until = window
+        assert started_at  # not empty
+        assert until == future.isoformat()
+
+    def test_clear_mute_preserves_started_at(self, tg: TelegramState):
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        tg.set_mute_until(future)
+        tg.clear_mute()
+        # mute_until cleared, but started_at retained for /missed lookback
+        assert tg.is_muted() is False
+        assert tg.get_state("mute_started_at") is not None
+
+    def test_last_mute_window_none_when_never_set(self, tg: TelegramState):
+        assert tg.last_mute_window() is None
+
+
 class TestMuteWindow:
     def test_not_muted_when_unset(self, tg: TelegramState):
         assert tg.is_muted() is False

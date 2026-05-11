@@ -199,6 +199,13 @@ class LiveAlertSender:
             # Tier 1 bypasses mute by default (design memo §A).
             if tier != 1:
                 return False, "muted"
+        # Per-market mute — applies to ALL tiers including Tier 1, since
+        # the operator's intent is "do not alert me on this market at all".
+        if (
+            self.state is not None
+            and self.state.is_market_muted(pick.market)
+        ):
+            return False, "market_muted"
         return True, ""
 
     def _channel_for_tier(self, tier: int) -> str | None:

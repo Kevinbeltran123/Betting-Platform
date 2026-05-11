@@ -591,6 +591,47 @@ class TestFlushBurstQueue:
         assert state.burst_queue_size() == 1
 
 
+class TestMarketMute:
+    """C4 — per-market mute applies to ALL tiers."""
+
+    @pytest.mark.asyncio
+    async def test_tier1_pick_suppressed_when_market_muted(
+        self, state_and_db,
+    ):
+        """Per-market mute is intentional and stronger than /mute —
+        Tier 1 also gets suppressed for the muted market."""
+        state, _ = state_and_db
+        state.set_market_mute(
+            "ou_3_5",
+            datetime.now(timezone.utc) + timedelta(minutes=30),
+        )
+        bot = _bot_returning()
+        sender = LiveAlertSender(
+            bot, min_interval_seconds=0.0, state=state,
+            min_edge_pct_for_alert=5.0,
+        )
+        # _make_tier1_pick has market='ou_3_5'
+        ok = await sender.send_pick_safe(_make_tier1_pick(), pick_id=1)
+        assert ok is False
+        bot.send_html.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_different_market_not_affected(self, state_and_db):
+        state, _ = state_and_db
+        state.set_market_mute(
+            "btts",
+            datetime.now(timezone.utc) + timedelta(minutes=30),
+        )
+        bot = _bot_returning()
+        sender = LiveAlertSender(
+            bot, min_interval_seconds=0.0, state=state,
+            min_edge_pct_for_alert=5.0,
+        )
+        # Pick is ou_3_5, not btts → not muted
+        ok = await sender.send_pick_safe(_make_tier1_pick(), pick_id=1)
+        assert ok is True
+
+
 class TestBuildKeyboard:
     """Smoke-test the keyboard builder works for all tiers."""
 
