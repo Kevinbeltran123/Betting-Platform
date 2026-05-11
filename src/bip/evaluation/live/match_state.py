@@ -849,28 +849,52 @@ def _identify_home_away(fixture: Fixture):
 def _extract_current_score(
     fixture: Fixture, home_id: int, away_id: int,
 ) -> tuple[int, int]:
-    """Pull the most recent CURRENT score per team from scores list.
+    """Pull the CURRENT score per team from scores list.
 
-    Sportmonks emits scores entries with type_id corresponding to:
-    - 1H_SCORE, 2H_SCORE, CURRENT, FT_SCORE, ET_SCORE, etc.
-    We look at score.score['participant'] = 'home'|'away'.
+    Sportmonks emits multiple score entries per fixture with different
+    type_id values:
+      - type_id=1     (1ST_HALF)       — first half only
+      - type_id=2     (2ND_HALF)       — cumulative at end of 2H (== FT)
+      - type_id=1525  (CURRENT)        — live current / FT score
+      - type_id=48996 (2ND_HALF_ONLY)  — 2H goals only (NOT cumulative)
+
+    Bug 2026-05-11: prior implementation walked all entries and
+    overwrote home/away based on iteration order, but the API does
+    NOT guarantee chronological order. 1ST_HALF could overwrite
+    CURRENT and return half-time score even when the fixture was FT.
+    Observed in 66% of finished fixtures (Randers FC vs Odense BK
+    stored 0-1 vs real 2-2 final).
+
+    Fix: filter by type_id, preferring CURRENT (1525) which is the
+    live score during in-play AND the final score at FT.
     """
-    home_goals, away_goals = 0, 0
     if not fixture.scores:
-        return home_goals, away_goals
-    # Prefer the latest score entries (Sportmonks lists chronologically)
-    # by walking and overwriting — final values win.
-    for s in fixture.scores:
-        body = s.score or {}
-        loc = body.get("participant")
-        goals = body.get("goals")
-        if not isinstance(goals, (int, float)):
-            continue
-        if loc == "home":
-            home_goals = int(goals)
-        elif loc == "away":
-            away_goals = int(goals)
-    return home_goals, away_goals
+        return 0, 0
+
+    # Priority order:
+    #   1. CURRENT (1525) — single source of truth in-play and at FT
+    #   2. 2ND_HALF cumulative (2) — fallback if CURRENT absent at FT
+    #   3. 1ST_HALF (1) — fallback for fixtures captured at half-time
+    for preferred_type_id in (1525, 2, 1):
+        h, a = 0, 0
+        found_home = found_away = False
+        for s in fixture.scores:
+            if s.type_id != preferred_type_id:
+                continue
+            body = s.score or {}
+            loc = body.get("participant")
+            goals = body.get("goals")
+            if not isinstance(goals, (int, float)):
+                continue
+            if loc == "home":
+                h = int(goals)
+                found_home = True
+            elif loc == "away":
+                a = int(goals)
+                found_away = True
+        if found_home and found_away:
+            return h, a
+    return 0, 0
 
 
 def _extract_minute_and_period(fixture: Fixture) -> tuple[int, int]:

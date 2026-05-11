@@ -80,3 +80,80 @@ class TestDerivedSignals:
     def test_score_diff(self, fixture: Fixture):
         state = LiveMatchState.from_fixture(fixture)
         assert state.score_diff_home == state.home_goals - state.away_goals
+
+
+class TestScoreExtractionOrderInvariance:
+    """Regression for bug 2026-05-11: Sportmonks scores array can be
+    non-chronological. Prior _extract_current_score walked all entries
+    and overwrote based on iteration order, returning 1ST_HALF score
+    even at FT. 66% of Day-1+2 fixtures affected (Randers vs Odense
+    stored 0-1 vs real 2-2). Fix filters by type_id, preferring
+    CURRENT (1525)."""
+
+    @staticmethod
+    def _make_fixture(scores_payload: list[dict]) -> Fixture:
+        return Fixture.model_validate({
+            "id": 999999, "sport_id": 1, "league_id": 271, "season_id": 1,
+            "state": {"id": 5, "state": "FT", "name": "Full Time",
+                      "short_name": "FT", "developer_name": "FT"},
+            "participants": [
+                {"id": 100, "name": "Home FC", "meta": {"location": "home"}},
+                {"id": 200, "name": "Away SC", "meta": {"location": "away"}},
+            ],
+            "scores": scores_payload,
+        })
+
+    @staticmethod
+    def _s(type_id: int, goals: int, side: str) -> dict:
+        return {"id": 1, "fixture_id": 999999, "type_id": type_id,
+                "score": {"goals": goals, "participant": side},
+                "participant_id": 100 if side == "home" else 200}
+
+    def test_randers_odense_non_chronological_at_ft(self):
+        """Real-world Day-2 fixture: 1ST_HALF appears AFTER CURRENT
+        in the scores array. Pre-fix returned 0-1 (half-time score).
+        Post-fix must return 2-2 (final score, CURRENT type_id=1525)."""
+        s = self._s
+        fixture = self._make_fixture([
+            s(2, 2, "home"),       # 2ND_HALF home
+            s(48996, 2, "home"),   # 2ND_HALF_ONLY home
+            s(1525, 2, "home"),    # CURRENT home
+            s(1, 1, "away"),       # 1ST_HALF away
+            s(2, 2, "away"),       # 2ND_HALF away
+            s(1, 0, "home"),       # 1ST_HALF home  ← overwrote in old code
+            s(1525, 2, "away"),    # CURRENT away
+            s(48996, 1, "away"),   # 2ND_HALF_ONLY away ← overwrote in old code
+        ])
+        state = LiveMatchState.from_fixture(fixture)
+        assert (state.home_goals, state.away_goals) == (2, 2)
+
+    def test_current_wins_when_1h_appears_later(self):
+        s = self._s
+        fixture = self._make_fixture([
+            s(1525, 4, "home"), s(1525, 2, "away"),
+            s(1, 1, "home"), s(1, 0, "away"),
+        ])
+        state = LiveMatchState.from_fixture(fixture)
+        assert (state.home_goals, state.away_goals) == (4, 2)
+
+    def test_fallback_to_2nd_half_when_no_current(self):
+        s = self._s
+        fixture = self._make_fixture([
+            s(1, 1, "home"), s(1, 0, "away"),
+            s(2, 3, "home"), s(2, 2, "away"),
+        ])
+        state = LiveMatchState.from_fixture(fixture)
+        assert (state.home_goals, state.away_goals) == (3, 2)
+
+    def test_fallback_to_1st_half_at_half_time(self):
+        s = self._s
+        fixture = self._make_fixture([
+            s(1, 1, "home"), s(1, 2, "away"),
+        ])
+        state = LiveMatchState.from_fixture(fixture)
+        assert (state.home_goals, state.away_goals) == (1, 2)
+
+    def test_empty_scores_returns_zero(self):
+        fixture = self._make_fixture([])
+        state = LiveMatchState.from_fixture(fixture)
+        assert (state.home_goals, state.away_goals) == (0, 0)
