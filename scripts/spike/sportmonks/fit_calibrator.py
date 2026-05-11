@@ -28,6 +28,8 @@ import numpy as np
 import polars as pl
 
 # Repo root → src is on path via uv run
+from sklearn.model_selection import KFold
+
 from bip.evaluation.live.calibration import (
     IsotonicProbabilityCalibrator,
     PerMarketCalibrator,
@@ -38,6 +40,13 @@ from bip.evaluation.live.calibration import (
 DEFAULT_PICKS = Path("reports/sportmonks_live/exports/picks_graded.parquet")
 DEFAULT_OUTPUT_GLOBAL = Path("data/calibration/isotonic_v1.json")
 DEFAULT_OUTPUT_PER_MARKET = Path("data/calibration/per_market_v1.json")
+# 2026-05-11 CV finding (see reports 11_cv_validation.md):
+# - Threshold 25 (default): held-out ECE worse than global (0.097 vs 0.065)
+#   BUT CV ROI is BEST (+50.6% vs global +43.1%) — captures market-specific
+#   underconfidence (ou_3_5) and dropout patterns better than uniform fit.
+# - Trade-off: higher variance (std 15% vs 8%). Operator can move to 100
+#   for lower variance / lower upside if they prefer.
+# Re-evaluate at Day-5 with n~2500.
 DEFAULT_MIN_SAMPLES_PER_MARKET = 25
 
 
@@ -58,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
                          "calibrator (smaller markets use the global fallback)")
     ap.add_argument("--diagnostic-only", action="store_true",
                     help="Print ECE before/after, do not write file(s)")
+    ap.add_argument("--cv-folds", type=int, default=0,
+                    help="Run k-fold cross-validation for honest ECE (0 = skip)")
     args = ap.parse_args(argv)
 
     if not args.picks.exists():
@@ -81,6 +92,13 @@ def main(argv: list[str] | None = None) -> int:
     raw_probs = picks["our_probability"].to_numpy()
     outcomes = (picks["status"] == "won").to_numpy().astype(float)
     markets = picks["market"].to_numpy()
+
+    if args.cv_folds > 1:
+        _cv_evaluate(
+            raw_probs, outcomes, markets,
+            k=args.cv_folds,
+            min_samples_per_market=args.min_samples_per_market,
+        )
 
     if args.mode in ("global", "both"):
         out = DEFAULT_OUTPUT_GLOBAL
@@ -176,6 +194,83 @@ def _fit_and_report_per_market(
     cal.save_json(output)
     print(f"\nWrote per-market calibrator to {output}")
     print(f"  fitted_at: {cal.fitted_at}")
+
+
+def _cv_evaluate(
+    raw_probs: np.ndarray,
+    outcomes: np.ndarray,
+    markets: np.ndarray,
+    *,
+    k: int = 5,
+    min_samples_per_market: int = 25,
+) -> None:
+    """K-fold cross-validation for HONEST ECE estimation.
+
+    In-sample ECE is always 0 for isotonic regression (by construction).
+    To estimate real-world performance, we partition picks into k folds,
+    fit on k-1, and score on the held-out fold. This gives a realistic
+    measure of how the calibrator will perform on Day-2+ data.
+    """
+    print("\n" + "=" * 70)
+    print(f"{k}-FOLD CROSS-VALIDATION (honest ECE estimate)")
+    print("=" * 70)
+    kf = KFold(n_splits=k, shuffle=True, random_state=42)
+
+    global_ece_held = []
+    pm_ece_held = []
+    raw_ece_held = []
+    for fold_i, (train_idx, test_idx) in enumerate(kf.split(raw_probs), 1):
+        train_probs = raw_probs[train_idx]
+        train_out = outcomes[train_idx]
+        train_mkts = markets[train_idx]
+        test_probs = raw_probs[test_idx]
+        test_out = outcomes[test_idx]
+        test_mkts = markets[test_idx]
+
+        # Raw (no calibration)
+        ece_raw = _ece(test_probs, test_out)
+        raw_ece_held.append(ece_raw)
+
+        # Global calibrator
+        try:
+            global_cal = IsotonicProbabilityCalibrator.fit(
+                train_probs, train_out,
+            )
+            cal_probs = np.array([global_cal.transform(p) for p in test_probs])
+            ece_g = _ece(cal_probs, test_out)
+            global_ece_held.append(ece_g)
+        except Exception as e:
+            print(f"  fold {fold_i} global fit failed: {e}")
+            continue
+
+        # Per-market calibrator
+        try:
+            pm_cal = PerMarketCalibrator.fit(
+                train_probs, train_out, train_mkts,
+                min_samples_per_market=min_samples_per_market,
+            )
+            cal_probs_pm = np.array([
+                pm_cal.transform(p, market=m)
+                for p, m in zip(test_probs, test_mkts)
+            ])
+            ece_pm = _ece(cal_probs_pm, test_out)
+            pm_ece_held.append(ece_pm)
+        except Exception as e:
+            print(f"  fold {fold_i} per-market fit failed: {e}")
+
+    print(f"\nHeld-out ECE (mean ± std across {k} folds, n_test ≈ {len(raw_probs)//k}):")
+    print(f"  Raw (no calibrator):  {np.mean(raw_ece_held):.4f} ± {np.std(raw_ece_held):.4f}")
+    print(f"  Global calibrator:    {np.mean(global_ece_held):.4f} ± {np.std(global_ece_held):.4f}  "
+          f"(Δ vs raw: {np.mean(global_ece_held) - np.mean(raw_ece_held):+.4f})")
+    if pm_ece_held:
+        print(f"  Per-market cal:       {np.mean(pm_ece_held):.4f} ± {np.std(pm_ece_held):.4f}  "
+              f"(Δ vs raw: {np.mean(pm_ece_held) - np.mean(raw_ece_held):+.4f})")
+
+    print("\nInterpretation:")
+    print("  - Lower held-out ECE = better real-world calibration.")
+    print("  - If held-out ECE > raw ECE → calibrator is OVERFITTING (bad).")
+    print("  - Per-market should beat global when it has enough per-market data.")
+    print("  - Day-1 n=813 is borderline; expect held-out ECE 0.03-0.08.")
 
 
 if __name__ == "__main__":

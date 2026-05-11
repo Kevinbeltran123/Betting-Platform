@@ -2,7 +2,7 @@
   "type": "per_market",
   "version": 1,
   "min_samples_per_market": 25,
-  "fitted_at": "2026-05-11T02:40:59.827807+00:00",
+  "fitted_at": "2026-05-11T03:02:11.674376+00:00",
   "n_train_total": 813,
   "markets_with_own_fit": [
     "away_ou_1_5",
