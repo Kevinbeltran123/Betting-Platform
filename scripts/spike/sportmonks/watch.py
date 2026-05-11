@@ -400,6 +400,7 @@ async def scan_round(
                     if telegram_sender is not None:
                         await telegram_sender.send_pick_safe(
                             pick,
+                            pick_id=pick_id,
                             home_score=state.home_goals,
                             away_score=state.away_goals,
                         )
@@ -434,9 +435,12 @@ async def watch_loop(
     predictor = LiveMatchPredictor()
     detector = ValueDetector(min_edge_pct=min_edge, **detector_kwargs)
     telegram_sender: LiveAlertSender | None = None
+    outcome_task: asyncio.Task[None] | None = None
+    outcome_watcher = None  # OutcomeWatcher | None — typed lazily to avoid import on disabled path
     if telegram_enabled:
         telegram_sender = await LiveAlertSender.from_env(
             min_edge_pct_for_alert=telegram_min_edge_pct,
+            db_path=db_path,
         )
         if telegram_sender is None:
             print(
@@ -448,6 +452,18 @@ async def watch_loop(
             print(
                 f"📢 Telegram alerts ON (min_edge={telegram_min_edge_pct}%)"
             )
+            if telegram_sender.state is not None:
+                from bip.evaluation.live.outcome_watcher import OutcomeWatcher
+                outcome_watcher = OutcomeWatcher(
+                    bot=telegram_sender.bot,
+                    state=telegram_sender.state,
+                    db_path=db_path,
+                    primary_channel_id=telegram_sender.bot.channel_id,
+                )
+                outcome_task = asyncio.create_task(
+                    outcome_watcher.run_forever(period_seconds=60.0)
+                )
+                print("📢 OutcomeWatcher ON (period=60s, scoreboard enabled)")
     form_cache: TeamFormCache | None = None
     if form_cache_enabled:
         form_cache = TeamFormCache(
@@ -524,10 +540,26 @@ async def watch_loop(
         except Exception as exc:  # noqa: BLE001
             logger.warning("exit_pickup_loop_failed err=%s", exc)
 
+    if outcome_task is not None:
+        if outcome_watcher is not None:
+            outcome_watcher.stop()
+        outcome_task.cancel()
+        try:
+            await outcome_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+        if outcome_watcher is not None:
+            print(
+                f"📢 OutcomeWatcher: outcomes={outcome_watcher.n_outcome_replies_sent} "
+                f"scoreboard_updates={outcome_watcher.n_scoreboard_updates} "
+                f"failures={outcome_watcher.n_failures}"
+            )
+
     if telegram_sender is not None:
         print(
             f"📢 Telegram alerts: sent={telegram_sender.n_sent} "
             f"skipped={telegram_sender.n_skipped} "
+            f"muted={telegram_sender.n_muted} "
             f"failed={telegram_sender.n_failed}"
         )
         await telegram_sender.shutdown()
