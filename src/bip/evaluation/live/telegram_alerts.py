@@ -1,37 +1,186 @@
-"""Telegram alerts for the Sportmonks live-edge spike.
+"""Telegram alerts for the Sportmonks live-edge spike (Bot v2).
 
-Separate from `bip.core.telegram.sender` because the v1.0 sender is
-coupled to the `Pick` schema (with Claude validation, 1X2 markets, etc.),
-while the spike uses `LivePick` from `value_detector` with different
-fields (calibrated probability, raw probability, logical components,
-commentary events, etc.).
+Public API surface (preserved from v1):
+- ``format_pick_alert(pick, *, home_score, away_score, league_name)``
+- ``format_jornada_summary(...)``
+- ``format_pre_jornada_brief(...)``
+- ``send_pick_alert(bot, pick, ...)``
+- ``send_jornada_summary(bot, **kwargs)``
+- ``send_pre_jornada_brief(bot, **kwargs)``
 
-Two main outputs:
+New in v2:
+- ``classify_tier(pick) -> int``  — Tier 1/2/3 routing rule
+- ``format_pick_alert_with_tier(pick, tier, ...)`` — explicit override
+- ``format_outcome_reply(...)``   — Tier 4 settlement reply
+- ``format_burst_digest(...)``    — §E batched-send digest
+- ``format_scoreboard(...)``      — pinned live P/L message
 
-1. Per-pick alert (real-time when a LivePick is emitted):
-   Compact HTML message with fixture, score, market/selection, odds,
-   edge, stake, calibrated vs raw probability, and key flags.
+Style: no emojis (operator directive). Labels are textual; visual
+hierarchy is carried by ``<b>``, ``<i>``, ``<blockquote>``.
 
-2. Per-jornada summary (post-grading):
-   Roll-up of emit universe + Top-N performance + drop_reason
-   breakdown + calibrator health metrics.
-
-Reuses the existing `TelegramBot` wrapper for actual sending. This
-module owns only formatting.
+Telegram HTML mode whitelist: ``<b> <i> <u> <s> <code> <pre> <a>
+<blockquote>``. Everything else is escaped or stripped at parse time.
 """
 
 from __future__ import annotations
 
 import html
-from datetime import datetime
 from typing import Any
 
 from bip.evaluation.live.value_detector import LivePick
 
 
+# ── Tier classification thresholds (tunable) ────────────────────────────────
+#
+# Tier 1: high-confidence CLEAN — pops visually, never silenced
+# Tier 2: standard CLEAN, or borderline flagged with strong logical score
+# Tier 3: flagged + weak logical score — diagnostic only, silent push
+
+TIER1_MIN_LOGICAL = 0.85
+TIER1_MIN_EDGE_PCT = 8.0
+TIER2_FLAGGED_MIN_LOGICAL = 0.80
+
+
 def _e(s: Any) -> str:
-    """HTML-escape a value for Telegram (Telegram parse_mode='HTML')."""
+    """HTML-escape (Telegram parse_mode='HTML')."""
     return html.escape(str(s), quote=False)
+
+
+# ── Tier classification ─────────────────────────────────────────────────────
+
+
+def classify_tier(pick: LivePick) -> int:
+    """Map a LivePick onto a visual tier (1, 2, or 3).
+
+    Rules:
+    - Tier 1: not flagged AND logical_score >= 0.85 AND edge_pct >= 8.0
+    - Tier 2: not flagged (and not Tier 1), OR flagged with logical >= 0.80
+    - Tier 3: flagged AND logical_score < 0.80
+    """
+    flagged = pick.flagged_reason is not None
+    L = pick.logical_score
+    if not flagged:
+        if L >= TIER1_MIN_LOGICAL and pick.edge_pct >= TIER1_MIN_EDGE_PCT:
+            return 1
+        return 2
+    # flagged
+    if L >= TIER2_FLAGGED_MIN_LOGICAL:
+        return 2
+    return 3
+
+
+# ── Shared helpers ──────────────────────────────────────────────────────────
+
+
+def _score_str(home_score: int | None, away_score: int | None) -> str:
+    if home_score is None or away_score is None:
+        return ""
+    return f" · Score <b>{home_score}-{away_score}</b>"
+
+
+def _prob_line(pick: LivePick) -> str:
+    cal = pick.our_probability
+    raw = pick.model_probability_raw
+    if raw and abs(raw - cal) > 1e-4:
+        return f"Cal prob <b>{cal:.3f}</b> (raw {raw:.3f})"
+    return f"Prob <b>{cal:.3f}</b>"
+
+
+def _top_components_str(pick: LivePick, k: int = 2) -> str:
+    if not pick.logical_components:
+        return ""
+    comps = sorted(
+        pick.logical_components.items(), key=lambda kv: -abs(kv[1]),
+    )[:k]
+    return " · ".join(f"<i>{_e(k_)}</i>={v:.2f}" for k_, v in comps)
+
+
+def _fixture_line(pick: LivePick, league_name: str | None) -> str:
+    line = f"{_e(pick.home_team)} vs {_e(pick.away_team)}"
+    if league_name:
+        line = f"{_e(league_name)} — {line}"
+    return line
+
+
+# ── Tier 1 — high-confidence CLEAN ──────────────────────────────────────────
+
+
+def _format_tier1(
+    pick: LivePick, *, home_score: int | None, away_score: int | None,
+    league_name: str | None,
+) -> str:
+    components = _top_components_str(pick)
+    components_block = f"\nTop: {components}" if components else ""
+    return (
+        "<b>TIER 1 — HIGH-CONVICTION PICK</b>\n"
+        f"<b>{_fixture_line(pick, league_name)}</b>\n"
+        "\n"
+        f"Min <b>{pick.minute}'</b>{_score_str(home_score, away_score)}\n"
+        f"Market <code>{_e(pick.market)}</code> · "
+        f"Selection <b>{_e(pick.selection)}</b>\n"
+        f"Odds <b>{pick.bookmaker_odd:.2f}</b> · "
+        f"Edge <b>+{pick.edge_pct:.2f}%</b> · "
+        f"Stake <b>{pick.suggested_stake_pct:.2f}%</b>\n"
+        "\n"
+        f"{_prob_line(pick)} · Logical <b>{pick.logical_score:.2f}</b>\n"
+        f"Kelly full <b>{pick.kelly_fraction_full:.2f}</b>"
+        f"{components_block}"
+    )
+
+
+# ── Tier 2 — standard CLEAN or top-flagged ──────────────────────────────────
+
+
+def _format_tier2(
+    pick: LivePick, *, home_score: int | None, away_score: int | None,
+    league_name: str | None,
+) -> str:
+    flag_suffix = ""
+    if pick.flagged_reason:
+        flag_suffix = (
+            f"\n<b>FLAGGED:</b> <code>{_e(pick.flagged_reason)}</code>"
+        )
+    components = _top_components_str(pick)
+    components_block = f"\nTop: {components}" if components else ""
+    return (
+        f"<b>PICK</b> · <i>{_fixture_line(pick, league_name)}</i>\n"
+        "\n"
+        f"Min <b>{pick.minute}'</b>{_score_str(home_score, away_score)}\n"
+        f"<code>{_e(pick.market)}</code> · "
+        f"<b>{_e(pick.selection)}</b> @ <b>{pick.bookmaker_odd:.2f}</b>\n"
+        f"Edge <b>+{pick.edge_pct:.2f}%</b> · "
+        f"Stake <b>{pick.suggested_stake_pct:.2f}%</b> · "
+        f"L=<b>{pick.logical_score:.2f}</b>\n"
+        f"{_prob_line(pick)} · "
+        f"Kelly full <b>{pick.kelly_fraction_full:.2f}</b>"
+        f"{components_block}"
+        f"{flag_suffix}"
+    )
+
+
+# ── Tier 3 — flagged, informational only ────────────────────────────────────
+
+
+def _format_tier3(
+    pick: LivePick, *, home_score: int | None, away_score: int | None,
+    league_name: str | None,
+) -> str:
+    score = _score_str(home_score, away_score).replace(" · ", " · ")
+    return (
+        "<b>INFO — FLAGGED PICK</b>\n"
+        "<blockquote>"
+        f"{_fixture_line(pick, league_name)} · "
+        f"Min {pick.minute}'{score}\n"
+        f"<code>{_e(pick.market)}</code> · "
+        f"<b>{_e(pick.selection)}</b> @ {pick.bookmaker_odd:.2f}\n"
+        f"Edge +{pick.edge_pct:.2f}% · "
+        f"L={pick.logical_score:.2f}\n"
+        f"<b>FLAGGED:</b> <code>{_e(pick.flagged_reason or 'unknown')}</code>"
+        "</blockquote>"
+    )
+
+
+# ── Public dispatcher ───────────────────────────────────────────────────────
 
 
 def format_pick_alert(
@@ -41,71 +190,178 @@ def format_pick_alert(
     away_score: int | None = None,
     league_name: str | None = None,
 ) -> str:
-    """Return an HTML-formatted Telegram alert for a single emitted LivePick.
+    """Format a LivePick alert. Selects template by ``classify_tier(pick)``."""
+    tier = classify_tier(pick)
+    return format_pick_alert_with_tier(
+        pick, tier=tier,
+        home_score=home_score, away_score=away_score, league_name=league_name,
+    )
 
-    `home_score` and `away_score` should reflect the score AT THE PICK'S
-    minute (caller responsibility — usually from the LiveMatchState).
-    `league_name` is optional context for the operator.
 
-    Telegram HTML supports: <b>, <i>, <u>, <s>, <code>, <pre>, <a>.
-    No emojis added to the message body — only in headers — per operator
-    style preference (file-level commenting allows the existing prefix
-    pattern).
+def format_pick_alert_with_tier(
+    pick: LivePick,
+    *,
+    tier: int,
+    home_score: int | None = None,
+    away_score: int | None = None,
+    league_name: str | None = None,
+) -> str:
+    """Explicit-tier formatter. Used by promoted Tier-3-to-Tier-2 flows."""
+    if tier == 1:
+        return _format_tier1(
+            pick, home_score=home_score, away_score=away_score,
+            league_name=league_name,
+        )
+    if tier == 2:
+        return _format_tier2(
+            pick, home_score=home_score, away_score=away_score,
+            league_name=league_name,
+        )
+    if tier == 3:
+        return _format_tier3(
+            pick, home_score=home_score, away_score=away_score,
+            league_name=league_name,
+        )
+    raise ValueError(f"unknown tier {tier!r}, expected 1|2|3")
+
+
+# ── Tier 4 — outcome reply ──────────────────────────────────────────────────
+
+
+def format_outcome_reply(
+    *,
+    status: str,                # 'won' | 'lost' | 'void'
+    market: str,
+    selection: str,
+    bookmaker_odd: float,
+    profit_units: float,
+    placed_stake_pct: float | None = None,
+    placed_odd: float | None = None,
+    actual_profit_units: float | None = None,
+) -> str:
+    """Tier 4 — reply to the original pick message after settlement.
+
+    The ``placed_*`` block appears only when the operator marked the pick
+    as placed (via ``tg_actions`` with ``action='placed'``).
     """
-    fixture_line = f"{_e(pick.home_team)} vs {_e(pick.away_team)}"
-    if league_name:
-        fixture_line = f"{_e(league_name)} — {fixture_line}"
-
-    score_str = ""
-    if home_score is not None and away_score is not None:
-        score_str = f" · Score <b>{home_score}-{away_score}</b>"
-
-    cal_prob = pick.our_probability
-    raw_prob = pick.model_probability_raw
-    if raw_prob and abs(raw_prob - cal_prob) > 1e-4:
-        prob_line = (
-            f"Cal prob: <b>{cal_prob:.3f}</b> "
-            f"(raw {raw_prob:.3f})"
+    verdict = {"won": "WON", "lost": "LOST", "void": "VOID"}.get(
+        status, status.upper(),
+    )
+    placement = ""
+    if placed_stake_pct is not None and placed_odd is not None:
+        placement = (
+            f"\nPlaced <b>{placed_stake_pct:.2f}%</b> @ <b>{placed_odd:.2f}</b>"
         )
-    else:
-        prob_line = f"Prob: <b>{cal_prob:.3f}</b>"
+        if actual_profit_units is not None:
+            placement += f" → <b>{actual_profit_units:+.2f}u</b>"
+    return (
+        f"<b>{verdict}</b> · <code>{_e(market)}</code> "
+        f"<b>{_e(selection)}</b> @ {bookmaker_odd:.2f}\n"
+        f"P/L (emit) <b>{profit_units:+.2f}u</b>"
+        f"{placement}"
+    )
 
-    # Flag annotation (one of the cascade's soft-flag reasons)
-    flag_line = ""
-    if pick.flagged_reason:
-        flag_line = (
-            f"\n⚠️ <b>FLAGGED:</b> <code>{_e(pick.flagged_reason)}</code>"
+
+# ── Burst digest (§E) ───────────────────────────────────────────────────────
+
+
+def format_burst_digest(
+    picks: list[LivePick],
+    *,
+    window_seconds: int,
+) -> str:
+    """Compact digest for §E batch-send when the token bucket is empty.
+
+    Each row is a single line so 5-10 picks fit on one phone screen
+    without scrolling. Inline keyboard for placement is attached by the
+    caller (one row of buttons per pick).
+    """
+    if not picks:
+        return ""
+    n = len(picks)
+    rows = []
+    for p in picks:
+        rows.append(
+            f"<b>{_e(p.home_team)}</b> vs <b>{_e(p.away_team)}</b> · "
+            f"<code>{_e(p.market)}</code> <b>{_e(p.selection)}</b> "
+            f"@ {p.bookmaker_odd:.2f} · "
+            f"+{p.edge_pct:.1f}% · L={p.logical_score:.2f}"
         )
+    return (
+        f"<b>BURST</b> · {n} picks in last {window_seconds}s\n"
+        + "\n".join(rows)
+        + "\n\n<i>Tap a row's [PLACE] button to act.</i>"
+    )
 
-    # Compact logical-component fingerprint when available
-    ls_extra = ""
-    if pick.logical_components:
-        # Top 2 components by magnitude for at-a-glance signal
-        comps = sorted(
-            pick.logical_components.items(),
-            key=lambda kv: -abs(kv[1]),
-        )[:2]
-        ls_extra = " · " + " ".join(
-            f"<i>{_e(k)}</i>={v:.2f}" for k, v in comps
-        )
 
+# ── Scoreboard (§F) — pinned, edited in-place ───────────────────────────────
+
+
+def format_scoreboard(
+    *,
+    date: str,
+    n_emit: int,
+    n_placed: int,
+    n_pending: int,
+    n_settled: int,
+    n_won: int,
+    pl_emit_units: float,
+    pl_placed_units: float | None = None,
+    drawdown_pct: float = 0.0,
+    updated_at: str = "",
+) -> str:
+    wr = (n_won / n_settled * 100) if n_settled else 0.0
+    placed_line = ""
+    if pl_placed_units is not None:
+        placed_line = f"\nP/L (placed only) <b>{pl_placed_units:+.2f}u</b>"
+    dd_line = f"\nDrawdown from peak <b>{drawdown_pct:.1f}%</b>" if drawdown_pct else ""
+    return (
+        f"<b>TODAY</b> · {_e(date)}\n"
+        "\n"
+        f"Picks emitted <b>{n_emit}</b> · "
+        f"Placed <b>{n_placed}</b> · Pending <b>{n_pending}</b>\n"
+        f"Settled <b>{n_settled}</b> · Won <b>{n_won}</b> ({wr:.1f}%)\n"
+        f"P/L (emit) <b>{pl_emit_units:+.2f}u</b>"
+        f"{placed_line}"
+        f"{dd_line}\n"
+        "\n"
+        f"<i>Updated {_e(updated_at)}</i>"
+    )
+
+
+# ── Pre-jornada brief ───────────────────────────────────────────────────────
+
+
+def format_pre_jornada_brief(
+    *,
+    jornada_date: str,
+    n_fixtures: int,
+    calibrator_fitted_at: str | None = None,
+    expected_roi_band: str | None = None,
+    profile_name: str | None = None,
+    bankroll_baseline_units: float | None = None,
+) -> str:
     lines = [
-        f"<b>🎯 LIVE PICK</b> · <i>{fixture_line}</i>",
+        f"<b>PRE-JORNADA</b> · {_e(jornada_date)}",
         "",
-        f"Min <b>{pick.minute}'</b>{score_str}",
-        f"Market: <code>{_e(pick.market)}</code> · "
-        f"Selection: <b>{_e(pick.selection)}</b>",
-        f"Odds: <b>{pick.bookmaker_odd:.2f}</b> · "
-        f"Edge: <b>+{pick.edge_pct:.2f}%</b>",
-        "",
-        f"Stake: <b>{pick.suggested_stake_pct:.2f}%</b> bankroll "
-        f"(¼ Kelly, full = {pick.kelly_fraction_full:.3f})",
-        prob_line,
-        f"Logical score: <b>{pick.logical_score:.2f}</b>{ls_extra}",
+        f"Fixtures to monitor <b>{n_fixtures}</b>",
     ]
-    if flag_line:
-        lines.append(flag_line)
+    if profile_name:
+        lines.append(f"Stack profile <code>{_e(profile_name)}</code>")
+    if calibrator_fitted_at:
+        lines.append(
+            f"Calibrator fitted <code>{_e(calibrator_fitted_at)}</code>"
+        )
+    if expected_roi_band:
+        lines.append(f"Expected ROI band <b>{_e(expected_roi_band)}</b>")
+    if bankroll_baseline_units is not None:
+        lines.append(
+            f"Bankroll baseline <b>{bankroll_baseline_units:.1f}u</b>"
+        )
     return "\n".join(lines)
+
+
+# ── Post-jornada summary ────────────────────────────────────────────────────
 
 
 def format_jornada_summary(
@@ -122,31 +378,18 @@ def format_jornada_summary(
     calibrator_n_markets_own_fit: int | None = None,
     best_market: tuple[str, int, int, float] | None = None,
 ) -> str:
-    """Return an HTML-formatted post-jornada summary message.
-
-    Arguments:
-        jornada_date: ISO date string for the header
-        n_emit_total: picks emitted (before grading filter)
-        n_emit_settled: picks that resolved won or lost (not void/pending)
-        n_won, profit_units, stake_pct_total: ROI components
-        drops_by_reason: drop_reason -> count from decisions table
-        top_n_stats: optional dict {'n', 'won', 'profit', 'roi'} for Top-25
-        calibrator_ece_cv: 5-fold CV ECE from latest fit (or None)
-        calibrator_n_markets_own_fit: per-market count (or None)
-        best_market: optional (market_name, n_picks, n_won, roi_pct) tuple
-    """
     win_rate = (n_won / n_emit_settled * 100) if n_emit_settled else 0.0
     roi = (profit_units / stake_pct_total * 100) if stake_pct_total > 0 else 0.0
 
     lines = [
-        f"<b>📊 JORNADA SUMMARY</b> · {_e(jornada_date)}",
+        f"<b>JORNADA SUMMARY</b> · {_e(jornada_date)}",
         "",
-        "<b>Emit universe:</b>",
-        f"• Picks emitidos: <b>{n_emit_total}</b> "
-        f"(settled: {n_emit_settled})",
-        f"• Won: <b>{n_won}</b> ({win_rate:.1f}%)",
-        f"• Profit: <b>{profit_units:+.2f} u</b>",
-        f"• ROI: <b>{roi:+.2f}%</b>",
+        "<b>Emit universe</b>",
+        f"Picks emitidos <b>{n_emit_total}</b> "
+        f"(settled <b>{n_emit_settled}</b>)",
+        f"Won <b>{n_won}</b> ({win_rate:.1f}%)",
+        f"Profit <b>{profit_units:+.2f} u</b>",
+        f"ROI <b>{roi:+.2f}%</b>",
     ]
 
     if top_n_stats:
@@ -156,24 +399,22 @@ def format_jornada_summary(
         r = top_n_stats.get("roi", 0.0)
         lines.extend([
             "",
-            "<b>Top-N (placeable):</b>",
-            f"• Picks: <b>{n}</b> · Won: <b>{w}</b> "
+            "<b>Top-N (placeable)</b>",
+            f"Picks <b>{n}</b> · Won <b>{w}</b> "
             f"({w/n*100 if n else 0:.1f}%)",
-            f"• P/L: <b>{pr:+.2f} u</b> · ROI: <b>{r:+.2f}%</b>",
+            f"P/L <b>{pr:+.2f} u</b> · ROI <b>{r:+.2f}%</b>",
         ])
 
     if best_market:
         mkt, mn, mw, mroi = best_market
         lines.extend([
             "",
-            f"<b>Best market:</b> <code>{_e(mkt)}</code> — "
+            f"<b>Best market</b> <code>{_e(mkt)}</code> — "
             f"{mw}/{mn} ({mw/mn*100 if mn else 0:.0f}%) · "
             f"ROI <b>{mroi:+.1f}%</b>",
         ])
 
     if drops_by_reason:
-        # Show top 5 drop reasons by count (skip noisy `below_min_edge`
-        # which is the natural cascade gate, not a Tier 1+ filter)
         interesting = {
             k: v for k, v in drops_by_reason.items()
             if k != "below_min_edge"
@@ -184,48 +425,23 @@ def format_jornada_summary(
         if top_drops:
             lines.extend([
                 "",
-                "<b>Drops by gate (excl. below_min_edge):</b>",
+                "<b>Drops by gate (excl. below_min_edge)</b>",
             ])
             for reason, count in top_drops:
                 lines.append(
-                    f"• <code>{_e(reason)}</code>: <b>{count}</b>"
+                    f"<code>{_e(reason)}</code> <b>{count}</b>"
                 )
 
     if calibrator_ece_cv is not None or calibrator_n_markets_own_fit is not None:
         lines.append("")
-        lines.append("<b>Calibrator:</b>")
+        lines.append("<b>Calibrator</b>")
         if calibrator_ece_cv is not None:
-            lines.append(f"• ECE (5-fold CV): <b>{calibrator_ece_cv:.4f}</b>")
+            lines.append(f"ECE (5-fold CV) <b>{calibrator_ece_cv:.4f}</b>")
         if calibrator_n_markets_own_fit is not None:
             lines.append(
-                f"• Markets with own fit: <b>{calibrator_n_markets_own_fit}</b>"
+                f"Markets with own fit <b>{calibrator_n_markets_own_fit}</b>"
             )
 
-    return "\n".join(lines)
-
-
-def format_pre_jornada_brief(
-    *,
-    jornada_date: str,
-    n_fixtures: int,
-    calibrator_fitted_at: str | None = None,
-    expected_roi_band: str | None = None,
-    profile_name: str | None = None,
-) -> str:
-    """Pre-kickoff briefing (operator sanity check before watch session)."""
-    lines = [
-        f"<b>🚦 PRE-JORNADA BRIEF</b> · {_e(jornada_date)}",
-        "",
-        f"Fixtures to monitor: <b>{n_fixtures}</b>",
-    ]
-    if profile_name:
-        lines.append(f"Stack profile: <code>{_e(profile_name)}</code>")
-    if calibrator_fitted_at:
-        lines.append(
-            f"Calibrator fitted: <code>{_e(calibrator_fitted_at)}</code>"
-        )
-    if expected_roi_band:
-        lines.append(f"Expected ROI band: <b>{_e(expected_roi_band)}</b>")
     return "\n".join(lines)
 
 
@@ -240,7 +456,6 @@ async def send_pick_alert(
     away_score: int | None = None,
     league_name: str | None = None,
 ) -> None:
-    """Send a formatted pick alert via the supplied TelegramBot instance."""
     text = format_pick_alert(
         pick, home_score=home_score, away_score=away_score,
         league_name=league_name,
@@ -249,15 +464,10 @@ async def send_pick_alert(
 
 
 async def send_jornada_summary(bot: Any, **kwargs: Any) -> None:
-    """Send a post-jornada summary via the supplied TelegramBot instance.
-
-    All keyword arguments are forwarded to ``format_jornada_summary``.
-    """
     text = format_jornada_summary(**kwargs)
     await bot.send_html(text)
 
 
 async def send_pre_jornada_brief(bot: Any, **kwargs: Any) -> None:
-    """Send a pre-jornada briefing via the supplied TelegramBot instance."""
     text = format_pre_jornada_brief(**kwargs)
     await bot.send_html(text)
