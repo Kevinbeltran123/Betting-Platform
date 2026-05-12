@@ -52,6 +52,7 @@ from bip.evaluation.live.engine_v3.no_bet_gate import (
     allowed_candidates,
     run_gate,
 )
+from bip.evaluation.live.engine_v3.ood_detector import OODDetector, vectorize_gsv
 from bip.evaluation.live.engine_v3.pipeline import (
     PipelineOutput,
     ShadowPick,
@@ -95,6 +96,7 @@ __all__ = [
     "MarketSnapshot",
     "NoBetVerdict",
     "NumericalState",
+    "OODDetector",
     "PipelineOutput",
     "PreMatchPriors",
     "PredictionPoint",
@@ -116,4 +118,5 @@ __all__ = [
     "generate_theses",
     "run_gate",
     "select_markets",
+    "vectorize_gsv",
 ]

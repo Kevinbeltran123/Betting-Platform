@@ -44,6 +44,7 @@ from bip.evaluation.live.engine_v3.market_selector import (
     select_markets,
 )
 from bip.evaluation.live.engine_v3.no_bet_gate import GateResult, run_gate
+from bip.evaluation.live.engine_v3.ood_detector import OODDetector
 from bip.evaluation.live.engine_v3.thesis import Thesis
 from bip.evaluation.live.match_state import LiveMatchState
 
@@ -102,6 +103,7 @@ class V3Pipeline:
         gsv_builder: GSVBuilder | None = None,
         conditional_predictor: ConditionalPredictor | None = None,
         tier_promoter: "TierDPromoter | None" = None,
+        ood_detector: OODDetector | None = None,
         mes_threshold: float = 0.6,
         target_stake: float = 100.0,
         line_max_age_sec: float = 60.0,
@@ -112,6 +114,7 @@ class V3Pipeline:
         self.gsv_builder = gsv_builder or GSVBuilder()
         self.predictor = conditional_predictor or ConditionalPredictor.default()
         self.tier_promoter = tier_promoter
+        self.ood_detector = ood_detector
         self.mes_threshold = mes_threshold
         self.target_stake = target_stake
         self.line_max_age_sec = line_max_age_sec
@@ -156,6 +159,7 @@ class V3Pipeline:
             line_max_age_sec=self.line_max_age_sec,
             commentary_required=self.commentary_required,
             uncertainty_band=self.uncertainty_band,
+            ood_detector=self.ood_detector,
         )
         allowed = [
             ShadowPick(

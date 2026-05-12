@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from bip.evaluation.live.engine_v3.gsv import GameStateVector
 from bip.evaluation.live.engine_v3.market_selector import MarketCandidate
+from bip.evaluation.live.engine_v3.ood_detector import OODDetector
 from bip.evaluation.live.engine_v3.thesis import (
     Thesis,
     UNDER_DIRECTION_ALLOWED_ARCHETYPES,
@@ -161,6 +162,32 @@ def rule_8_predictive_uncertainty(candidate: MarketCandidate,
     return NoBetVerdict.ok()
 
 
+def rule_9_ood_detector(
+    gsv: GameStateVector,
+    detector: OODDetector | None,
+    *,
+    threshold: float | None = None,
+) -> NoBetVerdict:
+    """#9 — Out-of-distribution game state (Risk #2 mitigation).
+
+    When ``detector`` is unfitted or ``None`` the rule passes (fail-safe);
+    when fitted and the GSV's Mahalanobis distance from the training
+    centroid exceeds the threshold, the candidate is denied with the
+    score embedded in the reason so the audit log captures it.
+    """
+    if detector is None or not detector.is_fitted:
+        return NoBetVerdict.ok()
+    score = detector.score(gsv)
+    cutoff = detector.threshold if threshold is None else threshold
+    if score > cutoff:
+        return NoBetVerdict.deny(
+            9,
+            f"OOD game state — Mahalanobis {score:.2f} > threshold {cutoff:.2f} "
+            f"(trained on n={detector.n_train})",
+        )
+    return NoBetVerdict.ok()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Compose
 # ──────────────────────────────────────────────────────────────────────
@@ -181,13 +208,18 @@ def run_gate(
     line_max_age_sec: float = 60.0,
     commentary_required: bool = False,
     uncertainty_band: float = 0.08,
+    ood_detector: OODDetector | None = None,
 ) -> list[GateResult]:
-    """Run the 8 rules against each candidate.
+    """Run the 9 rules against each candidate.
 
     Returns one ``GateResult`` per candidate; callers filter by
     ``r.verdict.allowed``. Even denied results are returned (with their
     rule number + reason) so the audit log can capture them — sec 7.2
     requires that "every rejected pick is logged with reason".
+
+    Rule 9 (OOD) is global to the GSV — it would emit the same verdict
+    for every candidate at this state — so we short-circuit on it first
+    when the detector is fitted and the state is OOD.
     """
     # Rule 1 is global (applies once). If no theses, every candidate is denied
     # against rule 1; we short-circuit to one verdict per candidate.
@@ -196,6 +228,11 @@ def run_gate(
             GateResult(candidate=c, verdict=NoBetVerdict.deny(1, "no theses"))
             for c in candidates
         ]
+    # Rule 9 is also state-global. If the GSV is OOD, every candidate dies
+    # against rule 9 — short-circuit so the audit log shows the real reason.
+    ood_verdict = rule_9_ood_detector(gsv, ood_detector)
+    if not ood_verdict.allowed:
+        return [GateResult(candidate=c, verdict=ood_verdict) for c in candidates]
     out: list[GateResult] = []
     for c in candidates:
         for verdict in (
@@ -231,5 +268,6 @@ __all__ = [
     "rule_6_commentary_lag",
     "rule_7_liquidity_gate",
     "rule_8_predictive_uncertainty",
+    "rule_9_ood_detector",
     "run_gate",
 ]
