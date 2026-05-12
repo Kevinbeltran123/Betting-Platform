@@ -238,3 +238,114 @@ class TestReconFixtureSanity:
         for rec in inplay_payload["data"]:
             f = Fixture.model_validate(rec)
             assert f.id > 0
+
+
+# ── UTC tzinfo invariant for datetime fields ─────────────────────────────────
+
+
+class TestDatetimeUTCInvariant:
+    """Regression suite for the silent 5h offset bug.
+
+    Sportmonks emits ISO timestamps WITHOUT offset (e.g.
+    ``2026-05-12T19:30:00``). Pydantic parses those as naive datetimes;
+    any ``.astimezone(...)`` then treats them as system-local time.
+    On a Bogotá-localized box that produces a 5h offset silently. The
+    ``_ensure_utc`` validator attaches ``tzinfo=UTC`` at parse time so
+    every consumer downstream gets aware datetimes.
+
+    These tests pin the contract: every datetime field returned by
+    Sportmonks must be tz-aware OR None. Adding a new datetime field
+    without the validator → test fails here.
+    """
+
+    def test_fixture_starting_at_is_utc_aware_from_naive(self):
+        from datetime import timezone
+        from bip.sports.football.sportmonks.schemas import Fixture
+
+        f = Fixture.model_validate({
+            "id": 1, "sport_id": 1, "league_id": 564, "season_id": 1,
+            "starting_at": "2026-05-12T19:30:00",
+        })
+        assert f.starting_at is not None
+        assert f.starting_at.tzinfo is timezone.utc
+        assert f.starting_at.isoformat() == "2026-05-12T19:30:00+00:00"
+
+    def test_fixture_starting_at_preserves_explicit_offset(self):
+        from datetime import timezone
+        from bip.sports.football.sportmonks.schemas import Fixture
+
+        f = Fixture.model_validate({
+            "id": 1, "sport_id": 1, "league_id": 564, "season_id": 1,
+            "starting_at": "2026-05-12T19:30:00+00:00",
+        })
+        assert f.starting_at.tzinfo is not None
+
+    def test_fixture_starting_at_none_passes_through(self):
+        from bip.sports.football.sportmonks.schemas import Fixture
+
+        f = Fixture.model_validate({
+            "id": 1, "sport_id": 1, "league_id": 564, "season_id": 1,
+            "starting_at": None,
+        })
+        assert f.starting_at is None
+
+    def test_livescore_starting_at_is_utc_aware(self):
+        from datetime import timezone
+        from bip.sports.football.sportmonks.schemas import LiveScore
+
+        ls = LiveScore.model_validate({
+            "id": 1, "league_id": 564,
+            "starting_at": "2026-05-12T19:30:00",
+        })
+        assert ls.starting_at.tzinfo is timezone.utc
+
+    def test_odd_latest_bookmaker_update_is_utc_aware(self):
+        from datetime import timezone
+        from bip.sports.football.sportmonks.schemas import Odd
+
+        o = Odd.model_validate({
+            "id": 1, "fixture_id": 1, "market_id": 1, "bookmaker_id": 2,
+            "label": "Over",
+            "latest_bookmaker_update": "2026-05-12T19:30:00",
+        })
+        assert o.latest_bookmaker_update.tzinfo is timezone.utc
+
+    def test_period_started_datetime_is_utc_aware(self):
+        from datetime import timezone
+        from bip.sports.football.sportmonks.schemas import Period
+
+        p = Period.model_validate({
+            "id": 1, "fixture_id": 1, "type_id": 1,
+            "started": "2026-05-12T19:30:00",
+        })
+        assert isinstance(p.started, type(p.started))  # not int
+        assert p.started.tzinfo is timezone.utc
+
+    def test_period_started_epoch_int_passes_through(self):
+        """The Period schema allows started/ended as epoch int. The
+        validator must not coerce ints into datetimes — those represent
+        a different shape of timestamp and have their own meaning."""
+        from bip.sports.football.sportmonks.schemas import Period
+
+        p = Period.model_validate({
+            "id": 1, "fixture_id": 1, "type_id": 1, "started": 1715543400,
+        })
+        assert p.started == 1715543400
+        assert isinstance(p.started, int)
+
+    def test_bogota_conversion_no_longer_off_by_five_hours(self):
+        """The headline scenario: a 19:30 UTC kickoff converts to
+        14:30 Bogotá (UTC-5) WITHOUT any manual .replace(tzinfo=...)
+        call by the consumer. Before the validator landed this test
+        would have produced 19:30 BOG on a Bogotá-localized system."""
+        from datetime import timedelta, timezone
+        from bip.sports.football.sportmonks.schemas import Fixture
+
+        f = Fixture.model_validate({
+            "id": 1, "sport_id": 1, "league_id": 564, "season_id": 1,
+            "starting_at": "2026-05-12T19:30:00",
+        })
+        bogota = timezone(timedelta(hours=-5))
+        local = f.starting_at.astimezone(bogota)
+        assert local.hour == 14
+        assert local.minute == 30

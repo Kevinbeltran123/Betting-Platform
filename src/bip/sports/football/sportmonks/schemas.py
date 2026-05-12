@@ -9,13 +9,33 @@ All models are frozen for safety — Sportmonks data is read-only here.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 _MODEL_CONFIG = ConfigDict(frozen=True, extra="ignore")
+
+
+def _ensure_utc(value: Any) -> Any:
+    """Attach ``tzinfo=UTC`` to naive datetimes returned by Sportmonks.
+
+    Sportmonks v3 emits timestamps as ISO-8601 WITHOUT offset (e.g.
+    ``2026-05-12T19:30:00``). The API contract is that those are UTC,
+    but Pydantic parses them as naive datetimes — which means any
+    downstream ``.astimezone(...)`` call interprets the naive dt as
+    SYSTEM-LOCAL time. On a Bogotá-localized machine that produces
+    silent 5-hour offsets.
+
+    This validator runs after parsing; it ONLY touches naive datetimes.
+    Aware datetimes (which Sportmonks doesn't currently emit but might
+    in the future) pass through untouched. Non-datetime inputs (e.g.
+    epoch ints for ``Period.started``) also pass through.
+    """
+    if isinstance(value, datetime) and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 # ── Core fixture ─────────────────────────────────────────────────────────────
@@ -65,6 +85,9 @@ class Period(BaseModel):
     ended: datetime | int | None = None
     counts_from: int | None = None
     minutes: int | None = None
+
+    _utc_started = field_validator("started", mode="after")(_ensure_utc)
+    _utc_ended = field_validator("ended", mode="after")(_ensure_utc)
     seconds: int | None = None
     has_timer: bool | None = None
     ticking: bool | None = None
@@ -187,6 +210,10 @@ class Odd(BaseModel):
     winning: bool | None = None
     latest_bookmaker_update: datetime | None = None
 
+    _utc_latest_bookmaker_update = field_validator(
+        "latest_bookmaker_update", mode="after"
+    )(_ensure_utc)
+
     @property
     def decimal_odd(self) -> float | None:
         if self.value is None:
@@ -267,6 +294,8 @@ class Fixture(BaseModel):
     has_odds: bool | None = None
     has_premium_odds: bool | None = None
 
+    _utc_starting_at = field_validator("starting_at", mode="after")(_ensure_utc)
+
     # Includes (None when not requested)
     participants: list[Participant] | None = None
     state: FixtureState | None = None
@@ -324,6 +353,8 @@ class LiveScore(BaseModel):
     league_id: int
     starting_at: datetime | None = None
     state_id: int | None = None
+
+    _utc_starting_at = field_validator("starting_at", mode="after")(_ensure_utc)
 
 
 # ── API envelope ─────────────────────────────────────────────────────────────
