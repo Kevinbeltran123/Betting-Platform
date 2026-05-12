@@ -84,7 +84,11 @@ from bip.evaluation.live.engine_v3.pipeline import (
     ShadowPick,
     V3Pipeline,
 )
-from bip.evaluation.live.engine_v3.shadow_logger import ShadowLogger
+from bip.evaluation.live.engine_v3.shadow_logger import (
+    LoadFailure,
+    ShadowLogger,
+    load_shadow_gsvs,
+)
 from bip.evaluation.live.engine_v3.thesis import (
     CausalChain,
     CausalStep,
@@ -119,6 +123,7 @@ __all__ = [
     "KILL_CRITERIA_VERSION",
     "KillVerdict",
     "LineRecorder",
+    "LoadFailure",
     "MESResult",
     "MarketCandidate",
     "MarketFamily",
@@ -156,6 +161,7 @@ __all__ = [
     "family_for_market_id",
     "generate_theses",
     "generate_theses_hybrid",
+    "load_shadow_gsvs",
     "merge_theses",
     "run_gate",
     "select_markets",

@@ -227,7 +227,7 @@ def replay_one_fixture(
         out = pipeline.run(
             state, priors=priors, markets=markets, now_utc=captured,
         )
-        n_picks, n_denials = logger.record(out)
+        n_picks, n_denials, _n_gsv = logger.record(out)
         total_picks += n_picks
         total_denials += n_denials
     return total_picks, total_denials

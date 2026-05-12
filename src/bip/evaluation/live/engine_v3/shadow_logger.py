@@ -2,25 +2,56 @@
 
 Phase 2 deliverable from sec 10. The output structure mirrors the
 ``LineRecorder`` pattern: daily partitions under
-``data/cache/v3_shadow/dt=YYYY-MM-DD/{picks,gate_denials}.parquet``.
+``data/cache/v3_shadow/dt=YYYY-MM-DD/{picks,gate_denials,gsv_log}.parquet``.
 
-Two files per day:
+Three files per day:
 
 - ``picks.parquet``: one row per allowed candidate (the would-be bet)
 - ``gate_denials.parquet``: one row per rejected candidate with rule
   number + reason (sec 7.2 audit trail requirement)
+- ``gsv_log.parquet``: one row per pipeline frame with full GSV JSON.
+  Enables (a) refitting OOD detector + pattern layer on real data
+  (Phase 4 weekly refit cadence) and (b) reconstructing the audit trail
+  for any pick/denial by joining on ``(fixture_id, state_version)``.
 
 The shadow output is read-only from the operator's perspective — Phase
 2 of sec 10 forbids routing these to Telegram. They feed the Phase-2
 comparison: v3 shadow ROI vs current-system ROI on the same fixture
 cohort.
+
+GSV persistence design choices (T1.1 ship note):
+
+- Sync buffer + periodic flush rather than async/thread: ``record()``
+  only appends a Python dict (O(1)); flush is the only I/O and runs
+  outside the path-critical pick generation step. No thread complexity
+  needed and the pattern matches the existing pick/denial buffers.
+
+- ``model_dump_json()`` from pydantic-core (Rust) is sub-millisecond
+  per GSV at v3's schema size. Persistence is well under the 5ms budget
+  from the mission spec.
+
+- Daily rotation by GSV timestamp (not flush timestamp). Two flushes
+  spanning midnight UTC write to two distinct partitions so the date
+  partition matches the GSV reality, not the operator's wall clock.
+
+- Schema evolution: a future GSV that adds fields stays
+  backward-compatible because ``model_validate_json`` defaults to ignoring
+  missing-then-required keys ONLY if the model declares defaults.
+  If a load fails, ``load_shadow_gsvs`` returns ``LoadFailure`` records
+  carrying the offending row + exception — callers decide whether to
+  skip or fail. We never silently coerce.
 """
+
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
+from bip.evaluation.live.engine_v3.gsv import GameStateVector
 from bip.evaluation.live.engine_v3.pipeline import PipelineOutput
 
 DEFAULT_SHADOW_ROOT = Path("data/cache/v3_shadow")
@@ -72,18 +103,60 @@ def _denial_row(result, fixture_id: int, ts: datetime) -> dict[str, Any]:
     }
 
 
-class ShadowLogger:
-    """Buffered parquet logger for shadow picks + gate denials."""
+def _gsv_row(gsv: GameStateVector) -> dict[str, Any]:
+    """One row per pipeline frame. ``gsv_json`` carries the full GSV
+    serialised via ``model_dump_json()`` (Pydantic v2 round-trip).
+    """
+    return {
+        "fixture_id": int(gsv.fixture_id),
+        "state_version": int(gsv.state_version),
+        "timestamp_utc": gsv.timestamp_utc,
+        "home_team_id": int(gsv.home_team_id),
+        "away_team_id": int(gsv.away_team_id),
+        "minute": int(gsv.time.minute),
+        "period": gsv.time.period,
+        "home_goals": int(gsv.score.home_goals),
+        "away_goals": int(gsv.score.away_goals),
+        "gsv_json": gsv.model_dump_json(),
+    }
 
-    def __init__(self, output_root: Path | str = DEFAULT_SHADOW_ROOT) -> None:
+
+@dataclass(frozen=True)
+class LoadFailure:
+    """A row that could not be deserialised into a ``GameStateVector``.
+
+    Returned by ``load_shadow_gsvs`` so callers can decide whether to
+    skip, retry, or surface the corruption. We never silently swallow
+    schema mismatches — that would defeat the audit-trail purpose.
+    """
+
+    path: Path
+    row_index: int
+    fixture_id: int
+    error: str
+
+
+class ShadowLogger:
+    """Buffered parquet logger for shadow picks + gate denials + GSV log."""
+
+    def __init__(
+        self,
+        output_root: Path | str = DEFAULT_SHADOW_ROOT,
+        *,
+        gsv_log_enabled: bool = True,
+    ) -> None:
         self.output_root = Path(output_root)
+        self.gsv_log_enabled = gsv_log_enabled
         self._pick_buf: list[dict[str, Any]] = []
         self._denial_buf: list[dict[str, Any]] = []
+        self._gsv_buf: list[dict[str, Any]] = []
 
-    def record(self, output: PipelineOutput) -> tuple[int, int]:
-        """Append the picks + denials from one pipeline frame.
+    def record(self, output: PipelineOutput) -> tuple[int, int, int]:
+        """Append the picks + denials + GSV from one pipeline frame.
 
-        Returns ``(n_picks, n_denials)`` recorded this call."""
+        Returns ``(n_picks, n_denials, n_gsv)`` recorded this call.
+        ``n_gsv`` is 0 if GSV logging is disabled, else 1.
+        """
         ts = output.gsv.timestamp_utc
         fixture_id = output.gsv.fixture_id
 
@@ -95,40 +168,82 @@ class ShadowLogger:
                 continue
             self._denial_buf.append(_denial_row(r, fixture_id, ts))
 
-        return len(output.allowed_picks), sum(
-            1 for r in output.gate_results if not r.verdict.allowed
+        n_gsv = 0
+        if self.gsv_log_enabled:
+            self._gsv_buf.append(_gsv_row(output.gsv))
+            n_gsv = 1
+
+        return (
+            len(output.allowed_picks),
+            sum(1 for r in output.gate_results if not r.verdict.allowed),
+            n_gsv,
         )
 
     def flush(self, timestamp_utc: datetime | None = None) -> dict[str, Path]:
         """Write buffers to parquet partitions.
 
-        Returns dict keyed by ``picks``/``denials`` to the parquet path
-        written, omitting entries that were empty."""
+        Returns dict keyed by ``picks`` / ``denials`` / ``gsv_log`` to the
+        parquet path written, omitting entries that were empty.
+
+        Partitioning: by row timestamp, not flush timestamp. A single
+        flush() spanning two UTC days writes to two partitions.
+        """
         out: dict[str, Path] = {}
-        ts = timestamp_utc or datetime.now(timezone.utc)
-        date_dir = self.output_root / _date_partition(ts)
-        date_dir.mkdir(parents=True, exist_ok=True)
+        wall_ts = timestamp_utc or datetime.now(timezone.utc)
 
-        if self._pick_buf:
-            path = date_dir / "picks.parquet"
-            self._append_parquet(path, self._pick_buf)
-            self._pick_buf.clear()
-            out["picks"] = path
+        # Bucket each buffer by row.timestamp_utc → daily partition.
+        # Falls back to the wall-ts partition for any row lacking the field
+        # (defensive; current code always populates it).
+        def _bucket(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+            buckets: dict[str, list[dict[str, Any]]] = {}
+            for r in rows:
+                row_ts = r.get("timestamp_utc")
+                if isinstance(row_ts, datetime):
+                    key = _date_partition(row_ts)
+                else:
+                    key = _date_partition(wall_ts)
+                buckets.setdefault(key, []).append(r)
+            return buckets
 
-        if self._denial_buf:
-            path = date_dir / "gate_denials.parquet"
-            self._append_parquet(path, self._denial_buf)
-            self._denial_buf.clear()
-            out["denials"] = path
+        # The mission specifies one parquet per partition per kind. With
+        # cross-midnight flushes we may end up writing multiple partitions
+        # in one call; ``out`` returns ONE path per kind (the most-recent
+        # by date). This keeps the API simple and is fine for callers that
+        # just need to know the partition was written.
+        for kind, buf in (
+            ("picks", self._pick_buf),
+            ("denials", self._denial_buf),
+            ("gsv_log", self._gsv_buf),
+        ):
+            if not buf:
+                continue
+            filename = {
+                "picks": "picks.parquet",
+                "denials": "gate_denials.parquet",
+                "gsv_log": "gsv_log.parquet",
+            }[kind]
+            for part, rows in sorted(_bucket(buf).items()):
+                date_dir = self.output_root / part
+                date_dir.mkdir(parents=True, exist_ok=True)
+                path = date_dir / filename
+                self._append_parquet(path, rows)
+                out[kind] = path  # last partition wins in the return dict
+            buf.clear()
 
         return out
 
-    def buffer_size(self) -> tuple[int, int]:
-        return len(self._pick_buf), len(self._denial_buf)
+    def buffer_size(self) -> tuple[int, int, int]:
+        """Return ``(picks, denials, gsv)`` buffer counts."""
+        return (
+            len(self._pick_buf),
+            len(self._denial_buf),
+            len(self._gsv_buf),
+        )
 
     @staticmethod
     def _append_parquet(path: Path, rows: list[dict[str, Any]]) -> None:
         import polars as pl
+
         new_df = pl.DataFrame(rows)
         if path.exists():
             try:
@@ -141,4 +256,81 @@ class ShadowLogger:
         combined.write_parquet(path)
 
 
-__all__ = ["DEFAULT_SHADOW_ROOT", "ShadowLogger"]
+def load_shadow_gsvs(
+    date_range: tuple[datetime, datetime] | None = None,
+    output_root: Path | str = DEFAULT_SHADOW_ROOT,
+) -> tuple[list[GameStateVector], list[LoadFailure]]:
+    """Load persisted GSVs from a date range.
+
+    ``date_range`` is ``(start, end)`` inclusive on both ends. ``None``
+    loads every daily partition present under ``output_root``. Dates are
+    matched by partition name (``dt=YYYY-MM-DD``), not by the GSV's own
+    ``timestamp_utc`` field — so a small clock skew at midnight is
+    tolerable.
+
+    Returns ``(successes, failures)``. Failures carry the offending path,
+    row index, fixture_id, and the raised exception message. Callers
+    decide whether to fail-fast or skip-and-continue. We never silently
+    drop a malformed row.
+    """
+    import polars as pl
+
+    root = Path(output_root)
+    if not root.exists():
+        return [], []
+
+    if date_range is not None:
+        start, end = date_range
+        if start > end:
+            raise ValueError(f"date_range start ({start.date()}) > end ({end.date()})")
+
+    successes: list[GameStateVector] = []
+    failures: list[LoadFailure] = []
+
+    for partition_dir in sorted(root.iterdir()):
+        if not partition_dir.is_dir():
+            continue
+        if not partition_dir.name.startswith("dt="):
+            continue
+        try:
+            part_date = datetime.strptime(partition_dir.name[3:], "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            continue
+        if date_range is not None:
+            if part_date.date() < date_range[0].date():
+                continue
+            if part_date.date() > date_range[1].date():
+                continue
+
+        gsv_path = partition_dir / "gsv_log.parquet"
+        if not gsv_path.exists():
+            continue
+
+        df = pl.read_parquet(gsv_path)
+        for idx, json_blob in enumerate(df["gsv_json"].to_list()):
+            try:
+                gsv = GameStateVector.model_validate_json(json_blob)
+            except ValidationError as e:
+                fid = int(df["fixture_id"][idx]) if "fixture_id" in df.columns else 0
+                failures.append(
+                    LoadFailure(
+                        path=gsv_path,
+                        row_index=idx,
+                        fixture_id=fid,
+                        error=str(e),
+                    )
+                )
+                continue
+            successes.append(gsv)
+
+    return successes, failures
+
+
+__all__ = [
+    "DEFAULT_SHADOW_ROOT",
+    "LoadFailure",
+    "ShadowLogger",
+    "load_shadow_gsvs",
+]
