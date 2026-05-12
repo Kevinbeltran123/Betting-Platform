@@ -135,6 +135,45 @@ def terminal_beep() -> None:
     sys.stdout.flush()
 
 
+def start_caffeinate() -> subprocess.Popen | None:
+    """Keep macOS awake while the watch loop runs.
+
+    Spawns ``caffeinate`` with flags that prevent idle, system, and disk
+    sleep — but NOT display sleep, so the lid can close and the screen
+    can dim while the loop keeps pulling Sportmonks data.
+
+    The ``-w <pid>`` flag binds caffeinate to OUR PID: when watch.py
+    exits (cleanly or via SIGKILL), caffeinate dies automatically. No
+    cleanup needed in finally blocks.
+
+    No-op on non-macOS hosts (Linux/Windows: caffeinate doesn't exist;
+    those platforms rely on system power policies). Opt-out via
+    ``WATCH_NO_CAFFEINATE=1``.
+
+    Note: caffeinate does NOT prevent shutdown on network loss — the
+    OS still suspends networking when WiFi drops. The watch loop's own
+    retry logic handles that (httpx + tenacity backoff in
+    sportmonks_client).
+    """
+    if platform.system() != "Darwin":
+        return None
+    if os.getenv("WATCH_NO_CAFFEINATE", "").strip().lower() in {"1", "true", "yes"}:
+        return None
+    caffeinate_bin = shutil.which("caffeinate")
+    if caffeinate_bin is None:
+        return None
+    try:
+        proc = subprocess.Popen(
+            [caffeinate_bin, "-i", "-m", "-s", "-w", str(os.getpid())],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return proc
+    except OSError:
+        return None
+
+
 def render_pick_alert(pick: LivePick) -> tuple[str, str]:
     """Build (title, body) for a notification."""
     title = f"⚽ +{pick.edge_pct:.1f}% EV — {pick.market}"
@@ -803,6 +842,17 @@ def main() -> int:
     )
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
+
+    # Keep macOS awake for the duration of the watch loop. caffeinate
+    # binds to our PID via -w, so it self-terminates when this process
+    # exits (clean shutdown or SIGKILL). No-op on non-macOS hosts.
+    # Opt-out via WATCH_NO_CAFFEINATE=1.
+    caffeinate_proc = start_caffeinate()
+    if caffeinate_proc is not None:
+        print(
+            "☕ caffeinate ON — system stays awake while watch runs "
+            "(WATCH_NO_CAFFEINATE=1 to disable)"
+        )
 
     detector_kwargs = dict(
         max_stake_pct=args.max_stake,
