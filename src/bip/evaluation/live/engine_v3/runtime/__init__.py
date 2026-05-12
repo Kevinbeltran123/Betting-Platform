@@ -36,6 +36,12 @@ from bip.evaluation.live.engine_v3.runtime.refit_scheduler import (
     RefitJob,
     register_refit_job,
 )
+from bip.evaluation.live.engine_v3.runtime.training_data import (
+    JoinReport,
+    RealPatternPair,
+    build_real_pattern_pairs,
+    pairs_to_fit_input,
+)
 
 __all__ = [
     "AlertSink",
@@ -45,8 +51,11 @@ __all__ = [
     "DEFAULT_REPORT_ROOT",
     "DEFAULT_V3_TIMEOUT_SEC",
     "DualWriteRuntime",
+    "JoinReport",
+    "RealPatternPair",
     "RefitJob",
     "assign_cohort_stage",
+    "build_real_pattern_pairs",
     "build_cohort_metrics",
     "engage_kill_switch",
     "is_v3_kill_switch_engaged",
@@ -56,6 +65,7 @@ __all__ = [
     "load_v3_outcomes",
     "load_v3_picks",
     "notify_operator",
+    "pairs_to_fit_input",
     "register_cohort_job",
     "register_refit_job",
     "run_cohort_eval",

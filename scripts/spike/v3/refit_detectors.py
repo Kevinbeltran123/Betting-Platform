@@ -351,21 +351,60 @@ def refit_pattern(
     dry_run: bool,
     blend_synthetic_n: int,
     seed: int,
+    shadow_root: Path | None = None,
+    date_range: tuple[datetime, datetime] | None = None,
 ) -> RefitResult:
-    """Refit pattern layer.
+    """Refit pattern layer with real shadow data when available.
 
-    Note: pattern layer needs ``(gsv, fired_thesis)`` pairs, NOT just
-    GSVs. We don't have shadow-mode thesis attribution persisted yet
-    (Phase 4 deliverable), so for now the pattern layer always trains
-    on the synthetic pair generator with optional blending of real
-    GSVs in cold-start mode. When phase-4 lands a ``fired_thesis``
-    log column, this function will swap to use it.
+    The training_data.build_real_pattern_pairs join (T3 of post-shadow
+    readiness) reconstructs (GSV, Thesis) pairs from the gsv_log +
+    picks parquets in the shadow root. When ≥ min_real_samples real
+    pairs are available we train on real-only (synthetic blending is
+    skipped — synthetic biases the kNN towards anti-Napoli and away
+    from the operator's actual game state distribution).
+
+    When the join produces fewer than the floor we fall back to the
+    existing synthetic generator. The transition between regimes
+    (synthetic-only → blended → real-only) is logged in the result's
+    promote_reason for audit.
     """
-    n_real = len(real_gsvs)
-    # Pattern layer needs (gsv, thesis) pairs. We can't extract fired_thesis
-    # from gsv_log alone — that lives in picks.parquet and would require
-    # a join we haven't built. For now synthetic-only.
-    pairs = _generate_synthetic_pattern_pairs(blend_synthetic_n, seed=seed)
+    n_real_gsvs = len(real_gsvs)
+
+    real_pairs: list[tuple[GameStateVector, Any]] = []
+    join_summary = ""
+    if shadow_root is not None:
+        from bip.evaluation.live.engine_v3.runtime.training_data import (
+            build_real_pattern_pairs,
+            pairs_to_fit_input,
+        )
+
+        pair_records, join_report = build_real_pattern_pairs(
+            shadow_root=shadow_root,
+            date_range=date_range,
+            require_outcome=False,  # outcome-aware filtering is a Phase-5 toggle
+        )
+        real_pairs = pairs_to_fit_input(pair_records)
+        join_summary = (
+            f"join_pairs={len(real_pairs)} "
+            f"missing_gsv={join_report.n_picks_without_gsv} "
+            f"with_outcome={join_report.n_pairs_with_outcome}"
+        )
+
+    n_real_pairs = len(real_pairs)
+    if n_real_pairs >= min_real_samples * 5:
+        # Plenty of real pairs — drop synthetic, learn pure shadow distribution.
+        pairs = real_pairs
+        regime = "real-only"
+    elif n_real_pairs >= min_real_samples:
+        # Blended cold-start: real pairs + synthetic for diversity.
+        synthetic = _generate_synthetic_pattern_pairs(blend_synthetic_n, seed=seed)
+        pairs = real_pairs + synthetic
+        regime = "blended"
+    else:
+        # Insufficient real pairs — synthetic only (preserves prior behavior).
+        pairs = _generate_synthetic_pattern_pairs(blend_synthetic_n, seed=seed)
+        regime = "synthetic-only"
+
     layer = PatternLayer().fit(pairs)
 
     version = next_version(out_dir, "pattern_layer")
@@ -374,16 +413,15 @@ def refit_pattern(
     if not dry_run:
         layer.save(pkl_path)
 
-    # Pattern layer promotion is conservative because the join to
-    # picks.parquet for real thesis attribution isn't yet wired —
-    # auto-promote only when synthetic training succeeded AND n_real
-    # observed exceeds the threshold (the latter is a proxy for "we
-    # have enough shadow flow that retrain is meaningful").
-    promote = n_real >= min_real_samples
-    if not promote:
-        reason = f"n_real={n_real} < min={min_real_samples}"
-    else:
-        reason = "policy ok (synthetic-only training pending thesis-join)"
+    # Promote when:
+    # - regime is real-only OR blended (we have meaningful shadow signal), OR
+    # - synthetic-only AND n_real_gsvs exceeds the threshold (cold-start
+    #   churn: at least the shadow flow proves the system is running).
+    promote = (regime != "synthetic-only") or (n_real_gsvs >= min_real_samples)
+    reason = (
+        f"regime={regime} n_real_pairs={n_real_pairs} "
+        f"n_real_gsvs={n_real_gsvs} {join_summary}".strip()
+    )
 
     if promote and not dry_run:
         sym = latest_symlink_path(out_dir, "pattern_layer")
@@ -392,8 +430,8 @@ def refit_pattern(
     return RefitResult(
         family="pattern_layer",
         version=version,
-        n_real=n_real,
-        n_synthetic=len(pairs),
+        n_real=n_real_gsvs,
+        n_synthetic=len(pairs) - n_real_pairs,
         pkl_path=pkl_path,
         promoted=promote,
         promote_reason=reason,
@@ -468,6 +506,8 @@ def main() -> int:
         dry_run=args.dry_run,
         blend_synthetic_n=args.synthetic_n,
         seed=args.seed,
+        shadow_root=args.shadow_root,
+        date_range=(today - timedelta(days=args.window_days), today),
     )
 
     report_path = write_report(
