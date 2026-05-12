@@ -51,6 +51,7 @@ from bip.evaluation.live import (  # noqa: E402
     LiveMatchState,
     ValueDetector,
 )
+from bip.evaluation.live.engine_v3.runtime import DualWriteRuntime  # noqa: E402
 from bip.evaluation.live.pick_tracker import (  # noqa: E402
     DEFAULT_DB_PATH,
     PickTracker,
@@ -164,6 +165,7 @@ async def scan_round(
     seen_fixtures: set[int] | None = None,
     prematch_odds_seen: set[int] | None = None,
     telegram_sender: LiveAlertSender | None = None,
+    v3_runtime: DualWriteRuntime | None = None,
 ) -> tuple[int, int]:
     """One full scan round. Returns (picks_emitted, picks_new).
 
@@ -408,6 +410,19 @@ async def scan_round(
                             away_score=state.away_goals,
                         )
 
+                # ── v3 shadow dual-write (T1.3) ──────────────────────
+                # Runs asyncio.to_thread under wall-clock timeout. Any
+                # failure is captured inside the runtime — it CANNOT
+                # propagate here. v2's pick path is structurally
+                # protected: no shared state, no shared sinks.
+                if v3_runtime is not None:
+                    await v3_runtime.run_shadow(
+                        state=state,
+                        fixture=full,
+                        odds=odds,
+                        now_utc=snapshot_taken_at,
+                    )
+
             except Exception as exc:  # noqa: BLE001
                 logger.warning("scan_failed fixture=%d err=%s", f.id, exc)
                 continue
@@ -516,6 +531,18 @@ async def watch_loop(
         form_cache = TeamFormCache(
             db_path=form_db_path or DEFAULT_FORM_DB_PATH,
         )
+
+    # v3 shadow dual-write (T1.3). Runtime is constructed unconditionally
+    # but only fires when (a) env V3_SHADOW_ENABLED is truthy and (b) the
+    # kill-switch flag file is absent. Setting V3_SHADOW_ENABLED=false
+    # disables v3 immediately on the next iteration without redeploy.
+    try:
+        v3_runtime: DualWriteRuntime | None = DualWriteRuntime.from_paths()
+        print("📊 v3 shadow runtime ON (V3_SHADOW_ENABLED=false to disable)")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("v3_runtime_init_failed err=%s — v3 disabled", exc)
+        v3_runtime = None
+
     # Persistent across rounds: fixtures we've seen in-play (for FT pickup)
     # and fixtures whose pre-match odds we've already captured (one-time).
     seen_fixtures: set[int] = set()
@@ -545,13 +572,24 @@ async def watch_loop(
                 seen_fixtures=seen_fixtures,
                 prematch_odds_seen=prematch_odds_seen,
                 telegram_sender=telegram_sender,
+                v3_runtime=v3_runtime,
             )
             now = datetime.now(timezone.utc).strftime("%H:%M:%S")
             elapsed = datetime.now(timezone.utc).timestamp() - t0
+            v3_tag = ""
+            if v3_runtime is not None and v3_runtime.error_count:
+                v3_tag = f" v3_err={v3_runtime.error_count}"
             print(
                 f"[{now}] round={iteration:4} emitted={n_emit:3} "
-                f"new={n_new:3} elapsed={elapsed:.1f}s"
+                f"new={n_new:3} elapsed={elapsed:.1f}s{v3_tag}"
             )
+            # Flush v3 buffers per round so a crash leaves at most one
+            # round of un-persisted picks. Cheap (no I/O when buffers empty).
+            if v3_runtime is not None:
+                try:
+                    v3_runtime.flush()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("v3_shadow_flush_failed err=%s", exc)
         except Exception as exc:  # noqa: BLE001
             print(f"round_error iteration={iteration} err={exc}")
 
