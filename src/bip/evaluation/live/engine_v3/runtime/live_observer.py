@@ -135,6 +135,94 @@ def _format_window_label(window: WindowResult | None) -> str:
     return f"{color}{sym} {label_str.upper()}{_ansi(_RESET)}"
 
 
+def _humanize_bet(pick: ShadowPick, gsv: GameStateVector) -> str:
+    """Render a human-readable bet descriptor from family + market_id + direction.
+
+    Examples (input → output):
+      goals + match_goals_over_2.5     + over    → "GOALS  Over 2.5"
+      goals + first_half_goals_under_1.5 + under → "GOALS 1H Under 1.5"
+      corners + match_corners_over_9.5 + over    → "CORNERS Over 9.5"
+      cards + cards_over_4.5 + over              → "CARDS Over 4.5"
+      next_goal + next_goal_home + home          → "NEXT GOAL → Home"
+      btts + btts_yes + yes                      → "BTTS Yes"
+
+    Falls back to ``family/direction`` (the old format) if the
+    market_id doesn't follow a recognized pattern.
+    """
+    import re
+
+    market_id = pick.candidate.market_id
+    family = pick.full_thesis.prediction.family.value
+    direction = pick.full_thesis.prediction.direction
+
+    # Try to pull a numeric line from the market_id (e.g. 9.5, 2.5, 0.5)
+    m = re.search(r"(\d+\.?\d*)", market_id)
+    line = m.group(1) if m else None
+
+    # Period tag: 1H / 2H / FT
+    mid_lower = market_id.lower()
+    if "first_half" in mid_lower or "1h_" in mid_lower or "_1h" in mid_lower:
+        period_tag = " 1H"
+    elif "second_half" in mid_lower or "2h_" in mid_lower or "_2h" in mid_lower:
+        period_tag = " 2H"
+    else:
+        period_tag = ""
+
+    family_label = {
+        "goals":          "GOALS",
+        "corners":        "CORNERS",
+        "cards":          "CARDS",
+        "btts":           "BTTS",
+        "next_goal":      "NEXT GOAL",
+        "next_corner":    "NEXT CORNER",
+        "props":          "PROPS",
+        "result_1x2":     "1X2",
+        "double_chance":  "DBLCHC",
+        "asian_handicap": "AH",
+        "race_to_x":      "RACE",
+    }.get(family, family.upper())
+
+    direction_lower = direction.lower()
+    if family in ("next_goal", "next_corner", "result_1x2"):
+        # Direction encodes the team / outcome, not a line.
+        team_label = {
+            "home": "Home",
+            "away": "Away",
+            "draw": "Draw",
+            "no":   "No more",
+        }.get(direction_lower, direction.capitalize())
+        return f"{family_label}{period_tag} → {team_label}"
+
+    direction_word = {
+        "over":  "Over",
+        "under": "Under",
+        "yes":   "Yes",
+        "no":    "No",
+    }.get(direction_lower, direction.capitalize())
+
+    if line is not None:
+        return f"{family_label}{period_tag} {direction_word} {line}"
+    return f"{family_label}{period_tag} {direction_word}"
+
+
+def _team_label_for_pick(pick: ShadowPick, gsv: GameStateVector) -> str:
+    """For next-goal / 1X2 picks, render which team the direction maps to.
+
+    Returns an empty string for picks where the team is not relevant
+    (over/under/yes/no). Used in the formatter as a trailing parenthetical
+    so the operator never has to guess "home = which team".
+    """
+    direction = pick.full_thesis.prediction.direction.lower()
+    family = pick.full_thesis.prediction.family.value
+    if family not in ("next_goal", "next_corner", "result_1x2"):
+        return ""
+    if direction == "home":
+        return f"team={gsv.home_team_id}"
+    if direction == "away":
+        return f"team={gsv.away_team_id}"
+    return ""
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Protocol — anything that records a pick callback satisfies this.
 # ──────────────────────────────────────────────────────────────────────
@@ -213,7 +301,6 @@ def format_v3_pick(
     minute = gsv.time.minute
     score = f"{gsv.score.home_goals}-{gsv.score.away_goals}"
     archetype = pick.full_thesis.archetype.value
-    family = pick.full_thesis.prediction.family.value
     direction = pick.full_thesis.prediction.direction
     edge_pct = pick.candidate.mes.base_edge * 100
     mes = pick.candidate.mes.score
@@ -222,6 +309,11 @@ def format_v3_pick(
     edge_color = _edge_color(edge_pct)
     mes_color = _mes_color(mes)
     win_str = _format_window_label(window)
+    bet_desc = _humanize_bet(pick, gsv)
+    team_tag = _team_label_for_pick(pick, gsv)
+    team_str = (
+        f"  {_ansi(_DIM)}{team_tag}{_ansi(_RESET)}" if team_tag else ""
+    )
 
     return (
         f"{layer_tag} "
@@ -230,10 +322,11 @@ def format_v3_pick(
         f"{_ansi(_BOLD)}{score}{_ansi(_RESET)}  "
         f"{_ansi(_WHITE)}{archetype:<28}{_ansi(_RESET)}"
         f"{_ansi(_DIM)} → {_ansi(_RESET)}"
-        f"{dir_color}{family}/{direction}{_ansi(_RESET)}  "
+        f"{dir_color}{bet_desc}{_ansi(_RESET)}  "
         f"edge {edge_color}{edge_pct:+6.2f}%{_ansi(_RESET)}  "
         f"MES {mes_color}{mes:.2f}{_ansi(_RESET)}  "
         f"{win_str}"
+        f"{team_str}"
     )
 
 
