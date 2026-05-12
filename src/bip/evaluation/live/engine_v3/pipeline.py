@@ -32,6 +32,10 @@ from bip.evaluation.live.engine_v3.conditional_predictor import (
     ConditionalPredictor,
     make_fair_prob_provider,
 )
+from bip.evaluation.live.engine_v3.pattern_layer import (
+    PatternLayer,
+    generate_theses_hybrid,
+)
 from bip.evaluation.live.engine_v3.gsv import (
     CriticalEvent,
     GameStateVector,
@@ -110,6 +114,7 @@ class V3Pipeline:
         conditional_predictor: ConditionalPredictor | None = None,
         tier_promoter: "TierDPromoter | None" = None,
         ood_detector: OODDetector | None = None,
+        pattern_layer: PatternLayer | None = None,
         mispricing_window_cfg: MispricingWindowConfig | None = None,
         mes_threshold: float = 0.6,
         target_stake: float = 100.0,
@@ -122,6 +127,7 @@ class V3Pipeline:
         self.predictor = conditional_predictor or ConditionalPredictor.default()
         self.tier_promoter = tier_promoter
         self.ood_detector = ood_detector
+        self.pattern_layer = pattern_layer
         self.mispricing_window_cfg = mispricing_window_cfg or MispricingWindowConfig()
         self.mes_threshold = mes_threshold
         self.target_stake = target_stake
@@ -153,7 +159,14 @@ class V3Pipeline:
             last_critical_event_age_sec=last_critical_event_age_sec,
             now_utc=now_utc,
         )
-        theses = generate_theses(gsv)
+        if self.pattern_layer is not None and self.pattern_layer.is_fitted:
+            theses = generate_theses_hybrid(
+                gsv,
+                pattern_layer=self.pattern_layer,
+                ood_detector=self.ood_detector,
+            )
+        else:
+            theses = generate_theses(gsv)
         provider = make_fair_prob_provider(self.predictor)
         candidates = select_markets(
             theses, gsv, provider,

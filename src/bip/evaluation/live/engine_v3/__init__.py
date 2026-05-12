@@ -60,6 +60,13 @@ from bip.evaluation.live.engine_v3.no_bet_gate import (
     run_gate,
 )
 from bip.evaluation.live.engine_v3.ood_detector import OODDetector, vectorize_gsv
+from bip.evaluation.live.engine_v3.pattern_layer import (
+    PatternLayer,
+    PatternLayerConfig,
+    PatternRecord,
+    generate_theses_hybrid,
+    merge_theses,
+)
 from bip.evaluation.live.engine_v3.pipeline import (
     PipelineOutput,
     ShadowPick,
@@ -105,6 +112,9 @@ __all__ = [
     "NoBetVerdict",
     "NumericalState",
     "OODDetector",
+    "PatternLayer",
+    "PatternLayerConfig",
+    "PatternRecord",
     "PipelineOutput",
     "PreMatchPriors",
     "PredictionPoint",
@@ -128,6 +138,8 @@ __all__ = [
     "compute_mes",
     "family_for_market_id",
     "generate_theses",
+    "generate_theses_hybrid",
+    "merge_theses",
     "run_gate",
     "select_markets",
     "vectorize_gsv",
