@@ -19,6 +19,11 @@ from dataclasses import dataclass
 
 from bip.evaluation.live.engine_v3.gsv import GameStateVector
 from bip.evaluation.live.engine_v3.market_selector import MarketCandidate
+from bip.evaluation.live.engine_v3.mispricing_window import (
+    MispricingWindowConfig,
+    WindowResult,
+    classify_gsv,
+)
 from bip.evaluation.live.engine_v3.ood_detector import OODDetector
 from bip.evaluation.live.engine_v3.thesis import (
     Thesis,
@@ -162,6 +167,33 @@ def rule_8_predictive_uncertainty(candidate: MarketCandidate,
     return NoBetVerdict.ok()
 
 
+def rule_10_mispricing_window(
+    candidate: MarketCandidate,
+    window: WindowResult,
+    cfg: MispricingWindowConfig,
+) -> NoBetVerdict:
+    """#10 — Mispricing window enforcement (principle #3 of the design doc).
+
+    When the window is COLD (>600s since last critical event) AND the
+    base edge is below ``cfg.cold_edge_threshold``, abort. The book has
+    had ample time to adjust; persistent small edge in this window is
+    model noise, not real mispricing.
+
+    HOT, OPTIMAL, WARM, INDEFINITE windows pass — only COLD with weak
+    edge dies here.
+    """
+    if not window.is_cold:
+        return NoBetVerdict.ok()
+    edge = candidate.mes.base_edge
+    if edge < cfg.cold_edge_threshold:
+        return NoBetVerdict.deny(
+            10,
+            f"COLD window (age {window.age_sec:.0f}s) + edge "
+            f"{edge:.3f} < cold-threshold {cfg.cold_edge_threshold:.3f}",
+        )
+    return NoBetVerdict.ok()
+
+
 def rule_9_ood_detector(
     gsv: GameStateVector,
     detector: OODDetector | None,
@@ -209,8 +241,9 @@ def run_gate(
     commentary_required: bool = False,
     uncertainty_band: float = 0.08,
     ood_detector: OODDetector | None = None,
+    mispricing_window_cfg: MispricingWindowConfig | None = None,
 ) -> list[GateResult]:
-    """Run the 9 rules against each candidate.
+    """Run the 10 rules against each candidate.
 
     Returns one ``GateResult`` per candidate; callers filter by
     ``r.verdict.allowed``. Even denied results are returned (with their
@@ -220,6 +253,10 @@ def run_gate(
     Rule 9 (OOD) is global to the GSV — it would emit the same verdict
     for every candidate at this state — so we short-circuit on it first
     when the detector is fitted and the state is OOD.
+
+    Rule 10 (mispricing window) is per-candidate (it inspects the
+    candidate's base_edge against a window-dependent threshold) but
+    the window classification itself is GSV-level, computed once.
     """
     # Rule 1 is global (applies once). If no theses, every candidate is denied
     # against rule 1; we short-circuit to one verdict per candidate.
@@ -233,6 +270,8 @@ def run_gate(
     ood_verdict = rule_9_ood_detector(gsv, ood_detector)
     if not ood_verdict.allowed:
         return [GateResult(candidate=c, verdict=ood_verdict) for c in candidates]
+    win_cfg = mispricing_window_cfg or MispricingWindowConfig()
+    window = classify_gsv(gsv, win_cfg)
     out: list[GateResult] = []
     for c in candidates:
         for verdict in (
@@ -243,6 +282,7 @@ def run_gate(
             rule_6_commentary_lag(c, gsv, commentary_required),
             rule_7_liquidity_gate(c),
             rule_8_predictive_uncertainty(c, uncertainty_band),
+            rule_10_mispricing_window(c, window, win_cfg),
         ):
             if not verdict.allowed:
                 out.append(GateResult(candidate=c, verdict=verdict))
@@ -269,5 +309,6 @@ __all__ = [
     "rule_7_liquidity_gate",
     "rule_8_predictive_uncertainty",
     "rule_9_ood_detector",
+    "rule_10_mispricing_window",
     "run_gate",
 ]

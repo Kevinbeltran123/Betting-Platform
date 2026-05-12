@@ -43,6 +43,11 @@ from bip.evaluation.live.engine_v3.market_selector import (
     MarketCandidate,
     select_markets,
 )
+from bip.evaluation.live.engine_v3.mispricing_window import (
+    MispricingWindowConfig,
+    WindowResult,
+    classify_gsv,
+)
 from bip.evaluation.live.engine_v3.no_bet_gate import GateResult, run_gate
 from bip.evaluation.live.engine_v3.ood_detector import OODDetector
 from bip.evaluation.live.engine_v3.thesis import Thesis
@@ -91,6 +96,7 @@ class PipelineOutput:
     gate_results: list[GateResult]
     allowed_picks: list[ShadowPick]
     promoted_picks: list = field(default_factory=list)
+    mispricing_window: WindowResult | None = None
 
 
 class V3Pipeline:
@@ -104,6 +110,7 @@ class V3Pipeline:
         conditional_predictor: ConditionalPredictor | None = None,
         tier_promoter: "TierDPromoter | None" = None,
         ood_detector: OODDetector | None = None,
+        mispricing_window_cfg: MispricingWindowConfig | None = None,
         mes_threshold: float = 0.6,
         target_stake: float = 100.0,
         line_max_age_sec: float = 60.0,
@@ -115,6 +122,7 @@ class V3Pipeline:
         self.predictor = conditional_predictor or ConditionalPredictor.default()
         self.tier_promoter = tier_promoter
         self.ood_detector = ood_detector
+        self.mispricing_window_cfg = mispricing_window_cfg or MispricingWindowConfig()
         self.mes_threshold = mes_threshold
         self.target_stake = target_stake
         self.line_max_age_sec = line_max_age_sec
@@ -160,7 +168,9 @@ class V3Pipeline:
             commentary_required=self.commentary_required,
             uncertainty_band=self.uncertainty_band,
             ood_detector=self.ood_detector,
+            mispricing_window_cfg=self.mispricing_window_cfg,
         )
+        window = classify_gsv(gsv, self.mispricing_window_cfg)
         allowed = [
             ShadowPick(
                 fixture_id=gsv.fixture_id,
@@ -184,6 +194,7 @@ class V3Pipeline:
             gate_results=gate_results,
             allowed_picks=allowed,
             promoted_picks=promoted,
+            mispricing_window=window,
         )
 
 

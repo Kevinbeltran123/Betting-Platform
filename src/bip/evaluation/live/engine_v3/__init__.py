@@ -46,6 +46,13 @@ from bip.evaluation.live.engine_v3.market_selector import (
     select_markets,
 )
 from bip.evaluation.live.engine_v3.mes import MESResult, compute_mes
+from bip.evaluation.live.engine_v3.mispricing_window import (
+    MispricingWindowConfig,
+    WindowLabel,
+    WindowResult,
+    classify as classify_window,
+    classify_gsv as classify_window_gsv,
+)
 from bip.evaluation.live.engine_v3.no_bet_gate import (
     GateResult,
     NoBetVerdict,
@@ -94,6 +101,7 @@ __all__ = [
     "MarketFamily",
     "MarketLine",
     "MarketSnapshot",
+    "MispricingWindowConfig",
     "NoBetVerdict",
     "NumericalState",
     "OODDetector",
@@ -111,8 +119,12 @@ __all__ = [
     "TimeState",
     "TimeWindow",
     "V3Pipeline",
+    "WindowLabel",
+    "WindowResult",
     "XGState",
     "allowed_candidates",
+    "classify_window",
+    "classify_window_gsv",
     "compute_mes",
     "family_for_market_id",
     "generate_theses",
