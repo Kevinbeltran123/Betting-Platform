@@ -15,6 +15,7 @@ Usage::
     for pick in out.allowed_picks:
         log.info("v3 shadow pick: %s", pick)
 """
+
 from bip.evaluation.live.engine_v3.archetypes import generate_theses
 from bip.evaluation.live.engine_v3.conditional_predictor import (
     ConditionalPredictor,
@@ -39,6 +40,13 @@ from bip.evaluation.live.engine_v3.gsv import (
     XGState,
 )
 from bip.evaluation.live.engine_v3.gsv_builder import GSVBuilder
+from bip.evaluation.live.engine_v3.kill_criteria import (
+    KILL_CRITERIA_VERSION,
+    CohortMetrics,
+    CohortStage,
+    KillVerdict,
+    evaluate_cohort,
+)
 from bip.evaluation.live.engine_v3.line_recorder import LineRecorder
 from bip.evaluation.live.engine_v3.market_selector import (
     MarketCandidate,
@@ -50,7 +58,11 @@ from bip.evaluation.live.engine_v3.mispricing_window import (
     MispricingWindowConfig,
     WindowLabel,
     WindowResult,
+)
+from bip.evaluation.live.engine_v3.mispricing_window import (
     classify as classify_window,
+)
+from bip.evaluation.live.engine_v3.mispricing_window import (
     classify_gsv as classify_window_gsv,
 )
 from bip.evaluation.live.engine_v3.no_bet_gate import (
@@ -90,6 +102,8 @@ __all__ = [
     "CardsState",
     "CausalChain",
     "CausalStep",
+    "CohortMetrics",
+    "CohortStage",
     "ConditionalPredictor",
     "ConditionalShift",
     "CornerState",
@@ -102,6 +116,8 @@ __all__ = [
     "GateResult",
     "Goals2HPredictor",
     "InvalidationTrigger",
+    "KILL_CRITERIA_VERSION",
+    "KillVerdict",
     "LineRecorder",
     "MESResult",
     "MarketCandidate",
@@ -136,6 +152,7 @@ __all__ = [
     "classify_window",
     "classify_window_gsv",
     "compute_mes",
+    "evaluate_cohort",
     "family_for_market_id",
     "generate_theses",
     "generate_theses_hybrid",
