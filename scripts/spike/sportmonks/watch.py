@@ -536,9 +536,33 @@ async def watch_loop(
     # but only fires when (a) env V3_SHADOW_ENABLED is truthy and (b) the
     # kill-switch flag file is absent. Setting V3_SHADOW_ENABLED=false
     # disables v3 immediately on the next iteration without redeploy.
+    #
+    # Live observer: env var V3_LIVE_OBSERVE=true turns on real-time
+    # stdout/file output of v3 picks. Optional V3_LIVE_OBSERVE_LOG=PATH
+    # writes to a file for `tail -f` from a second terminal. Default
+    # NullObserver = silent (shadow-only).
     try:
-        v3_runtime: DualWriteRuntime | None = DualWriteRuntime.from_paths()
-        print("📊 v3 shadow runtime ON (V3_SHADOW_ENABLED=false to disable)")
+        from bip.evaluation.live.engine_v3.runtime.live_observer import (
+            FileObserver,
+            build_observer_from_env,
+        )
+        observer = build_observer_from_env()
+        v3_runtime: DualWriteRuntime | None = DualWriteRuntime.from_paths(
+            observer=observer,
+        )
+        observer_kind = type(observer).__name__
+        if observer_kind == "NullObserver":
+            print("📊 v3 shadow runtime ON (V3_SHADOW_ENABLED=false to disable)")
+        elif isinstance(observer, FileObserver):
+            print(
+                f"📊 v3 shadow runtime ON · live observer → {observer.path} "
+                f"(tail -f from another terminal)"
+            )
+        else:
+            print(
+                "📊 v3 shadow runtime ON · live observer → stdout "
+                "(V3_LIVE_OBSERVE=false to silence)"
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning("v3_runtime_init_failed err=%s — v3 disabled", exc)
         v3_runtime = None

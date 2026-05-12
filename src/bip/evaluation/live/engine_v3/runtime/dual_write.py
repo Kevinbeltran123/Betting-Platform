@@ -82,6 +82,10 @@ from bip.evaluation.live.engine_v3 import (
     ShadowLogger,
     V3Pipeline,
 )
+from bip.evaluation.live.engine_v3.runtime.live_observer import (
+    LivePickObserver,
+    NullObserver,
+)
 from bip.evaluation.live.engine_v3.shadow_logger import DEFAULT_SHADOW_ROOT
 from bip.evaluation.live.match_state import LiveMatchState
 
@@ -260,6 +264,7 @@ class DualWriteRuntime:
     timeout_sec: float = DEFAULT_V3_TIMEOUT_SEC
     kill_switch_path: Path = DEFAULT_KILL_SWITCH_PATH
     env_var: str = "V3_SHADOW_ENABLED"
+    observer: LivePickObserver = field(default_factory=NullObserver)
     error_count: int = 0
     success_count: int = 0
     skip_count: int = 0
@@ -274,6 +279,7 @@ class DualWriteRuntime:
         kill_switch_path: Path | None = None,
         timeout_sec: float = DEFAULT_V3_TIMEOUT_SEC,
         env_var: str = "V3_SHADOW_ENABLED",
+        observer: LivePickObserver | None = None,
     ) -> DualWriteRuntime:
         """Build a runtime with detectors loaded from disk.
 
@@ -312,6 +318,7 @@ class DualWriteRuntime:
             timeout_sec=timeout_sec,
             kill_switch_path=kill_switch_path or (shadow_root / "v3_kill_switch.flag"),
             env_var=env_var,
+            observer=observer or NullObserver(),
         )
 
     async def run_shadow(
@@ -382,6 +389,19 @@ class DualWriteRuntime:
                 now_utc=now_utc,
             )
             self.logger.record(out)
+            # Live observer: surface allowed picks to the operator's
+            # terminal/log in real time. Observers are side-effect-only
+            # and MUST NOT raise — we catch defensively so a formatter
+            # bug never propagates into the v3 critical path.
+            if out is not None and out.allowed_picks:
+                for pick in out.allowed_picks:
+                    try:
+                        self.observer.on_pick(pick, out.gsv, out.mispricing_window)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "v3_observer_error reason=%s",
+                            type(exc).__name__,
+                        )
             return out
 
     def flush(self) -> dict[str, Path]:

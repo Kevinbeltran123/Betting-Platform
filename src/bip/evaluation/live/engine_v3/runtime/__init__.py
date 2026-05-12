@@ -32,6 +32,14 @@ from bip.evaluation.live.engine_v3.runtime.dual_write import (
     is_v3_kill_switch_engaged,
     is_v3_shadow_enabled,
 )
+from bip.evaluation.live.engine_v3.runtime.live_observer import (
+    FileObserver,
+    LivePickObserver,
+    NullObserver,
+    StdoutObserver,
+    build_observer_from_env,
+    format_v3_pick,
+)
 from bip.evaluation.live.engine_v3.runtime.refit_scheduler import (
     RefitJob,
     register_refit_job,
@@ -51,11 +59,17 @@ __all__ = [
     "DEFAULT_REPORT_ROOT",
     "DEFAULT_V3_TIMEOUT_SEC",
     "DualWriteRuntime",
+    "FileObserver",
     "JoinReport",
+    "LivePickObserver",
+    "NullObserver",
     "RealPatternPair",
     "RefitJob",
+    "StdoutObserver",
     "assign_cohort_stage",
+    "build_observer_from_env",
     "build_real_pattern_pairs",
+    "format_v3_pick",
     "build_cohort_metrics",
     "engage_kill_switch",
     "is_v3_kill_switch_engaged",
