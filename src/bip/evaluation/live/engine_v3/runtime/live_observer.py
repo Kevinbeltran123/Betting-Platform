@@ -49,6 +49,93 @@ from bip.evaluation.live.engine_v3.pipeline import ShadowPick
 
 
 # ──────────────────────────────────────────────────────────────────────
+# ANSI helpers — colored terminal output
+# ──────────────────────────────────────────────────────────────────────
+
+
+_RESET = "0"
+_BOLD = "1"
+_DIM = "2"
+_RED = "31"
+_GREEN = "32"
+_YELLOW = "33"
+_BLUE = "34"
+_MAGENTA = "35"
+_CYAN = "36"
+_WHITE = "37"
+_GREY = "90"
+
+
+def _ansi(*codes: str) -> str:
+    """Build an ANSI escape sequence. Respects NO_COLOR env convention
+    (https://no-color.org): when NO_COLOR is set + non-empty, returns
+    empty string so terminals without color support stay clean.
+    """
+    if os.getenv("NO_COLOR"):
+        return ""
+    if not codes:
+        return ""
+    return f"\033[{';'.join(codes)}m"
+
+
+def _direction_color(direction: str) -> str:
+    """Bias color: green for 'something happens', red for 'no-action',
+    blue for outcome picks. Helps the operator spot 'Under/No' picks
+    (the old v2 bias) at a glance vs over/yes (v3 should diversify)."""
+    d = direction.lower()
+    if d in {"over", "yes"}:
+        return _ansi(_GREEN)
+    if d in {"under", "no"}:
+        return _ansi(_RED)
+    return _ansi(_BLUE)
+
+
+def _edge_color(edge_pct: float) -> str:
+    """Edge gradient: green for healthy, bold-green for high, RED+bold
+    for SUSPICIOUSLY high (>15% almost always means mispricing in our
+    favor OR calibration error against us — operator should audit)."""
+    if edge_pct < 0:
+        return _ansi(_DIM, _RED)
+    if edge_pct < 3:
+        return _ansi(_DIM)
+    if edge_pct < 7:
+        return _ansi(_GREEN)
+    if edge_pct < 15:
+        return _ansi(_BOLD, _GREEN)
+    return _ansi(_BOLD, _RED)  # suspicious — audit
+
+
+def _mes_color(mes: float) -> str:
+    """MES gradient: yellow at threshold, green when generous."""
+    if mes < 0.6:
+        return _ansi(_RED)
+    if mes < 0.75:
+        return _ansi(_YELLOW)
+    return _ansi(_BOLD, _GREEN)
+
+
+_WINDOW_GLYPHS: dict[str, tuple[str, str]] = {
+    "hot":        ("●", _ansi(_BOLD, _RED)),
+    "optimal":    ("◯", _ansi(_BOLD, _GREEN)),
+    "warm":       ("◇", _ansi(_YELLOW)),
+    "cold":       ("✕", _ansi(_DIM)),
+    "indefinite": ("?", _ansi(_DIM)),
+}
+
+
+def _format_window_label(window: WindowResult | None) -> str:
+    if window is None:
+        return f"{_ansi(_DIM)}---{_ansi(_RESET)}"
+    label_str = (
+        window.label.value
+        if hasattr(window.label, "value")
+        else str(window.label)
+    )
+    sym, color = _WINDOW_GLYPHS.get(label_str.lower(), ("?", _ansi(_DIM)))
+    return f"{color}{sym} {label_str.upper()}{_ansi(_RESET)}"
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Protocol — anything that records a pick callback satisfies this.
 # ──────────────────────────────────────────────────────────────────────
 
@@ -114,21 +201,39 @@ def format_v3_pick(
     - ``gsv.tactical.game_phase`` (str: "cagey_closed"/"open_attacking"/etc)
     - ``window.label`` (str: "HOT"/"OPTIMAL"/"WARM"/"COLD"/"INDEFINITE")
     """
-    # TODO (operator): customize this format to your live-jornada needs.
-    # The default below is intentionally minimal. Replace it.
+    # Operator-customized aesthetic colored output. ANSI 16-color palette
+    # (works on any modern terminal). To disable colors set NO_COLOR=1 in
+    # environment — _ansi() returns empty strings under that convention.
+    layer = pick.full_thesis.source.layer
+    layer_tag = (
+        f"{_ansi(_BOLD, _CYAN)}[R]{_ansi(_RESET)}"
+        if layer == "rule"
+        else f"{_ansi(_BOLD, _MAGENTA)}[P]{_ansi(_RESET)}"
+    )
     minute = gsv.time.minute
     score = f"{gsv.score.home_goals}-{gsv.score.away_goals}"
     archetype = pick.full_thesis.archetype.value
-    layer = pick.full_thesis.source.layer
     family = pick.full_thesis.prediction.family.value
     direction = pick.full_thesis.prediction.direction
-    edge = pick.candidate.mes.base_edge * 100  # percent
+    edge_pct = pick.candidate.mes.base_edge * 100
     mes = pick.candidate.mes.score
-    win = window.label if window is not None else "?"
+
+    dir_color = _direction_color(direction)
+    edge_color = _edge_color(edge_pct)
+    mes_color = _mes_color(mes)
+    win_str = _format_window_label(window)
+
     return (
-        f"[{layer}] fid={pick.fixture_id} min={minute:>2d} {score} "
-        f"{archetype:<25} → {family}/{direction} "
-        f"edge={edge:+.2f}% MES={mes:.2f} win={win}"
+        f"{layer_tag} "
+        f"{_ansi(_DIM)}fid={pick.fixture_id}{_ansi(_RESET)} "
+        f"{_ansi(_BOLD, _YELLOW)}{minute:>3d}'{_ansi(_RESET)} "
+        f"{_ansi(_BOLD)}{score}{_ansi(_RESET)}  "
+        f"{_ansi(_WHITE)}{archetype:<28}{_ansi(_RESET)}"
+        f"{_ansi(_DIM)} → {_ansi(_RESET)}"
+        f"{dir_color}{family}/{direction}{_ansi(_RESET)}  "
+        f"edge {edge_color}{edge_pct:+6.2f}%{_ansi(_RESET)}  "
+        f"MES {mes_color}{mes:.2f}{_ansi(_RESET)}  "
+        f"{win_str}"
     )
 
 
