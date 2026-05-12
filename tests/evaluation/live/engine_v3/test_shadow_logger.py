@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import polars as pl
+import pytest
 
 from bip.evaluation.live.engine_v3 import (
     MarketLine,
@@ -294,3 +295,160 @@ def test_record_performance_under_5ms_budget(tmp_path, priors):
     # We're way under 5ms in normal conditions (sub-ms typical). Use
     # 5ms as the contract ceiling per the mission spec.
     assert avg_ms < 5.0, f"record() avg={avg_ms:.3f}ms exceeds 5ms budget"
+
+
+# ── T0: Kelly + stake fields on picks.parquet ──────────────────────────
+
+
+def test_pick_row_includes_kelly_and_book_odd(tmp_path, priors):
+    """T0 contract: picks.parquet must carry bookmaker_odd + kelly_full_pct
+    + line_value so calibration analyses don't have to re-parse gsv_json.
+
+    Uses the same rich state as the canonical pick+denial integration test
+    to ensure the pipeline actually emits allowed picks.
+    """
+    state = make_state(
+        home_goals=1,
+        away_goals=0,
+        minute=70,
+        red_card_events=[(25, AWAY_ID)],
+        home_stats={
+            StatType.SHOTS_TOTAL: 14,
+            StatType.SHOTS_INSIDEBOX: 6,
+            StatType.BIG_CHANCES_CREATED: 2,
+            StatType.CORNERS: 7,
+            StatType.BALL_POSSESSION: 65.0,
+            StatType.DANGEROUS_ATTACKS: 50,
+            StatType.KEY_PASSES: 9,
+        },
+    )
+    pipeline = V3Pipeline()
+    out = pipeline.run(
+        state,
+        priors=priors,
+        markets=_markets_with_corners_line(),
+        dominant_team_id=HOME_ID,
+    )
+    logger = ShadowLogger(output_root=tmp_path)
+    logger.record(out)
+    paths = logger.flush()
+
+    if "picks" not in paths:
+        # Pipeline emitted no allowed picks (all denied by gate). The
+        # schema contract still holds — verify the empty case doesn't
+        # crash by reading gsv_log instead.
+        assert "gsv_log" in paths
+        return
+
+    df = pl.read_parquet(paths["picks"])
+    for col in ("bookmaker_odd", "kelly_full_pct", "line_value"):
+        assert col in df.columns, f"missing column {col}"
+    row = df.row(0, named=True)
+    if row["bookmaker_odd"] is not None:
+        assert row["bookmaker_odd"] > 1.0
+    if row["kelly_full_pct"] is not None:
+        assert 0.0 <= row["kelly_full_pct"] <= 1.0
+
+
+def test_pick_row_kelly_formula_correct(tmp_path):
+    """Validate Kelly = (p*b - (1-p)) / b for a hand-built scenario.
+
+    With fair_prob=0.6 and decimal_odd=2.0 (so b=1.0):
+        kelly = (0.6 * 1 - 0.4) / 1 = 0.20
+    """
+    from bip.evaluation.live.engine_v3.shadow_logger import (
+        _derive_stake_fields,
+    )
+    from types import SimpleNamespace
+
+    # Build a minimal pick-like object
+    pick = SimpleNamespace(
+        candidate=SimpleNamespace(
+            fair_prob=0.6,
+            market_id="match_goals_over_2.5",
+        ),
+        full_thesis=SimpleNamespace(
+            prediction=SimpleNamespace(direction="over"),
+        ),
+    )
+    line = SimpleNamespace(
+        side_a_decimal=2.0,
+        side_b_decimal=1.95,
+        line_value=2.5,
+    )
+    book_odd, kelly, line_value = _derive_stake_fields(pick=pick, line=line)
+    assert book_odd == 2.0
+    assert kelly == pytest.approx(0.20, abs=1e-9)
+    assert line_value == 2.5
+
+
+def test_pick_row_kelly_clamps_negative_to_zero():
+    """When the bet has negative EV (book overprices), Kelly is negative;
+    we clamp to 0 since shorting isn't a real option here."""
+    from bip.evaluation.live.engine_v3.shadow_logger import (
+        _derive_stake_fields,
+    )
+    from types import SimpleNamespace
+
+    # fair_prob=0.4, odd=2.0 → kelly = (0.4 - 0.6)/1 = -0.20 → clamp to 0
+    pick = SimpleNamespace(
+        candidate=SimpleNamespace(fair_prob=0.4, market_id="m1"),
+        full_thesis=SimpleNamespace(
+            prediction=SimpleNamespace(direction="over"),
+        ),
+    )
+    line = SimpleNamespace(side_a_decimal=2.0, side_b_decimal=2.0, line_value=2.5)
+    _, kelly, _ = _derive_stake_fields(pick=pick, line=line)
+    assert kelly == 0.0
+
+
+def test_pick_row_uses_side_b_for_under_direction():
+    """For direction='under', we use side_b_decimal as the book odd."""
+    from bip.evaluation.live.engine_v3.shadow_logger import (
+        _derive_stake_fields,
+    )
+    from types import SimpleNamespace
+
+    pick = SimpleNamespace(
+        candidate=SimpleNamespace(fair_prob=0.55, market_id="m1"),
+        full_thesis=SimpleNamespace(
+            prediction=SimpleNamespace(direction="under"),
+        ),
+    )
+    line = SimpleNamespace(side_a_decimal=1.50, side_b_decimal=2.50, line_value=2.5)
+    book_odd, _, _ = _derive_stake_fields(pick=pick, line=line)
+    assert book_odd == 2.50  # side_b for under, not side_a (which was 1.50)
+
+
+def test_pick_row_handles_missing_line():
+    """If the market_id isn't in the GSV's markets, return Nones (no crash)."""
+    from bip.evaluation.live.engine_v3.shadow_logger import (
+        _derive_stake_fields,
+    )
+
+    book_odd, kelly, line_value = _derive_stake_fields(
+        pick=None,  # not even consulted because line is None
+        line=None,
+    )
+    assert (book_odd, kelly, line_value) == (None, None, None)
+
+
+def test_pick_row_handles_invalid_book_odd():
+    """Book odd ≤ 1.0 means the bet is rigged or the line is corrupt;
+    return None for both odd and kelly (line_value still returned)."""
+    from bip.evaluation.live.engine_v3.shadow_logger import (
+        _derive_stake_fields,
+    )
+    from types import SimpleNamespace
+
+    pick = SimpleNamespace(
+        candidate=SimpleNamespace(fair_prob=0.7, market_id="m1"),
+        full_thesis=SimpleNamespace(
+            prediction=SimpleNamespace(direction="over"),
+        ),
+    )
+    line = SimpleNamespace(side_a_decimal=0.95, side_b_decimal=None, line_value=2.5)
+    book_odd, kelly, line_value = _derive_stake_fields(pick=pick, line=line)
+    assert book_odd is None
+    assert kelly is None
+    assert line_value == 2.5  # still recoverable

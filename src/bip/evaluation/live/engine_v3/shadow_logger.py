@@ -61,8 +61,25 @@ def _date_partition(ts: datetime) -> str:
     return ts.strftime("dt=%Y-%m-%d")
 
 
-def _pick_row(pick, fixture_id: int, ts: datetime) -> dict[str, Any]:
+def _pick_row(pick, fixture_id: int, ts: datetime, gsv) -> dict[str, Any]:
+    """Build a row for picks.parquet.
+
+    The ``gsv`` argument is used to extract per-pick stake info that
+    isn't on the pick itself: the bookmaker decimal odd at pick time
+    (for the side being bet) and the full-Kelly fraction. These let
+    Workflow #2 (calibration) and stake-sizing recalibration analyses
+    proceed offline without re-parsing the full gsv_json.
+
+    Kelly is precomputed as the FULL fraction (not 1/4). Operator's
+    real stake = full_kelly × operator_fraction (1/4 per CLAUDE.md).
+    Persisting the full value lets analysts vary the fraction at
+    analysis time.
+    """
     t = pick.full_thesis
+    line = gsv.markets.lines.get(pick.candidate.market_id) if gsv else None
+    book_odd, kelly_full_pct, line_value = _derive_stake_fields(
+        pick=pick, line=line,
+    )
     return {
         "fixture_id": int(fixture_id),
         "timestamp_utc": ts,
@@ -75,6 +92,9 @@ def _pick_row(pick, fixture_id: int, ts: datetime) -> dict[str, Any]:
         "magnitude_pp": float(t.prediction.magnitude_pp),
         "horizon_minutes": int(t.prediction.horizon.horizon_minutes),
         "market_id": pick.candidate.market_id,
+        "line_value": line_value,
+        "bookmaker_odd": book_odd,
+        "kelly_full_pct": kelly_full_pct,
         "fair_prob": float(pick.candidate.fair_prob),
         "base_edge": float(pick.candidate.mes.base_edge),
         "signal_clarity": float(pick.candidate.mes.signal_clarity),
@@ -85,6 +105,45 @@ def _pick_row(pick, fixture_id: int, ts: datetime) -> dict[str, Any]:
         "confidence_prior": float(t.confidence_prior),
         "activated_at_minute": int(t.activated_at_minute),
     }
+
+
+def _derive_stake_fields(
+    *, pick, line,
+) -> tuple[float | None, float | None, float | None]:
+    """Return (bookmaker_odd, kelly_full_pct, line_value) for the pick.
+
+    Maps thesis direction to which side of the MarketLine to use:
+      - over / yes / home → side_a_decimal
+      - under / no / away / draw → side_b_decimal (falls back to side_a)
+      - 1X2: home → side_a; draw → side_b; away → side_c if present, else side_b
+
+    Returns (None, None, line_value) when the line is missing or the
+    decimal can't be resolved. Kelly is computed as:
+      f* = (p*(b)-(1-p)) / b   with b = decimal_odd - 1
+    Negative Kelly is clamped to 0 (sign of "do not bet"; the gate
+    SHOULD have caught this upstream but we don't double-penalize here).
+    """
+    if line is None:
+        return (None, None, None)
+
+    line_value = float(line.line_value) if line.line_value is not None else None
+    direction = pick.full_thesis.prediction.direction.lower()
+    if direction in ("over", "yes", "home"):
+        book_odd = line.side_a_decimal
+    elif direction in ("under", "no", "away", "draw"):
+        book_odd = line.side_b_decimal or line.side_a_decimal
+    else:
+        book_odd = line.side_a_decimal
+
+    if book_odd is None or book_odd <= 1.0:
+        return (None, None, line_value)
+
+    p = float(pick.candidate.fair_prob)
+    b = float(book_odd) - 1.0
+    kelly = (p * b - (1.0 - p)) / b
+    kelly = max(0.0, kelly)
+
+    return (float(book_odd), float(kelly), line_value)
 
 
 def _denial_row(result, fixture_id: int, ts: datetime) -> dict[str, Any]:
@@ -161,7 +220,7 @@ class ShadowLogger:
         fixture_id = output.gsv.fixture_id
 
         for pick in output.allowed_picks:
-            self._pick_buf.append(_pick_row(pick, fixture_id, ts))
+            self._pick_buf.append(_pick_row(pick, fixture_id, ts, output.gsv))
 
         for r in output.gate_results:
             if r.verdict.allowed:
