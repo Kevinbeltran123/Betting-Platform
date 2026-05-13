@@ -118,7 +118,7 @@ class V3Pipeline:
         mispricing_window_cfg: MispricingWindowConfig | None = None,
         mes_threshold: float = 0.6,
         target_stake: float = 100.0,
-        line_max_age_sec: float = 60.0,
+        line_max_age_sec: float = 300.0,
         commentary_required: bool = False,
         uncertainty_band: float = 0.08,
         top_k_per_thesis: int = 3,

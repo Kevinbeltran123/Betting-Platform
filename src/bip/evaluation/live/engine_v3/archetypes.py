@@ -299,9 +299,12 @@ def detect_lead_two_defensive_sub(gsv: GameStateVector) -> Thesis | None:
 
 
 def detect_regression_to_xg(gsv: GameStateVector) -> Thesis | None:
+    # xG-diff threshold lowered 1.5 → 0.7 (= empirical p90 of tied-60'
+    # frames in Papers/V3_DAY3_DIAGNOSIS.md). 1.5 captured only 2/151
+    # frames in Day-3 (>p90 outliers); 0.7 captures the right tail.
     if gsv.score.goal_diff != 0 or gsv.time.minute < 60:
         return None
-    if abs(gsv.xg.xg_diff) < 1.5:
+    if abs(gsv.xg.xg_diff) < 0.7:
         return None
     high_xg_home = gsv.xg.xg_diff > 0
     return _mk_thesis(
@@ -312,7 +315,7 @@ def detect_regression_to_xg(gsv: GameStateVector) -> Thesis | None:
             GSVPredicate(path="score.goal_diff", op="eq", value=0),
             GSVPredicate(path="time.minute", op="ge", value=60),
             GSVPredicate(path="xg.xg_diff", op="gt" if high_xg_home else "lt",
-                         value=1.5 if high_xg_home else -1.5),
+                         value=0.7 if high_xg_home else -0.7),
         ],
         chain=[
             CausalStep(

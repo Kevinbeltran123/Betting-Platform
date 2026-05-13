@@ -191,7 +191,17 @@ def liquidity_score(line: MarketLine, target_stake: float) -> float:
     equivalent). A liquidity_score of 0 = market is closed or capped
     below 50% of target stake (rule #7 hard gate). A score of 1.0 = the
     cap is at least 4× the target (full liquidity, irrelevant cap).
+
+    Phase-1 placeholder contract: when ``max_stake_cap == 1.0`` exactly,
+    the line came from ``dual_write.market_snapshot_from_odds`` which
+    hard-codes 1.0 because the Sportmonks feed does not emit caps. That
+    placeholder must NOT collide with the USD-vs-USD comparison below
+    (which would zero every MES — see Papers/V3_DAY3_DIAGNOSIS.md). We
+    treat it as full liquidity until Phase 2 wires real caps; any cap
+    value ≠ 1.0 still goes through the schedule.
     """
+    if line.max_stake_cap == 1.0:
+        return 1.0
     cap = max(0.0, line.max_stake_cap)
     if cap < 0.5 * target_stake:
         return 0.0

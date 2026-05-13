@@ -311,12 +311,17 @@ class GameStateVector(BaseModel):
 
     @property
     def is_late_cagey_zero_zero(self) -> bool:
-        """Archetype #3 — 0-0 at 75'+, low xG sum, both phases cagey."""
+        """Archetype #3 — 0-0 at 75'+, low xG sum, both phases cagey.
+
+        xG threshold lifted from 0.6 to 1.4 — Papers/V3_DAY3_DIAGNOSIS.md
+        showed the empirical p25 of late-game 0-0 frames is 1.16 and
+        median is 2.23; 0.6 was below p25 and captured ~0 real frames.
+        """
         return (
             self.score.goal_diff == 0
             and self.score.home_goals == 0
             and self.time.minute >= 75
-            and (self.xg.home_xg_total + self.xg.away_xg_total) < 0.6
+            and (self.xg.home_xg_total + self.xg.away_xg_total) < 1.4
             and self.tactical.game_phase == "cagey_closed"
         )
 
