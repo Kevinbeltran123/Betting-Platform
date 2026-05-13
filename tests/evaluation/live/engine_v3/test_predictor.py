@@ -121,3 +121,78 @@ def test_composite_predictor_dispatches_by_family():
     assert goals is not None
     assert corners.family == MarketFamily.CORNERS
     assert goals.family == MarketFamily.GOALS
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Routing-bug regressions (Day-3 silence postmortem)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_corners_predictor_rejects_goals_market_id():
+    """The CornersPredictor must not score a market whose id maps to a
+    non-corners family — even if a parseable number can be extracted
+    from the id. This was the Day-3 bug where "5.5" in
+    "alternative_match_goals_over_5.5" was treated as a corners line
+    and produced an inflated fair_prob ≈ 1.0.
+    """
+    pred = CornersPredictor()
+    gsv = _gsv(minute=67, corners_home=4, corners_away=4)  # 8 corners already
+    # The market id matches the GOALS family ("match_goals_") despite the
+    # parseable "5.5" suffix. The defensive check must return None.
+    out = pred.predict(
+        _thesis(family=MarketFamily.CORNERS, direction="over"),
+        "alternative_match_goals_over_5.5",
+        gsv,
+    )
+    assert out is None
+
+
+def test_goals_predictor_rejects_btts_thesis():
+    """The Goals2H predictor must NOT serve BTTS theses. The thesis
+    "both teams score" is semantically distinct from "over X.5 goals" —
+    a Phase-3 BTTSPredictor will own that path. Until then, BTTS
+    theses with no registered BTTS predictor must return None, not be
+    silently absorbed by Goals2H."""
+    pred = Goals2HPredictor()
+    gsv = _gsv(minute=70)
+    out = pred.predict(
+        _thesis(family=MarketFamily.BTTS, direction="yes"),
+        "btts_yes",
+        gsv,
+    )
+    assert out is None
+
+
+def test_goals_predictor_next_goal_thesis_uses_line_based_p_over():
+    """A NEXT_GOAL thesis falling back to a GOALS market must compute
+    P(over line) using the line-based Poisson flow, NOT the old
+    P(any future goal) shortcut. The shortcut inflated fair_prob to
+    near 1.0 in many minute-67+ states where the actual P(over X.5)
+    is much smaller.
+    """
+    pred = Goals2HPredictor()
+    gsv = _gsv(minute=70)  # tied 1-1 at 70', 20 min remaining
+    out = pred.predict(
+        _thesis(family=MarketFamily.NEXT_GOAL, direction="home"),
+        "match_goals_over_4.5",
+        gsv,
+    )
+    assert out is not None
+    # Already 2 goals; need 3 more in ~20 min for over 4.5 → low.
+    # The buggy shortcut returned ~ 1.0 − exp(−λ) ≈ 0.55+; the correct
+    # line-based P(>=3 more goals) is well under 0.30.
+    assert out.p < 0.30
+
+
+def test_composite_predictor_no_btts_predictor_returns_none():
+    """When no BTTSPredictor is registered, a BTTS thesis must return
+    None — not silently fall through to Goals2H (which would then
+    misinterpret the market_id)."""
+    cp = ConditionalPredictor.default()
+    gsv = _gsv()
+    out = cp.predict(
+        _thesis(family=MarketFamily.BTTS, direction="yes"),
+        "btts_yes",
+        gsv,
+    )
+    assert out is None

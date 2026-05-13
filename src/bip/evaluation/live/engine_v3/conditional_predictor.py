@@ -82,6 +82,44 @@ def _parse_line(market_id: str) -> float | None:
     return None
 
 
+def _parse_side_a(market_id: str) -> str | None:
+    """Identify which side of an Over/Under market is side_a.
+
+    Returns ``"over"`` if the market_id encodes the Over side, ``"under"``
+    if it encodes the Under side, ``None`` if the side is not a plain
+    Over/Under (e.g. Asian goal-line handicaps like
+    ``1st_half_goal_line_(0-0)_over_0.5`` carry a starting-score prefix
+    that changes the resolution and must be skipped).
+    """
+    mid = market_id.lower()
+    # Reject Asian goal-line / score-handicap variants that embed a
+    # starting score "(X-Y)" before the over/under token. Resolving these
+    # correctly requires the full handicap logic, which the Phase-1
+    # Poisson predictor does not implement.
+    import re
+    if re.search(r"\([0-9]+-[0-9]+\)", mid):
+        return None
+    if "_over_" in mid or mid.endswith("_over") or mid.startswith("over_"):
+        return "over"
+    if "_under_" in mid or mid.endswith("_under") or mid.startswith("under_"):
+        return "under"
+    return None
+
+
+# Map thesis direction labels to the over/under market side they support.
+# - "over" → over markets only
+# - "under" / "no" → under markets only
+# - "home" / "away" (NEXT_GOAL theses): "another goal coming" → over only
+_DIRECTION_TO_SIDE: dict[str, str] = {
+    "over": "over",
+    "under": "under",
+    "no": "under",
+    "yes": "over",
+    "home": "over",
+    "away": "over",
+}
+
+
 class CornersPredictor:
     """Poisson rate model for corners markets.
 
@@ -113,30 +151,51 @@ class CornersPredictor:
     def predict(
         self, thesis: Thesis, market_id: str, gsv: GameStateVector
     ) -> PredictionPoint | None:
+        """Predict P(market side_a outcome) for a CORNERS-family market.
+
+        Same alignment contract as Goals2HPredictor:
+        - market_id must parse to a plain Over/Under (no handicap)
+        - thesis.direction must match market side_a (mismatch → None)
+        - resolved markets (already past line) → None
+        """
         if thesis.prediction.family not in (MarketFamily.CORNERS, MarketFamily.NEXT_CORNER):
             return None
+        # Defensive: refuse to score a market whose id maps to anything
+        # other than CORNERS / NEXT_CORNER. Prevents "5.5 in
+        # alternative_match_goals_over_5.5 parsed as a corners line"
+        # type errors. The cost is one extra string-match per call.
+        from bip.evaluation.live.engine_v3.market_selector import (
+            family_for_market_id,
+        )
+        market_family = family_for_market_id(market_id)
+        if market_family not in (MarketFamily.CORNERS, MarketFamily.NEXT_CORNER):
+            return None
         line = _parse_line(market_id)
-        if line is None:
+        side = _parse_side_a(market_id)
+        if line is None or side is None:
+            return None
+        thesis_side = _DIRECTION_TO_SIDE.get(thesis.prediction.direction)
+        if thesis_side is None or thesis_side != side:
+            return None
+        already = gsv.corners.corners_home + gsv.corners.corners_away
+        target = int(math.ceil(line)) if line != int(line) else int(line) + 1
+        if side == "over" and already >= target:
+            return None
+        if side == "under" and already > int(line):
             return None
         expected_total = self._expected_total(gsv)
-        # Thesis adjustment: a corners-over thesis ups the rate by magnitude_pp,
-        # a corners-under thesis lowers it.
-        sign = 1.0 if thesis.prediction.direction == "over" else -1.0
+        sign = 1.0 if side == "over" else -1.0
         adjusted = expected_total * (1.0 + sign * thesis.prediction.magnitude_pp)
-        # Remaining-time portion: corners we still expect to see.
         remaining = max(0, gsv.time.time_remaining_match)
-        already = gsv.corners.corners_home + gsv.corners.corners_away
-        future_lam = adjusted * remaining / 90.0
-        # Over line means total corners >= ceil(line) + 1 if half-line.
-        target = int(math.ceil(line)) if line != int(line) else int(line) + 1
+        future_lam = max(0.0, adjusted * remaining / 90.0)
         need = max(0, target - already)
         p_over = _poisson_ge(future_lam, need)
-        # Crude CI: ± √λ as fraction.
+        p = p_over if side == "over" else max(0.0, 1.0 - p_over)
         sigma = math.sqrt(future_lam) / max(1.0, target)
         return PredictionPoint(
-            p=p_over if thesis.prediction.direction == "over" else max(0.0, 1.0 - p_over),
-            ci_low=max(0.0, p_over - sigma),
-            ci_high=min(1.0, p_over + sigma),
+            p=p,
+            ci_low=max(0.0, p - sigma),
+            ci_high=min(1.0, p + sigma),
             family=MarketFamily.CORNERS,
         )
 
@@ -179,24 +238,50 @@ class Goals2HPredictor:
     def predict(
         self, thesis: Thesis, market_id: str, gsv: GameStateVector
     ) -> PredictionPoint | None:
-        if thesis.prediction.family not in (MarketFamily.GOALS, MarketFamily.BTTS,
-                                            MarketFamily.NEXT_GOAL):
+        """Predict P(market side_a outcome) for a GOALS-family market.
+
+        Returns the probability of side_a (the first decimal in the
+        market line). compute_mes computes ``base_edge = fair_prob -
+        1/side_a_decimal``, so fair_prob MUST be aligned with side_a or
+        the edge sign is meaningless.
+
+        Routing rules:
+        - thesis.family must be GOALS or NEXT_GOAL.
+        - market_id must parse to an Over/Under (no Asian handicap
+          starting-score prefix). Anything else → None.
+        - thesis.direction (mapped via _DIRECTION_TO_SIDE) must match
+          the market's side_a. Mismatch → None: the bet is on the
+          opposite side and the edge cannot be evaluated by this
+          predictor.
+
+        BTTS is intentionally NOT handled here — different semantic.
+        """
+        if thesis.prediction.family not in (MarketFamily.GOALS, MarketFamily.NEXT_GOAL):
             return None
         line = _parse_line(market_id)
+        side = _parse_side_a(market_id)
+        if line is None or side is None:
+            return None
+        thesis_side = _DIRECTION_TO_SIDE.get(thesis.prediction.direction)
+        if thesis_side is None or thesis_side != side:
+            return None
         already = gsv.score.home_goals + gsv.score.away_goals
         lam = self._lambda_remaining(gsv)
-        sign = 1.0 if thesis.prediction.direction == "over" else -1.0
-        lam *= (1.0 + sign * thesis.prediction.magnitude_pp)
-        # For "next_goal" markets, line is meaningless; we report P(any future goal).
-        if thesis.prediction.family == MarketFamily.NEXT_GOAL:
-            p = 1.0 - math.exp(-max(0.0, lam))
-        elif line is None:
+        # If the line is already settled (target ≤ already for over, or
+        # already > line for under), the market is resolved — refuse to
+        # produce a fair_prob (book would have closed it; if it hasn't,
+        # we don't bet on resolved markets).
+        target = int(math.ceil(line)) if line != int(line) else int(line) + 1
+        if side == "over" and already >= target:
             return None
-        else:
-            target = int(math.ceil(line)) if line != int(line) else int(line) + 1
-            need = max(0, target - already)
-            p_over = _poisson_ge(lam, need)
-            p = p_over if thesis.prediction.direction == "over" else max(0.0, 1.0 - p_over)
+        if side == "under" and already > int(line):
+            return None
+        # Adjust λ by the thesis magnitude in the thesis's predicted direction.
+        sign = 1.0 if side == "over" else -1.0
+        lam = max(0.0, lam * (1.0 + sign * thesis.prediction.magnitude_pp))
+        need = max(0, target - already)
+        p_over = _poisson_ge(lam, need)
+        p = p_over if side == "over" else max(0.0, 1.0 - p_over)
         sigma = math.sqrt(max(0.01, lam)) / 4.0
         return PredictionPoint(
             p=p, ci_low=max(0.0, p - sigma), ci_high=min(1.0, p + sigma),
@@ -239,8 +324,11 @@ class ConditionalPredictor:
         - CARDS → CardsPredictor (Phase 3) if registered
         - PROPS → PlayerPropsPredictor (Phase 3, shadow-mode) if registered
         - NEXT_GOAL → NextGoalPredictor (Phase 3 hazard) if registered,
-          else fallback to Goals2HPredictor (P(any future goal))
-        - GOALS / BTTS → Goals2HPredictor
+          else fallback to Goals2HPredictor (line-based, no
+          "P(any goal)" shortcut — see Goals2HPredictor.predict).
+        - GOALS → Goals2HPredictor
+        - BTTS → BTTSPredictor (Phase 3) if registered. Goals2HPredictor
+          deliberately does NOT handle BTTS — different semantic.
         """
         family = thesis.prediction.family
         if family in (MarketFamily.CORNERS, MarketFamily.NEXT_CORNER):
@@ -252,12 +340,15 @@ class ConditionalPredictor:
         if family == MarketFamily.PROPS:
             p = self._predictors.get(MarketFamily.PROPS)
             return p.predict(thesis, market_id, gsv) if p else None
+        if family == MarketFamily.BTTS:
+            p = self._predictors.get(MarketFamily.BTTS)
+            return p.predict(thesis, market_id, gsv) if p else None
         if family == MarketFamily.NEXT_GOAL:
             ng = self._predictors.get(MarketFamily.NEXT_GOAL)
             if ng:
                 return ng.predict(thesis, market_id, gsv)
             return self._predictors[MarketFamily.GOALS].predict(thesis, market_id, gsv)
-        if family in (MarketFamily.GOALS, MarketFamily.BTTS):
+        if family == MarketFamily.GOALS:
             return self._predictors[MarketFamily.GOALS].predict(thesis, market_id, gsv)
         return None
 

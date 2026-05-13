@@ -174,3 +174,64 @@ def test_select_markets_returns_top_k_per_thesis(priors, market_snapshot, state_
     assert len(cands) >= 1
     families = {c.family for c in cands}
     assert MarketFamily.CORNERS in families
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Family-compatibility guard (anti-routing-bug)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_is_compatible_corners_thesis_only_corners_markets():
+    from bip.evaluation.live.engine_v3.market_selector import is_compatible
+
+    assert is_compatible(MarketFamily.CORNERS, MarketFamily.CORNERS)
+    assert is_compatible(MarketFamily.CORNERS, MarketFamily.NEXT_CORNER)
+    # A CORNERS thesis MUST NOT route to a GOALS market — that was the
+    # Day-3 bug where alternative_match_goals_over_5.5 was parsed by the
+    # CornersPredictor as a corners line.
+    assert not is_compatible(MarketFamily.CORNERS, MarketFamily.GOALS)
+    assert not is_compatible(MarketFamily.CORNERS, MarketFamily.BTTS)
+    assert not is_compatible(MarketFamily.CORNERS, MarketFamily.CARDS)
+
+
+def test_is_compatible_next_goal_can_fall_back_to_goals_but_not_btts():
+    from bip.evaluation.live.engine_v3.market_selector import is_compatible
+
+    assert is_compatible(MarketFamily.NEXT_GOAL, MarketFamily.NEXT_GOAL)
+    # NEXT_GOAL → GOALS is the legitimate fallback (Goals2H predictor handles
+    # the line-based mapping).
+    assert is_compatible(MarketFamily.NEXT_GOAL, MarketFamily.GOALS)
+    # NEXT_GOAL → BTTS is NOT compatible. "Next goal will be home" does not
+    # straightforwardly map to "both teams score". Phase 3 BTTSPredictor
+    # will own that.
+    assert not is_compatible(MarketFamily.NEXT_GOAL, MarketFamily.BTTS)
+
+
+def test_select_markets_rejects_cross_family_routing(
+    priors, market_snapshot, state_napoli_scenario,
+):
+    """Regression for the Day-3 bug: a CORNERS thesis must NOT emerge
+    on a GOALS / BTTS / NEXT_GOAL market even when a too-generous
+    fair_prob_provider would otherwise produce edge > threshold."""
+    from bip.evaluation.live.engine_v3 import GSVBuilder
+
+    gsv = GSVBuilder().build(
+        state_napoli_scenario, priors=priors, markets=market_snapshot,
+    )
+
+    def generous_provider(thesis, market_id, gsv):
+        # Inflate fair_prob; the family guard must still keep cross-family
+        # candidates out, regardless of edge magnitude.
+        return 0.95
+
+    corners_thesis = _stub_thesis(family=MarketFamily.CORNERS)
+    cands = select_markets(
+        [corners_thesis], gsv, generous_provider, top_k=10, mes_threshold=0.0,
+    )
+    families = {c.family for c in cands}
+    # No GOALS, BTTS, or NEXT_GOAL candidates.
+    assert MarketFamily.GOALS not in families
+    assert MarketFamily.BTTS not in families
+    assert MarketFamily.NEXT_GOAL not in families
+    # CORNERS / NEXT_CORNER allowed.
+    assert families.issubset({MarketFamily.CORNERS, MarketFamily.NEXT_CORNER})

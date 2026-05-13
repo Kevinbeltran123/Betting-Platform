@@ -62,6 +62,41 @@ def family_for_market_id(market_id: str) -> MarketFamily | None:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Thesis-vs-Market family compatibility
+#
+# A thesis predicts within ONE market family. Routing it to a market of
+# a different family is a routing bug (e.g. a CORNERS thesis emerging in
+# a GOALS market because the goals-market line parses as a corner total).
+# The compatibility matrix encodes which thesis families can legitimately
+# emerge in which market families.
+# ──────────────────────────────────────────────────────────────────────
+
+
+_COMPATIBLE_MARKET_FAMILIES: dict[MarketFamily, frozenset[MarketFamily]] = {
+    MarketFamily.CORNERS: frozenset({MarketFamily.CORNERS, MarketFamily.NEXT_CORNER}),
+    MarketFamily.NEXT_CORNER: frozenset({MarketFamily.NEXT_CORNER, MarketFamily.CORNERS}),
+    MarketFamily.GOALS: frozenset({MarketFamily.GOALS}),
+    MarketFamily.BTTS: frozenset({MarketFamily.BTTS}),
+    # NEXT_GOAL theses can degrade to GOALS markets (over/under) — the
+    # Goals2H predictor handles the line-based mapping. They CANNOT
+    # emerge in BTTS markets (semantically different bet).
+    MarketFamily.NEXT_GOAL: frozenset({MarketFamily.NEXT_GOAL, MarketFamily.GOALS}),
+    MarketFamily.CARDS: frozenset({MarketFamily.CARDS}),
+    MarketFamily.PROPS: frozenset({MarketFamily.PROPS}),
+    MarketFamily.ASIAN_HANDICAP: frozenset({MarketFamily.ASIAN_HANDICAP}),
+    MarketFamily.DOUBLE_CHANCE: frozenset({MarketFamily.DOUBLE_CHANCE}),
+    MarketFamily.RESULT_1X2: frozenset({MarketFamily.RESULT_1X2}),
+    MarketFamily.RACE_TO_X: frozenset({MarketFamily.RACE_TO_X}),
+}
+
+
+def is_compatible(thesis_family: MarketFamily, market_family: MarketFamily) -> bool:
+    """Return True iff a thesis of ``thesis_family`` can legitimately
+    route to a market of ``market_family``."""
+    return market_family in _COMPATIBLE_MARKET_FAMILIES.get(thesis_family, frozenset())
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Fair-prob provider abstraction
 # ──────────────────────────────────────────────────────────────────────
 
@@ -115,6 +150,12 @@ def select_markets(
             family = family_for_market_id(market_id)
             if family is None:
                 continue
+            if not is_compatible(thesis.prediction.family, family):
+                # Routing safety: prevent thesis-market family mismatches
+                # (e.g. CORNERS thesis on a GOALS market parsing the line
+                # as a corner total → inflated fair_prob = 1.0). See the
+                # compatibility matrix above.
+                continue
             fair_prob = fair_prob_provider(thesis, market_id, gsv)
             if fair_prob is None:
                 continue
@@ -143,5 +184,6 @@ __all__ = [
     "FairProbProvider",
     "MarketCandidate",
     "family_for_market_id",
+    "is_compatible",
     "select_markets",
 ]
