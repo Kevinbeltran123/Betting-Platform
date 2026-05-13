@@ -189,6 +189,81 @@ def detect_dominant_losing_napoli(gsv: GameStateVector) -> Thesis | None:
     )
 
 
+def detect_napoli_btts_companion(gsv: GameStateVector) -> Thesis | None:
+    """Phase-2 companion to A2 — BTTS Yes for the Napoli regime.
+
+    When the Napoli predicate holds (dominant trailing, 25-45', xG
+    divergence ≥ 0.3) AND the *underdog* has scored but the *dominant*
+    side has not, "next goal to dominant" implies both teams will have
+    scored by end of game. That's a BTTS Yes thesis with high prior
+    confidence — and unlocks the BTTSPredictor that's otherwise dormant.
+
+    Why not collapse it into A2 itself: market families differ. A2's
+    market routing is NEXT_GOAL/GOALS; this companion's is BTTS. The
+    market_selector decides which (or both) markets to score, and the
+    no-bet gate evaluates them independently.
+
+    Skip rules (informed by Papers/V3_DAY3_DIAGNOSIS empirical analysis
+    of v2 outcomes: btts minute 15-30 had ROI −40%):
+        - require minute ≥ 30 (Day-1+2 v2 data: BTTS pre-30 is a
+          systematic ROI loser)
+        - require dominant_team has NOT yet scored (otherwise BTTS Yes
+          may already be settled or trivial)
+        - require underdog has scored EXACTLY one (so the BTTS Yes
+          conclusion follows naturally from the napoli prediction)
+    """
+    if not gsv.score.dominant_losing:
+        return None
+    if not (30 <= gsv.time.minute <= 45):
+        return None
+    if abs(gsv.xg.xg_vs_score_divergence) < 0.3:
+        return None
+    dom_is_home = gsv.score.dominant_team_id == gsv.home_team_id
+    dom_goals = gsv.score.home_goals if dom_is_home else gsv.score.away_goals
+    underdog_goals = gsv.score.away_goals if dom_is_home else gsv.score.home_goals
+    if dom_goals != 0:
+        return None
+    if underdog_goals < 1:
+        return None
+    return _mk_thesis(
+        arch=ThesisArchetype.DOMINANT_LOSING_NAPOLI,  # same archetype id, different market family
+        rule_id="A2b",
+        minute=gsv.time.minute,
+        premise=[
+            GSVPredicate(path="score.dominant_losing", op="eq", value=True),
+            GSVPredicate(path="time.minute", op="between", value=[30, 45]),
+            GSVPredicate(path="xg.xg_vs_score_divergence", op="ge", value=0.3),
+        ],
+        chain=[
+            CausalStep(
+                cause="dominant_trails_with_xg_pressure",
+                effect="dominant_likely_scores_in_remaining_match",
+                mechanism="urgency + outshooting → P(dominant ≥1) is high",
+            ),
+            CausalStep(
+                cause="underdog_has_already_scored",
+                effect="btts_yes_resolves_when_dominant_scores",
+                mechanism="both teams scored ≥1 → BTTS Yes settled",
+            ),
+        ],
+        family=MarketFamily.BTTS,
+        direction="yes",
+        magnitude_pp=0.08,
+        horizon_label="rest_of_match",
+        invalidations=[
+            InvalidationTrigger(
+                kind="goal_for_underdog",
+                description="underdog 2-up → state changes, regenerate",
+            ),
+            InvalidationTrigger(
+                kind="goal_for_dominant",
+                description="BTTS Yes trivially resolves — pick stops being a bet",
+            ),
+        ],
+        confidence_prior=0.60,
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Archetype 3 — 0-0 at 75', low xG sum, cagey closed
 # ──────────────────────────────────────────────────────────────────────
@@ -708,6 +783,7 @@ def detect_cruise_mode(gsv: GameStateVector) -> Thesis | None:
 _ARCHETYPE_DETECTORS: tuple[Callable[[GameStateVector], Thesis | None], ...] = (
     detect_red_card_away_early,
     detect_dominant_losing_napoli,
+    detect_napoli_btts_companion,
     detect_late_cagey_zero_zero,
     detect_lead_two_defensive_sub,
     detect_regression_to_xg,
@@ -745,6 +821,7 @@ __all__ = [
     "detect_key_playmaker_off",
     "detect_late_cagey_zero_zero",
     "detect_lead_two_defensive_sub",
+    "detect_napoli_btts_companion",
     "detect_numerical_sustained",
     "detect_open_game",
     "detect_red_card_away_early",

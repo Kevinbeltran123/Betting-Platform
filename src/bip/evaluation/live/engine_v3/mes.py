@@ -162,14 +162,25 @@ def conditional_variance(family: MarketFamily, gsv: GameStateVector, horizon: in
     """Rough variance estimate. Higher = less confident → divides MES.
 
     The values are anchored to empirical match-end variances:
-    - Goals: variance ~ λ × (horizon / 90)
-    - Corners: similar but ~3× higher absolute scale
+    - Goals: variance ~ λ × (horizon / 90)  (Poisson count quantity)
+    - BTTS:  binary outcome (yes/no) — variance bounded by p(1-p) ≤ 0.25.
+             We use a fixed 0.5 baseline that scales mildly with horizon
+             so a 90-min-ahead bet is treated as less certain than a
+             5-min-ahead one. This matches the Phase-1 contract that
+             ``cvar`` divides MES (cvar must be ≥ 0.5 to stay
+             well-behaved).
+    - Corners: similar to goals but ~3× higher absolute scale
     - Cards: ~0.5× corners
     - Next-X: variance roughly inverse to current rate
     """
-    if family == MarketFamily.GOALS or family == MarketFamily.BTTS:
+    if family == MarketFamily.GOALS:
         lam = gsv.priors.lambda_home_prematch + gsv.priors.lambda_away_prematch
         return max(0.5, lam * horizon / 90.0)
+    if family == MarketFamily.BTTS:
+        # Binary outcome: scale a small base by horizon-fraction. Never
+        # explodes the way a goal-count variance does.
+        horizon_frac = min(1.0, horizon / 90.0)
+        return max(0.5, 0.5 + 0.3 * horizon_frac)
     if family == MarketFamily.CORNERS or family == MarketFamily.NEXT_CORNER:
         return max(0.5, gsv.priors.expected_corners_total * horizon / 90.0 / 3.0)
     if family == MarketFamily.CARDS:

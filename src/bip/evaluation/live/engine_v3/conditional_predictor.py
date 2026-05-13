@@ -433,10 +433,17 @@ class ConditionalPredictor:
 
     @classmethod
     def default(cls, calibrator: "IsotonicCalibrator | None" = None) -> ConditionalPredictor:
+        # Importing locally to avoid a circular dep when
+        # next_goal_predictor imports PredictionPoint.
+        from bip.evaluation.live.engine_v3.next_goal_predictor import (
+            NextGoalPredictor,
+        )
+
         p = cls(calibrator=calibrator)
         p.register(CornersPredictor())
         p.register(Goals2HPredictor())
         p.register(BTTSPredictor())
+        p.register(NextGoalPredictor())
         return p
 
     def predict(
@@ -470,11 +477,20 @@ class ConditionalPredictor:
             p = self._predictors.get(MarketFamily.BTTS)
             raw = p.predict(thesis, market_id, gsv) if p else None
         elif family == MarketFamily.NEXT_GOAL:
-            ng = self._predictors.get(MarketFamily.NEXT_GOAL)
-            if ng:
-                raw = ng.predict(thesis, market_id, gsv)
-            else:
+            from bip.evaluation.live.engine_v3.market_selector import (
+                family_for_market_id,
+            )
+            mkt_fam = family_for_market_id(market_id)
+            if mkt_fam == MarketFamily.NEXT_GOAL:
+                ng = self._predictors.get(MarketFamily.NEXT_GOAL)
+                raw = ng.predict(thesis, market_id, gsv) if ng else None
+            elif mkt_fam == MarketFamily.GOALS:
+                # Legitimate fallback: a NEXT_GOAL thesis on a goals
+                # over/under market — the Goals2H predictor handles the
+                # line-based mapping correctly under the new contract.
                 raw = self._predictors[MarketFamily.GOALS].predict(thesis, market_id, gsv)
+            else:
+                raw = None
         elif family == MarketFamily.GOALS:
             # GOALS theses prefer Goals2H; if the market id resolves to
             # BTTS (e.g. cruise_mode → under goals on a BTTS_no market),

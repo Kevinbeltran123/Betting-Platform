@@ -34,6 +34,7 @@ _FAMILY_BY_MARKET_ID_PREFIX: tuple[tuple[str, MarketFamily], ...] = (
     ("next_corner", MarketFamily.NEXT_CORNER),
     ("first_goal", MarketFamily.NEXT_GOAL),
     ("next_goal", MarketFamily.NEXT_GOAL),
+    ("team_to_score_first", MarketFamily.NEXT_GOAL),
     ("number_of_cards", MarketFamily.CARDS),
     ("cards", MarketFamily.CARDS),
     ("player_", MarketFamily.PROPS),

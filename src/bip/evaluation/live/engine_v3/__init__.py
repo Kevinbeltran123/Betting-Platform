@@ -30,6 +30,13 @@ from bip.evaluation.live.engine_v3.conditional_predictor import (
     Goals2HPredictor,
     PredictionPoint,
 )
+from bip.evaluation.live.engine_v3.drift_monitor import (
+    CalibrationDriftMonitor,
+    DriftStatus,
+)
+from bip.evaluation.live.engine_v3.next_goal_predictor import (
+    NextGoalPredictor,
+)
 from bip.evaluation.live.engine_v3.gsv import (
     CardsState,
     CornerState,
@@ -111,6 +118,7 @@ from bip.evaluation.live.engine_v3.thesis import (
 
 __all__ = [
     "BTTSPredictor",
+    "CalibrationDriftMonitor",
     "CalibrationSample",
     "CardsState",
     "CausalChain",
@@ -122,7 +130,9 @@ __all__ = [
     "CornerState",
     "CornersPredictor",
     "CriticalEvent",
+    "DriftStatus",
     "IsotonicCalibrator",
+    "NextGoalPredictor",
     "FlowState",
     "GSVBuilder",
     "GSVPredicate",
