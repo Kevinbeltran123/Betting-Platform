@@ -97,6 +97,9 @@ DEFAULT_V3_TIMEOUT_SEC = 0.8  # 800ms — matches mission spec ceiling
 DEFAULT_OOD_PKL = Path("data/cache/ood_detector_v1.pkl")
 DEFAULT_PATTERN_PKL = Path("data/cache/pattern_layer_v1.pkl")
 DEFAULT_CALIBRATOR_PKL = Path("data/cache/isotonic_calibrator_v1.pkl")
+DEFAULT_V2_PICKS_PARQUET = Path(
+    "reports/sportmonks_live/exports/picks_graded.parquet"
+)
 
 _TRUE_STRINGS = {"1", "true", "yes", "on", "y", "t"}
 _FALSE_STRINGS = {"0", "false", "no", "off", "n", "f"}
@@ -278,6 +281,7 @@ class DualWriteRuntime:
         ood_pkl: Path | None = DEFAULT_OOD_PKL,
         pattern_pkl: Path | None = DEFAULT_PATTERN_PKL,
         calibrator_pkl: Path | None = DEFAULT_CALIBRATOR_PKL,
+        v2_picks_parquet: Path | None = DEFAULT_V2_PICKS_PARQUET,
         shadow_root: Path = DEFAULT_SHADOW_ROOT,
         kill_switch_path: Path | None = None,
         timeout_sec: float = DEFAULT_V3_TIMEOUT_SEC,
@@ -336,11 +340,42 @@ class DualWriteRuntime:
         else:
             log.info("v3_runtime_calibrator_pkl_absent path=%s", calibrator_pkl)
 
+        drift_monitor = None
+        if v2_picks_parquet is not None and v2_picks_parquet.exists():
+            try:
+                from bip.evaluation.live.engine_v3.drift_monitor import (
+                    CalibrationDriftMonitor,
+                )
+                drift_monitor = CalibrationDriftMonitor()
+                n_seeded = drift_monitor.warm_up_from_v2_history(
+                    v2_picks_parquet
+                )
+                log.info(
+                    "v3_runtime_drift_monitor_warmed picks=%d coverage=%s",
+                    n_seeded,
+                    {
+                        f: sum(buckets.values())
+                        for f, buckets in drift_monitor.coverage().items()
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "v3_runtime_drift_monitor_warmup_failed path=%s err=%s",
+                    v2_picks_parquet,
+                    exc,
+                )
+        else:
+            log.info(
+                "v3_runtime_drift_monitor_history_absent path=%s",
+                v2_picks_parquet,
+            )
+
         predictor = ConditionalPredictor.default(calibrator=calibrator)
         pipeline = V3Pipeline(
             ood_detector=ood,
             pattern_layer=pattern,
             conditional_predictor=predictor,
+            drift_monitor=drift_monitor,
         )
         logger = ShadowLogger(output_root=shadow_root)
         return cls(

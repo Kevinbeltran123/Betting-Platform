@@ -69,6 +69,20 @@ def main() -> int:
         print(f"Calibrator loaded: {len(calibrator.per_cell)} cells, "
               f"{len(calibrator.per_family)} families")
 
+    # Phase-2: warm-up drift monitor from v2 history
+    from bip.evaluation.live.engine_v3.drift_monitor import (
+        CalibrationDriftMonitor,
+    )
+    drift_monitor = CalibrationDriftMonitor()
+    v2_picks_path = Path("reports/sportmonks_live/exports/picks_graded.parquet")
+    if v2_picks_path.exists():
+        n_seeded = drift_monitor.warm_up_from_v2_history(v2_picks_path)
+        drifted = drift_monitor.drifted_cells()
+        print(f"Drift monitor warmed: n_seeded={n_seeded}, drifted_cells={len(drifted)}")
+        for s in drifted:
+            print(f"  DRIFTED: {s.family}@{s.minute_bucket}  pred={s.expected_win_rate:.2f} "
+                  f"actual={s.empirical_win_rate:.2f}  ks_p={s.ks_p_value:.4f}  n={s.n}")
+
     predictor = ConditionalPredictor.default(calibrator=calibrator)
     provider = make_fair_prob_provider(predictor)
     win_cfg = MispricingWindowConfig()
@@ -108,6 +122,7 @@ def main() -> int:
             uncertainty_band=0.08,
             ood_detector=ood,
             mispricing_window_cfg=win_cfg,
+            drift_monitor=drift_monitor,
         )
         # OOD short-circuits → all denied with rule 9. Detect.
         if gate_results and all(

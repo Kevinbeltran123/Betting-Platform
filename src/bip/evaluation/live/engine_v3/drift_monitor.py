@@ -226,6 +226,55 @@ class CalibrationDriftMonitor:
                 out.setdefault(fam, {})[bucket] = len(cell)
         return out
 
+    # ── warm-up from historical settled picks ──────────────────────────
+
+    def warm_up_from_v2_history(
+        self, picks_parquet_path: "str | Path",
+    ) -> int:
+        """Seed the monitor with v2 ``picks_graded.parquet`` observations.
+
+        Reads every settled pick (status ∈ {won, lost}), maps the v2
+        market string to a v3 MarketFamily via ``map_v2_market_to_family``,
+        and inserts (predicted_p, outcome) into the appropriate cell.
+
+        Returns the number of observations ingested. Picks with unknown
+        family or missing fields are skipped.
+
+        Motivation: the contrafactual Day-1→Day-2 analysis showed cards
+        miscalibration of 59 percentage points. With the monitor warm
+        from v2 history, rule #11 will catch that drift on the first
+        Day-3 cards observation rather than waiting another 30 picks.
+        """
+        from pathlib import Path
+
+        import polars as pl
+
+        from bip.evaluation.live.engine_v3.calibrator import (
+            map_v2_market_to_family,
+        )
+
+        p = Path(picks_parquet_path)
+        if not p.exists():
+            return 0
+        df = pl.read_parquet(p).filter(
+            pl.col("status").is_in(["won", "lost"])
+            & pl.col("our_probability").is_not_null()
+            & pl.col("minute").is_not_null()
+        )
+        n = 0
+        for r in df.iter_rows(named=True):
+            fam = map_v2_market_to_family(r["market"])
+            if fam is None:
+                continue
+            self.observe(
+                family=fam,
+                minute=int(r["minute"] or 0),
+                predicted_p=float(r["our_probability"]),
+                outcome=1 if r["status"] == "won" else 0,
+            )
+            n += 1
+        return n
+
 
 def _bucket_midpoint(bucket: str) -> int:
     """Approximate minute representative for a bucket label."""

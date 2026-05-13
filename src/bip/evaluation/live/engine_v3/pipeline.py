@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from bip.evaluation.live.engine_v3.archetypes import generate_theses
 from bip.evaluation.live.engine_v3.conditional_predictor import (
@@ -67,6 +68,11 @@ try:  # pragma: no cover — type-only import path
 except ImportError:  # pragma: no cover
     PromotedPick = None  # type: ignore[assignment]
     TierDPromoter = None  # type: ignore[assignment]
+
+if TYPE_CHECKING:
+    from bip.evaluation.live.engine_v3.drift_monitor import (
+        CalibrationDriftMonitor,
+    )
 
 
 @dataclass(frozen=True)
@@ -116,6 +122,7 @@ class V3Pipeline:
         ood_detector: OODDetector | None = None,
         pattern_layer: PatternLayer | None = None,
         mispricing_window_cfg: MispricingWindowConfig | None = None,
+        drift_monitor: "CalibrationDriftMonitor | None" = None,
         mes_threshold: float = 0.6,
         target_stake: float = 100.0,
         line_max_age_sec: float = 300.0,
@@ -129,6 +136,7 @@ class V3Pipeline:
         self.ood_detector = ood_detector
         self.pattern_layer = pattern_layer
         self.mispricing_window_cfg = mispricing_window_cfg or MispricingWindowConfig()
+        self.drift_monitor = drift_monitor
         self.mes_threshold = mes_threshold
         self.target_stake = target_stake
         self.line_max_age_sec = line_max_age_sec
@@ -182,6 +190,7 @@ class V3Pipeline:
             uncertainty_band=self.uncertainty_band,
             ood_detector=self.ood_detector,
             mispricing_window_cfg=self.mispricing_window_cfg,
+            drift_monitor=self.drift_monitor,
         )
         window = classify_gsv(gsv, self.mispricing_window_cfg)
         allowed = [

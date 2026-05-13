@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from typing import TYPE_CHECKING
+
 from bip.evaluation.live.engine_v3.gsv import GameStateVector
 from bip.evaluation.live.engine_v3.market_selector import MarketCandidate
 from bip.evaluation.live.engine_v3.mispricing_window import (
@@ -29,6 +31,11 @@ from bip.evaluation.live.engine_v3.thesis import (
     Thesis,
     UNDER_DIRECTION_ALLOWED_ARCHETYPES,
 )
+
+if TYPE_CHECKING:
+    from bip.evaluation.live.engine_v3.drift_monitor import (
+        CalibrationDriftMonitor,
+    )
 
 UNDER_DIRECTIONS = frozenset({"under", "no"})
 
@@ -194,6 +201,46 @@ def rule_10_mispricing_window(
     return NoBetVerdict.ok()
 
 
+def rule_11_calibration_drift(
+    candidate: MarketCandidate,
+    gsv: GameStateVector,
+    monitor: "CalibrationDriftMonitor | None",
+) -> NoBetVerdict:
+    """#11 — Calibration drift gate.
+
+    When the ``CalibrationDriftMonitor`` reports the candidate's
+    ``(market_family, minute_bucket)`` cell as drifted (KS-test p < α),
+    abort the candidate. The motivation comes from the Day-1 → Day-2
+    contrafactual analysis (Papers/V3_DAY3_DIAGNOSIS) where calibration
+    fitted on Day-1 catastrophically failed on Day-2's cards cohort
+    (predicted 0.70 vs actual 0.11). Better to skip drifted cells than
+    bet on a model the world is no longer agreeing with.
+
+    Fail-safe:
+    - ``monitor=None`` → pass (Phase-1 deployments without the monitor
+      unchanged).
+    - monitor present but cell not warm (n < min_observations) → pass
+      with a structlog note. The cell needs more observations before
+      drift can be diagnosed; until then, defer to the other rules.
+    - cell warm and drifted → deny.
+    """
+    if monitor is None:
+        return NoBetVerdict.ok()
+    family = candidate.family
+    status = monitor.status(family, gsv.time.minute)
+    if not status.is_warm:
+        return NoBetVerdict.ok()
+    if status.is_drifted:
+        return NoBetVerdict.deny(
+            11,
+            f"calibration drifted for {status.family}@{status.minute_bucket}: "
+            f"expected_wr={status.expected_win_rate:.2f} vs empirical_wr="
+            f"{status.empirical_win_rate:.2f} (ks_p={status.ks_p_value:.4f}, "
+            f"n={status.n})",
+        )
+    return NoBetVerdict.ok()
+
+
 def rule_9_ood_detector(
     gsv: GameStateVector,
     detector: OODDetector | None,
@@ -242,6 +289,7 @@ def run_gate(
     uncertainty_band: float = 0.08,
     ood_detector: OODDetector | None = None,
     mispricing_window_cfg: MispricingWindowConfig | None = None,
+    drift_monitor: "CalibrationDriftMonitor | None" = None,
 ) -> list[GateResult]:
     """Run the 10 rules against each candidate.
 
@@ -283,6 +331,7 @@ def run_gate(
             rule_7_liquidity_gate(c),
             rule_8_predictive_uncertainty(c, uncertainty_band),
             rule_10_mispricing_window(c, window, win_cfg),
+            rule_11_calibration_drift(c, gsv, drift_monitor),
         ):
             if not verdict.allowed:
                 out.append(GateResult(candidate=c, verdict=verdict))
@@ -310,5 +359,6 @@ __all__ = [
     "rule_8_predictive_uncertainty",
     "rule_9_ood_detector",
     "rule_10_mispricing_window",
+    "rule_11_calibration_drift",
     "run_gate",
 ]

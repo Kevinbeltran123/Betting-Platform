@@ -3,6 +3,7 @@ companion, CalibrationDriftMonitor."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -324,3 +325,159 @@ def test_drift_monitor_observe_validates_outcome():
     monitor = CalibrationDriftMonitor()
     with pytest.raises(ValueError):
         monitor.observe(MarketFamily.GOALS, 45, 0.5, outcome=2)  # not 0/1
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Rule #11 (calibration drift gate) integration
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_rule_11_passes_when_monitor_absent():
+    """Phase-1 deployments without a monitor must not be affected."""
+    from bip.evaluation.live.engine_v3.no_bet_gate import (
+        rule_11_calibration_drift,
+    )
+
+    # Construct a minimal candidate via a synthetic thesis
+    from bip.evaluation.live.engine_v3.mes import MESResult
+    from bip.evaluation.live.engine_v3.market_selector import MarketCandidate
+
+    thesis = Thesis(
+        id="T@m45",
+        archetype=ThesisArchetype.CRUISE_MODE,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(family=MarketFamily.GOALS, direction="under",
+                                    magnitude_pp=0.06,
+                                    horizon=build_horizon("rest_of_match", 45)),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="x")],
+        confidence_prior=0.6,
+        source=ThesisSource(layer="rule", identifier="T"),
+        activated_at_minute=45,
+    )
+    candidate = MarketCandidate(
+        thesis=thesis, market_id="match_goals_under_2.5", family=MarketFamily.GOALS,
+        fair_prob=0.7, mes=MESResult(
+            thesis_id=thesis.id, market_id="match_goals_under_2.5",
+            family=MarketFamily.GOALS, base_edge=0.05, signal_clarity=0.9,
+            book_slowness=1.0, liquidity_score=1.0, conditional_variance=0.5, score=1.0,
+        ),
+    )
+    gsv = _gsv_napoli(minute=45)
+    v = rule_11_calibration_drift(candidate, gsv, monitor=None)
+    assert v.allowed is True
+
+
+def test_rule_11_denies_when_cell_drifted():
+    """If the monitor flags the cell drifted, the gate must deny."""
+    from bip.evaluation.live.engine_v3.no_bet_gate import (
+        rule_11_calibration_drift,
+    )
+    from bip.evaluation.live.engine_v3.mes import MESResult
+    from bip.evaluation.live.engine_v3.market_selector import MarketCandidate
+
+    monitor = CalibrationDriftMonitor(window_size=200, min_observations=30)
+    # Force a drift: predicted 0.9, actual ~0.3 in btts 30-45 cell.
+    for i in range(60):
+        monitor.observe(MarketFamily.BTTS, minute=37, predicted_p=0.9,
+                        outcome=1 if i < 18 else 0)
+    status = monitor.status(MarketFamily.BTTS, 37)
+    assert status.is_drifted is True
+
+    thesis = Thesis(
+        id="T2@m37",
+        archetype=ThesisArchetype.DOMINANT_LOSING_NAPOLI,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(family=MarketFamily.BTTS, direction="yes",
+                                    magnitude_pp=0.08,
+                                    horizon=build_horizon("rest_of_match", 37)),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="x")],
+        confidence_prior=0.6,
+        source=ThesisSource(layer="rule", identifier="T"),
+        activated_at_minute=37,
+    )
+    candidate = MarketCandidate(
+        thesis=thesis, market_id="btts_yes", family=MarketFamily.BTTS,
+        fair_prob=0.5, mes=MESResult(
+            thesis_id=thesis.id, market_id="btts_yes",
+            family=MarketFamily.BTTS, base_edge=0.05, signal_clarity=0.9,
+            book_slowness=1.0, liquidity_score=1.0, conditional_variance=0.5, score=1.0,
+        ),
+    )
+    gsv = _gsv_napoli(minute=37)
+    v = rule_11_calibration_drift(candidate, gsv, monitor=monitor)
+    assert v.allowed is False
+    assert v.rule_number == 11
+    assert "drifted" in v.reason.lower()
+
+
+def test_rule_11_passes_when_cell_cold():
+    """A cell with too few observations is COLD — rule passes (no false
+    positive). Better to defer to other rules until the cell warms up."""
+    from bip.evaluation.live.engine_v3.no_bet_gate import (
+        rule_11_calibration_drift,
+    )
+    from bip.evaluation.live.engine_v3.mes import MESResult
+    from bip.evaluation.live.engine_v3.market_selector import MarketCandidate
+
+    monitor = CalibrationDriftMonitor(window_size=200, min_observations=30)
+    # Only 5 observations — cell is COLD
+    for _ in range(5):
+        monitor.observe(MarketFamily.GOALS, 45, 0.5, outcome=1)
+    thesis = Thesis(
+        id="T@m45",
+        archetype=ThesisArchetype.CRUISE_MODE,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(family=MarketFamily.GOALS, direction="under",
+                                    magnitude_pp=0.06,
+                                    horizon=build_horizon("rest_of_match", 45)),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="x")],
+        confidence_prior=0.6,
+        source=ThesisSource(layer="rule", identifier="T"),
+        activated_at_minute=45,
+    )
+    candidate = MarketCandidate(
+        thesis=thesis, market_id="match_goals_under_2.5", family=MarketFamily.GOALS,
+        fair_prob=0.7, mes=MESResult(
+            thesis_id=thesis.id, market_id="match_goals_under_2.5",
+            family=MarketFamily.GOALS, base_edge=0.05, signal_clarity=0.9,
+            book_slowness=1.0, liquidity_score=1.0, conditional_variance=0.5, score=1.0,
+        ),
+    )
+    gsv = _gsv_napoli(minute=45)
+    v = rule_11_calibration_drift(candidate, gsv, monitor=monitor)
+    assert v.allowed is True
+
+
+def test_drift_monitor_warm_up_from_v2_history_detects_day1_day2_drift(tmp_path):
+    """Honest contrafactual: after warming with v2 picks_graded, the
+    cards family should be visibly miscalibrated (predicted_avg far
+    from empirical), reproducing the Day-1→Day-2 finding."""
+    import polars as pl
+
+    src = Path("reports/sportmonks_live/exports/picks_graded.parquet")
+    if not src.exists():
+        pytest.skip("picks_graded.parquet not present in this checkout")
+
+    monitor = CalibrationDriftMonitor(window_size=400, min_observations=30)
+    n = monitor.warm_up_from_v2_history(src)
+    assert n > 0, "no v2 picks ingested"
+    # btts 45-60' has >50 picks in the v2 history and is one of the cells
+    # the diagnosis flagged as miscalibrated. After warming, the cell
+    # should be warm and the predicted vs empirical numbers should be sane.
+    status = monitor.status(MarketFamily.BTTS, 50)
+    assert status.is_warm, (
+        f"btts 45-60 cell did not warm up — got n={status.n}, "
+        f"warm_threshold={monitor.min_observations}"
+    )
+    assert 0.0 <= status.expected_win_rate <= 1.0
+    assert 0.0 <= status.empirical_win_rate <= 1.0
+    # The btts overconfidence delta from the diagnosis: predicted ≈ 0.82,
+    # actual ≈ 0.59. The gap must be at least 5 percentage points.
+    assert (status.expected_win_rate - status.empirical_win_rate) > 0.05, (
+        f"expected btts overconfidence delta >5pp, got "
+        f"predicted={status.expected_win_rate:.3f} vs "
+        f"empirical={status.empirical_win_rate:.3f}"
+    )
