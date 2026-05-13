@@ -1,6 +1,8 @@
 """Conditional Predictor sanity tests for the Phase-1 corners+goals scaffold."""
 from __future__ import annotations
 
+import pytest
+
 from bip.evaluation.live.engine_v3 import (
     ConditionalPredictor,
     CornersPredictor,
@@ -184,10 +186,11 @@ def test_goals_predictor_next_goal_thesis_uses_line_based_p_over():
     assert out.p < 0.30
 
 
-def test_composite_predictor_no_btts_predictor_returns_none():
-    """When no BTTSPredictor is registered, a BTTS thesis must return
-    None — not silently fall through to Goals2H (which would then
-    misinterpret the market_id)."""
+def test_composite_predictor_routes_btts_to_btts_predictor():
+    """Phase 2 wires BTTSPredictor. A BTTS thesis on a btts_yes market
+    must now produce a fair_prob (not None) — and the family on the
+    returned point must be BTTS so the calibrator looks up the right
+    cell."""
     cp = ConditionalPredictor.default()
     gsv = _gsv()
     out = cp.predict(
@@ -195,4 +198,144 @@ def test_composite_predictor_no_btts_predictor_returns_none():
         "btts_yes",
         gsv,
     )
+    assert out is not None
+    assert out.family == MarketFamily.BTTS
+    assert 0.0 <= out.p <= 1.0
+
+
+def test_composite_predictor_returns_none_when_no_predictor_for_family():
+    """A CARDS thesis with no CardsPredictor registered still returns
+    None — confirms the dispatcher's missing-predictor branch is intact."""
+    cp = ConditionalPredictor.default()  # no CARDS predictor registered
+    gsv = _gsv()
+    out = cp.predict(
+        _thesis(family=MarketFamily.CARDS, direction="over"),
+        "number_of_cards_over_4.5",
+        gsv,
+    )
     assert out is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BTTSPredictor (Phase 2)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_btts_predictor_yes_already_both_scored_returns_one():
+    """If both teams have already scored, BTTS yes is certain."""
+    from bip.evaluation.live.engine_v3 import BTTSPredictor
+
+    pred = BTTSPredictor()
+    gsv = _gsv()
+    # _gsv defaults to home_goals=1, away_goals=1 → both scored
+    out = pred.predict(
+        _thesis(family=MarketFamily.BTTS, direction="yes"),
+        "btts_yes",
+        gsv,
+    )
+    assert out is not None
+    assert out.p == pytest.approx(1.0)
+
+
+def test_btts_predictor_no_already_both_scored_returns_zero():
+    from bip.evaluation.live.engine_v3 import BTTSPredictor
+
+    pred = BTTSPredictor()
+    gsv = _gsv()  # both scored
+    out = pred.predict(
+        _thesis(family=MarketFamily.BTTS, direction="no"),
+        "btts_no",
+        gsv,
+    )
+    assert out is not None
+    assert out.p == pytest.approx(0.0)
+
+
+def test_btts_predictor_rejects_thesis_side_market_mismatch():
+    """A BTTS-yes thesis on a btts_no market would have its fair_prob
+    refer to side_b — the predictor must return None to keep the MES
+    aligned with side_a."""
+    from bip.evaluation.live.engine_v3 import BTTSPredictor
+
+    pred = BTTSPredictor()
+    gsv = _gsv()
+    out = pred.predict(
+        _thesis(family=MarketFamily.BTTS, direction="yes"),
+        "btts_no",
+        gsv,
+    )
+    assert out is None
+
+
+def test_btts_predictor_rejects_non_btts_market_id():
+    from bip.evaluation.live.engine_v3 import BTTSPredictor
+
+    pred = BTTSPredictor()
+    gsv = _gsv()
+    out = pred.predict(
+        _thesis(family=MarketFamily.BTTS, direction="yes"),
+        "match_goals_over_2.5",
+        gsv,
+    )
+    assert out is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Calibrator integration in ConditionalPredictor
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_calibrator_applied_to_predicted_probability():
+    """When a fitted calibrator is wired into ConditionalPredictor, the
+    .p of the returned PredictionPoint is the calibrated value (not the
+    raw model output)."""
+    from bip.evaluation.live.engine_v3 import (
+        CalibrationSample,
+        ConditionalPredictor,
+        IsotonicCalibrator,
+    )
+
+    # Build a calibrator that maps high p to low p (extreme inversion
+    # for testability — picks "predicted 0.9, outcome 0 always").
+    samples = [
+        CalibrationSample(
+            family=MarketFamily.GOALS,
+            minute=45,
+            predicted_p=0.9,
+            outcome=0,
+        )
+        for _ in range(40)
+    ]
+    cal = IsotonicCalibrator().fit(samples)
+    cp = ConditionalPredictor.default(calibrator=cal)
+    gsv = _gsv(minute=45)
+    out = cp.predict(
+        _thesis(family=MarketFamily.GOALS, direction="over"),
+        "match_goals_over_2.5",
+        gsv,
+    )
+    assert out is not None
+    # The raw predictor would emit some p>0 for over_2.5 at 45'; the
+    # calibrator maps everything in the training set's predicted region
+    # to ≈0 (outcome was always 0).
+    assert out.p < 0.2
+
+
+def test_calibrator_absent_means_raw_passthrough():
+    from bip.evaluation.live.engine_v3 import ConditionalPredictor
+
+    cp_no_cal = ConditionalPredictor.default(calibrator=None)
+    cp_default = ConditionalPredictor.default()
+    gsv = _gsv()
+    p_no_cal = cp_no_cal.predict(
+        _thesis(family=MarketFamily.GOALS, direction="over"),
+        "match_goals_over_2.5",
+        gsv,
+    )
+    p_default = cp_default.predict(
+        _thesis(family=MarketFamily.GOALS, direction="over"),
+        "match_goals_over_2.5",
+        gsv,
+    )
+    assert p_no_cal is not None and p_default is not None
+    assert p_no_cal.p == pytest.approx(p_default.p)

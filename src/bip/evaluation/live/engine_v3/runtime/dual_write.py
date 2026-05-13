@@ -73,6 +73,7 @@ from datetime import datetime
 from pathlib import Path
 
 from bip.evaluation.live.engine_v3 import (
+    ConditionalPredictor,
     MarketLine,
     MarketSnapshot,
     OODDetector,
@@ -95,6 +96,7 @@ DEFAULT_KILL_SWITCH_PATH = DEFAULT_SHADOW_ROOT / "v3_kill_switch.flag"
 DEFAULT_V3_TIMEOUT_SEC = 0.8  # 800ms — matches mission spec ceiling
 DEFAULT_OOD_PKL = Path("data/cache/ood_detector_v1.pkl")
 DEFAULT_PATTERN_PKL = Path("data/cache/pattern_layer_v1.pkl")
+DEFAULT_CALIBRATOR_PKL = Path("data/cache/isotonic_calibrator_v1.pkl")
 
 _TRUE_STRINGS = {"1", "true", "yes", "on", "y", "t"}
 _FALSE_STRINGS = {"0", "false", "no", "off", "n", "f"}
@@ -275,6 +277,7 @@ class DualWriteRuntime:
         cls,
         ood_pkl: Path | None = DEFAULT_OOD_PKL,
         pattern_pkl: Path | None = DEFAULT_PATTERN_PKL,
+        calibrator_pkl: Path | None = DEFAULT_CALIBRATOR_PKL,
         shadow_root: Path = DEFAULT_SHADOW_ROOT,
         kill_switch_path: Path | None = None,
         timeout_sec: float = DEFAULT_V3_TIMEOUT_SEC,
@@ -285,6 +288,8 @@ class DualWriteRuntime:
 
         Missing pkls → that layer = None (matches replay_shadow.load_detectors
         contract). v3 still runs, just without rule #9 or pattern layer.
+        ``calibrator_pkl`` is the Phase-2 isotonic calibrator; when absent,
+        the predictor returns raw probabilities (no calibration).
         """
         ood = None
         if ood_pkl is not None and ood_pkl.exists():
@@ -310,7 +315,33 @@ class DualWriteRuntime:
         else:
             log.warning("v3_runtime_pattern_pkl_absent path=%s", pattern_pkl)
 
-        pipeline = V3Pipeline(ood_detector=ood, pattern_layer=pattern)
+        calibrator = None
+        if calibrator_pkl is not None and calibrator_pkl.exists():
+            try:
+                from bip.evaluation.live.engine_v3.calibrator import (
+                    IsotonicCalibrator,
+                )
+                calibrator = IsotonicCalibrator.load(calibrator_pkl)
+                log.info(
+                    "v3_runtime_loaded_calibrator path=%s coverage=%d_cells",
+                    calibrator_pkl,
+                    len(calibrator.per_cell),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "v3_runtime_calibrator_load_failed path=%s err=%s",
+                    calibrator_pkl,
+                    exc,
+                )
+        else:
+            log.info("v3_runtime_calibrator_pkl_absent path=%s", calibrator_pkl)
+
+        predictor = ConditionalPredictor.default(calibrator=calibrator)
+        pipeline = V3Pipeline(
+            ood_detector=ood,
+            pattern_layer=pattern,
+            conditional_predictor=predictor,
+        )
         logger = ShadowLogger(output_root=shadow_root)
         return cls(
             pipeline=pipeline,

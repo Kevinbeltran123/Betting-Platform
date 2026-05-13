@@ -60,7 +60,16 @@ def main() -> int:
     if ood:
         print(f"OOD v2 loaded: n_train={ood.n_train} threshold={ood.threshold:.3f}")
 
-    predictor = ConditionalPredictor.default()
+    # Phase-2: load isotonic calibrator if present
+    from bip.evaluation.live.engine_v3.calibrator import IsotonicCalibrator
+    cal_path = Path("data/cache/isotonic_calibrator_v1.pkl")
+    calibrator = None
+    if cal_path.exists():
+        calibrator = IsotonicCalibrator.load(cal_path)
+        print(f"Calibrator loaded: {len(calibrator.per_cell)} cells, "
+              f"{len(calibrator.per_family)} families")
+
+    predictor = ConditionalPredictor.default(calibrator=calibrator)
     provider = make_fair_prob_provider(predictor)
     win_cfg = MispricingWindowConfig()
 
