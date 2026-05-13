@@ -94,7 +94,17 @@ log = logging.getLogger("v3.dual_write")
 
 DEFAULT_KILL_SWITCH_PATH = DEFAULT_SHADOW_ROOT / "v3_kill_switch.flag"
 DEFAULT_V3_TIMEOUT_SEC = 0.8  # 800ms — matches mission spec ceiling
-DEFAULT_OOD_PKL = Path("data/cache/ood_detector_v1.pkl")
+def _pick_ood_default() -> Path:
+    """Prefer the v2 detector (fitted on 1642 real Day-3 GSVs, 1% skip
+    rate) over the v1 synthetic-fit detector (99% skip rate). If neither
+    exists, return the v2 path so the absent-pkl warning fires on the
+    "correct" default."""
+    v2 = Path("data/cache/ood_detector_v2_real.pkl")
+    v1 = Path("data/cache/ood_detector_v1.pkl")
+    return v2 if v2.exists() else (v1 if v1.exists() else v2)
+
+
+DEFAULT_OOD_PKL = _pick_ood_default()
 DEFAULT_PATTERN_PKL = Path("data/cache/pattern_layer_v1.pkl")
 DEFAULT_CALIBRATOR_PKL = Path("data/cache/isotonic_calibrator_v1.pkl")
 DEFAULT_V2_PICKS_PARQUET = Path(
