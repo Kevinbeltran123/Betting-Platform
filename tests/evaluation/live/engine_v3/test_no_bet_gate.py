@@ -127,9 +127,31 @@ def test_rule_3_passes_after_90s():
 
 
 def test_rule_4_blocks_stale_line():
-    gsv = _stub_gsv(line_age_sec=200.0)
+    # Corners family threshold is 1800s by default (Sportmonks corners
+    # markets refresh slowly; see no_bet_gate._LINE_MAX_AGE_BY_FAMILY).
+    # Use 2000s to land genuinely past the threshold.
+    gsv = _stub_gsv(line_age_sec=2000.0)
     cand = _stub_candidate()
     v = rule_4_line_freshness(cand, gsv)
+    assert not v.allowed and v.rule_number == 4
+
+
+def test_rule_4_family_specific_corners_threshold():
+    """Corners markets get a 1800s threshold (vs btts 300s) because
+    their underlying state only changes on the next corner event."""
+    # 1000s on a corners market: still fresh (under 1800s threshold)
+    gsv = _stub_gsv(line_age_sec=1000.0)
+    cand = _stub_candidate()  # corners family
+    v = rule_4_line_freshness(cand, gsv)
+    assert v.allowed, "1000s on corners should pass family-specific threshold"
+
+
+def test_rule_4_explicit_max_age_overrides_family_default():
+    """Callers can still pass a single threshold to override the
+    family-specific defaults (back-compat)."""
+    gsv = _stub_gsv(line_age_sec=200.0)
+    cand = _stub_candidate()
+    v = rule_4_line_freshness(cand, gsv, max_age_sec=60.0)
     assert not v.allowed and v.rule_number == 4
 
 

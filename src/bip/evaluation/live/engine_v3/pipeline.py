@@ -125,7 +125,7 @@ class V3Pipeline:
         drift_monitor: "CalibrationDriftMonitor | None" = None,
         mes_threshold: float = 0.6,
         target_stake: float = 100.0,
-        line_max_age_sec: float = 300.0,
+        line_max_age_sec: float | None = None,
         commentary_required: bool = False,
         uncertainty_band: float = 0.08,
         top_k_per_thesis: int = 3,

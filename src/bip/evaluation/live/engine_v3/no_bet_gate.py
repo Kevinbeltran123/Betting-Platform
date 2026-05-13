@@ -28,9 +28,39 @@ from bip.evaluation.live.engine_v3.mispricing_window import (
 )
 from bip.evaluation.live.engine_v3.ood_detector import OODDetector
 from bip.evaluation.live.engine_v3.thesis import (
+    MarketFamily,
     Thesis,
     UNDER_DIRECTION_ALLOWED_ARCHETYPES,
 )
+
+
+# Family-specific line freshness thresholds (sec).
+# Justified empirically by Day-3 line age percentiles per family (see
+# Papers/V3_DAY3_DIAGNOSIS — line age p75 is 1028s globally but varies
+# dramatically by family: BTTS lines refresh in <30s, corners markets in
+# 1100-4600s as their counts only change with the next corner event).
+# A line that hasn't been touched for 30 minutes is NOT stale if the
+# underlying state hasn't changed in those 30 minutes — Sportmonks just
+# doesn't tick for stable cells. Forcing 60s/300s rejects those picks
+# unnecessarily.
+_LINE_MAX_AGE_BY_FAMILY: dict[MarketFamily, float] = {
+    MarketFamily.CORNERS: 1800.0,        # corners count only changes on a new corner
+    MarketFamily.NEXT_CORNER: 1800.0,
+    MarketFamily.GOALS: 1500.0,          # goals count only changes on a new goal
+    MarketFamily.BTTS: 300.0,            # BTTS lines refresh quickly (p90=30s)
+    MarketFamily.NEXT_GOAL: 600.0,
+    MarketFamily.CARDS: 600.0,
+    MarketFamily.PROPS: 600.0,
+    MarketFamily.ASIAN_HANDICAP: 600.0,
+    MarketFamily.DOUBLE_CHANCE: 600.0,
+    MarketFamily.RESULT_1X2: 600.0,
+    MarketFamily.RACE_TO_X: 600.0,
+}
+
+
+def line_max_age_for_family(family: MarketFamily, default: float = 600.0) -> float:
+    """Per-family stale-line threshold. See _LINE_MAX_AGE_BY_FAMILY."""
+    return _LINE_MAX_AGE_BY_FAMILY.get(family, default)
 
 if TYPE_CHECKING:
     from bip.evaluation.live.engine_v3.drift_monitor import (
@@ -101,19 +131,35 @@ def rule_3_critical_event_freshness(gsv: GameStateVector) -> NoBetVerdict:
     return NoBetVerdict.ok()
 
 
-def rule_4_line_freshness(candidate: MarketCandidate, gsv: GameStateVector,
-                          max_age_sec: float = 60.0) -> NoBetVerdict:
-    """#4 — If the line in question hasn't moved in >60s, abort.
+def rule_4_line_freshness(
+    candidate: MarketCandidate,
+    gsv: GameStateVector,
+    max_age_sec: float | None = None,
+) -> NoBetVerdict:
+    """#4 — If the line in question hasn't moved in too long, abort.
 
-    The (timestamp, side_a, side_b) tuple is read from the line's
-    ``last_update_utc`` against the GSV timestamp.
+    The ``last_update_utc`` is read against the GSV timestamp. The
+    threshold defaults to a family-specific value
+    (``line_max_age_for_family``) when ``max_age_sec`` is None;
+    callers can override with a single number to restore the legacy
+    single-threshold behaviour.
+
+    Day-3 empirical analysis showed: Sportmonks line update cadence
+    varies by family (BTTS lines tick in <30s, corners in 1000-4600s).
+    A 60s universal cutoff rejected 76% of pre-gate candidates with
+    perfectly valid underlying state.
     """
     line = gsv.markets.lines.get(candidate.market_id)
     if line is None or line.last_update_utc is None:
         return NoBetVerdict.deny(4, "no line snapshot")
     age = (gsv.timestamp_utc - line.last_update_utc).total_seconds()
-    if age > max_age_sec:
-        return NoBetVerdict.deny(4, f"line stale ({age:.0f}s > {max_age_sec:.0f}s)")
+    threshold = (
+        max_age_sec
+        if max_age_sec is not None
+        else line_max_age_for_family(candidate.family)
+    )
+    if age > threshold:
+        return NoBetVerdict.deny(4, f"line stale ({age:.0f}s > {threshold:.0f}s)")
     return NoBetVerdict.ok()
 
 
@@ -284,7 +330,7 @@ def run_gate(
     gsv: GameStateVector,
     *,
     mes_threshold: float = 0.6,
-    line_max_age_sec: float = 60.0,
+    line_max_age_sec: float | None = None,
     commentary_required: bool = False,
     uncertainty_band: float = 0.08,
     ood_detector: OODDetector | None = None,
@@ -349,6 +395,7 @@ __all__ = [
     "GateResult",
     "NoBetVerdict",
     "allowed_candidates",
+    "line_max_age_for_family",
     "rule_1_thesis_present",
     "rule_2_score_state_inversion",
     "rule_3_critical_event_freshness",

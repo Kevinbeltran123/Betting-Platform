@@ -117,7 +117,11 @@ def main() -> int:
             candidates,
             g,
             mes_threshold=0.6,
-            line_max_age_sec=300.0,
+            # line_max_age_sec=None → family-specific thresholds from
+            # no_bet_gate._LINE_MAX_AGE_BY_FAMILY (corners 1800s, goals
+            # 1500s, btts 300s, …). Justified empirically by the per-
+            # family line-age percentiles in the Day-3 dataset.
+            line_max_age_sec=None,
             commentary_required=False,
             uncertainty_band=0.08,
             ood_detector=ood,
