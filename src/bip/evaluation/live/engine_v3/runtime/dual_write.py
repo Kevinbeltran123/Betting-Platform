@@ -87,6 +87,9 @@ from bip.evaluation.live.engine_v3.runtime.live_observer import (
     LivePickObserver,
     NullObserver,
 )
+from bip.evaluation.live.engine_v3.runtime.telegram_adapter import (
+    shadow_pick_to_live_pick,
+)
 from bip.evaluation.live.engine_v3.shadow_logger import DEFAULT_SHADOW_ROOT
 from bip.evaluation.live.match_state import LiveMatchState
 
@@ -272,6 +275,13 @@ class DualWriteRuntime:
     serializes via ``self._lock`` so concurrent fixtures in watch.py
     don't trample the buffers. The lock is held only across the
     pipeline call + buffer append, which is sub-second.
+
+    Telegram promotion: when ``telegram_sender`` is wired AND the env
+    var ``V3_TELEGRAM_ENABLED`` is truthy, every allowed v3 pick is
+    adapted to a ``LivePick`` and pushed through the existing
+    ``LiveAlertSender`` pipeline (tier classification, throttling,
+    keyboards, message-id tracking — all reused). v3-as-shadow is the
+    default; promotion is opt-in per process.
     """
 
     pipeline: V3Pipeline
@@ -280,9 +290,14 @@ class DualWriteRuntime:
     kill_switch_path: Path = DEFAULT_KILL_SWITCH_PATH
     env_var: str = "V3_SHADOW_ENABLED"
     observer: LivePickObserver = field(default_factory=NullObserver)
+    telegram_sender: object | None = None  # LiveAlertSender, optional
+    telegram_env_var: str = "V3_TELEGRAM_ENABLED"
     error_count: int = 0
     success_count: int = 0
     skip_count: int = 0
+    alerts_sent: int = 0
+    alerts_skipped: int = 0
+    alerts_failed: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @classmethod
@@ -297,6 +312,8 @@ class DualWriteRuntime:
         timeout_sec: float = DEFAULT_V3_TIMEOUT_SEC,
         env_var: str = "V3_SHADOW_ENABLED",
         observer: LivePickObserver | None = None,
+        telegram_sender: object | None = None,
+        telegram_env_var: str = "V3_TELEGRAM_ENABLED",
     ) -> DualWriteRuntime:
         """Build a runtime with detectors loaded from disk.
 
@@ -395,6 +412,8 @@ class DualWriteRuntime:
             kill_switch_path=kill_switch_path or (shadow_root / "v3_kill_switch.flag"),
             env_var=env_var,
             observer=observer or NullObserver(),
+            telegram_sender=telegram_sender,
+            telegram_env_var=telegram_env_var,
         )
 
     async def run_shadow(
@@ -412,6 +431,13 @@ class DualWriteRuntime:
         Never raises — every exception path is captured into
         ``error_count`` and logged. v2's path through watch.py is
         protected by construction.
+
+        When ``telegram_sender`` is wired AND ``V3_TELEGRAM_ENABLED`` is
+        truthy, allowed picks are adapted and pushed through the
+        existing alert pipeline AFTER the sync pipeline returns. The
+        alert send is awaited in the caller's event loop (not in the
+        thread that ran V3Pipeline) so the LiveAlertSender's async
+        primitives (throttle, bot.send_html) execute correctly.
         """
         if not is_v3_shadow_enabled(self.env_var):
             self.skip_count += 1
@@ -420,13 +446,15 @@ class DualWriteRuntime:
             self.skip_count += 1
             return False
 
+        out: PipelineOutput | None = None
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(self._run_pipeline_sync, state, fixture, odds, now_utc),
+            out = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._run_pipeline_sync, state, fixture, odds, now_utc,
+                ),
                 timeout=self.timeout_sec,
             )
             self.success_count += 1
-            return True
         except TimeoutError:
             self.error_count += 1
             log.warning(
@@ -443,6 +471,54 @@ class DualWriteRuntime:
                 type(exc).__name__,
             )
             return False
+
+        # Telegram promotion — opt-in via env var. Async send happens
+        # in the caller's event loop, not the worker thread.
+        if (
+            out is not None
+            and out.allowed_picks
+            and self.telegram_sender is not None
+            and is_v3_shadow_enabled(self.telegram_env_var)
+        ):
+            await self._send_alerts_for(out)
+        return True
+
+    async def _send_alerts_for(self, out: PipelineOutput) -> None:
+        """Adapt v3 picks → LivePick and push through the v2 alert sender.
+
+        Failures are caught individually so a bad single pick doesn't
+        block the others. The send method itself is already failure-
+        safe (``send_pick_safe`` never raises).
+        """
+        for pick in out.allowed_picks:
+            try:
+                live_pick = shadow_pick_to_live_pick(pick, out.gsv)
+            except Exception as exc:  # noqa: BLE001
+                self.alerts_failed += 1
+                log.warning(
+                    "v3_alert_adapter_error fixture=%s reason=%s",
+                    out.gsv.fixture_id, type(exc).__name__,
+                )
+                continue
+            if live_pick is None:
+                self.alerts_skipped += 1
+                continue
+            try:
+                sent = await self.telegram_sender.send_pick_safe(
+                    live_pick,
+                    home_score=out.gsv.score.home_goals,
+                    away_score=out.gsv.score.away_goals,
+                )
+                if sent:
+                    self.alerts_sent += 1
+                else:
+                    self.alerts_skipped += 1
+            except Exception as exc:  # noqa: BLE001
+                self.alerts_failed += 1
+                log.warning(
+                    "v3_alert_send_error fixture=%s reason=%s",
+                    out.gsv.fixture_id, type(exc).__name__,
+                )
 
     def _run_pipeline_sync(
         self,

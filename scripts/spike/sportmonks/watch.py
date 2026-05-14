@@ -441,7 +441,15 @@ async def scan_round(
                             terminal_beep()
                     # Telegram alert (failure-safe — never crashes the loop).
                     # Sender applies its own filters (min_edge, skip_flagged).
-                    if telegram_sender is not None:
+                    # V2_TELEGRAM_DISABLED=true silences v2 alerts so the v3
+                    # engine can take over without operator noise. v3 picks
+                    # are sent via DualWriteRuntime when V3_TELEGRAM_ENABLED
+                    # is truthy (see below).
+                    if (
+                        telegram_sender is not None
+                        and os.environ.get("V2_TELEGRAM_DISABLED", "").strip().lower()
+                        not in {"1", "true", "yes", "on"}
+                    ):
                         await telegram_sender.send_pick_safe(
                             pick,
                             pick_id=pick_id,
@@ -586,8 +594,16 @@ async def watch_loop(
             build_observer_from_env,
         )
         observer = build_observer_from_env()
+        # Telegram promotion: if V3_TELEGRAM_ENABLED is truthy AND a
+        # LiveAlertSender exists, wire it into the runtime so v3 picks
+        # flow through the same alert pipeline as v2 used to.
+        v3_telegram_on = os.environ.get(
+            "V3_TELEGRAM_ENABLED", "",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        v3_telegram_sender = telegram_sender if v3_telegram_on else None
         v3_runtime: DualWriteRuntime | None = DualWriteRuntime.from_paths(
             observer=observer,
+            telegram_sender=v3_telegram_sender,
         )
         observer_kind = type(observer).__name__
         if observer_kind == "NullObserver":
@@ -601,6 +617,24 @@ async def watch_loop(
             print(
                 "📊 v3 shadow runtime ON · live observer → stdout "
                 "(V3_LIVE_OBSERVE=false to silence)"
+            )
+        if v3_telegram_sender is not None:
+            print(
+                "📡 v3 TELEGRAM PROMOTION ACTIVE — v3 picks → Telegram. "
+                "Set V3_TELEGRAM_ENABLED=false to revert to shadow-only."
+            )
+        elif telegram_sender is not None:
+            print(
+                "📊 v3 shadow-only (Telegram from v2). Set "
+                "V3_TELEGRAM_ENABLED=true to promote v3 picks to Telegram."
+            )
+        v2_silenced = os.environ.get(
+            "V2_TELEGRAM_DISABLED", "",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if v2_silenced:
+            print(
+                "🔇 V2_TELEGRAM_DISABLED=true — v2 alerts will NOT be sent "
+                "(v3 must be promoted or operator will receive nothing)."
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning("v3_runtime_init_failed err=%s — v3 disabled", exc)
