@@ -835,14 +835,120 @@ def _xg_proxy(stats: dict[int, float]) -> float:
     )
 
 
-def _identify_home_away(fixture: Fixture):
-    """Sportmonks puts location info on participants[i].meta.location.
+def _home_away_from_scores(fixture: Fixture) -> tuple[int, int] | None:
+    """Derive (home_participant_id, away_participant_id) from ``scores``.
 
-    Our schema doesn't model meta yet; fall back to participants[0]=home,
-    [1]=away which matches API convention.
+    Sportmonks emits each score record with both ``participant_id`` (the
+    team that scored) AND ``score.participant`` ('home' or 'away'). The
+    cross-reference is the ground truth for which team is home — the
+    score body says "this team is the home side" regardless of array
+    order in ``participants``.
+
+    Day-4 (2026-05-13) Palace-City raw payload confirmed:
+        participant_id=9  score={participant: "home"}  → City is home
+        participant_id=51 score={participant: "away"}  → Palace is away
+
+    Even though ``participants[0]`` in the API response was Palace.
+    """
+    if not fixture.scores:
+        return None
+    home_id: int | None = None
+    away_id: int | None = None
+    for s in fixture.scores:
+        if s.participant_id is None:
+            continue
+        body = s.score or {}
+        loc = body.get("participant")
+        if loc == "home" and home_id is None:
+            home_id = s.participant_id
+        elif loc == "away" and away_id is None:
+            away_id = s.participant_id
+        if home_id is not None and away_id is not None:
+            break
+    if home_id is None or away_id is None or home_id == away_id:
+        return None
+    return home_id, away_id
+
+
+def _home_away_from_statistics(fixture: Fixture) -> tuple[int, int] | None:
+    """Derive home/away from ``statistics[i].location``.
+
+    Secondary fallback when ``scores`` is empty (pre-kickoff / NS state).
+    Statistics are also keyed by ``participant_id`` × ``location``.
+    """
+    if not fixture.statistics:
+        return None
+    home_id: int | None = None
+    away_id: int | None = None
+    for s in fixture.statistics:
+        if s.participant_id is None or s.location is None:
+            continue
+        if s.location == "home" and home_id is None:
+            home_id = s.participant_id
+        elif s.location == "away" and away_id is None:
+            away_id = s.participant_id
+        if home_id is not None and away_id is not None:
+            break
+    if home_id is None or away_id is None or home_id == away_id:
+        return None
+    return home_id, away_id
+
+
+def _identify_home_away(fixture: Fixture):
+    """Identify the home and away participants.
+
+    Resolution order (most authoritative first):
+
+    1. ``participants[i].meta.location`` — Sportmonks' designated field
+       for home/away. Forward-compatible: included if/when the API
+       request asks for the ``meta`` sub-resource.
+
+    2. ``scores[i].score.participant`` cross-referenced with
+       ``participant_id`` — ground truth for live and finished fixtures.
+       Sportmonks tags each score with both team_id and home/away.
+
+    3. ``statistics[i].location`` cross-referenced with
+       ``participant_id`` — fallback for fixtures with stats but no
+       scores yet.
+
+    4. ``participants[0] = home`` — last-resort fallback. **Unreliable**:
+       Day-4 (2026-05-13) observed 9/31 fixtures where ``participants[0]``
+       was actually the away team (Crystal Palace vs Man City being the
+       canonical case — we displayed "Palace 3-0 City" when in reality
+       City won 3-0 at the Etihad).
     """
     if not fixture.participants or len(fixture.participants) < 2:
         raise ValueError("need 2 participants")
+    participants_by_id = {p.id: p for p in fixture.participants}
+
+    # Layer 1: meta.location (if API returned it).
+    home = next((p for p in fixture.participants if p.is_home() is True), None)
+    away = next((p for p in fixture.participants if p.is_home() is False), None)
+    if home is not None and away is not None:
+        return home, away
+    any_meta = any(p.meta is not None for p in fixture.participants)
+    if any_meta and (home is None) != (away is None):
+        raise ValueError(
+            f"fixture {fixture.id}: incomplete participant meta.location "
+            f"(home={home is not None}, away={away is not None})"
+        )
+
+    # Layer 2: scores cross-reference.
+    score_pair = _home_away_from_scores(fixture)
+    if score_pair is not None:
+        h_id, a_id = score_pair
+        if h_id in participants_by_id and a_id in participants_by_id:
+            return participants_by_id[h_id], participants_by_id[a_id]
+
+    # Layer 3: statistics cross-reference.
+    stats_pair = _home_away_from_statistics(fixture)
+    if stats_pair is not None:
+        h_id, a_id = stats_pair
+        if h_id in participants_by_id and a_id in participants_by_id:
+            return participants_by_id[h_id], participants_by_id[a_id]
+
+    # Layer 4: last-resort array order. Unreliable; emits when scores
+    # AND statistics are both absent (pre-kickoff state).
     return fixture.participants[0], fixture.participants[1]
 
 

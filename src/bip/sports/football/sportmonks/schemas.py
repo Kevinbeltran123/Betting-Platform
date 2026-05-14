@@ -41,6 +41,28 @@ def _ensure_utc(value: Any) -> Any:
 # ── Core fixture ─────────────────────────────────────────────────────────────
 
 
+class ParticipantMeta(BaseModel):
+    """Sportmonks per-participant metadata.
+
+    ``location`` is the load-bearing field: it identifies which team is
+    home and which is away, INDEPENDENT of array iteration order in the
+    ``participants`` list. Sportmonks does NOT guarantee the array is
+    home-first; ignoring this field silently mis-attributes scores,
+    predictions, and any home/away-keyed downstream signal.
+
+    Day-4 (2026-05-13) observed 9/31 fixtures where ``participants[0]``
+    was the away team — most prominently Crystal Palace vs Man City,
+    where the bug caused us to display the score "Palace 3-0 City" when
+    the real result was the inverse.
+    """
+
+    model_config = _MODEL_CONFIG
+
+    location: str | None = None  # 'home' | 'away'
+    winner: bool | None = None
+    position: int | None = None
+
+
 class Participant(BaseModel):
     """One team in a fixture."""
 
@@ -50,6 +72,14 @@ class Participant(BaseModel):
     name: str
     short_code: str | None = None
     image_path: str | None = None
+    meta: ParticipantMeta | None = None
+
+    def is_home(self) -> bool | None:
+        """Return True if Sportmonks marks this participant as home,
+        False if marked away, None if meta absent."""
+        if self.meta is None or self.meta.location is None:
+            return None
+        return self.meta.location == "home"
 
 
 class FixtureState(BaseModel):
@@ -312,19 +342,107 @@ class Fixture(BaseModel):
 
     # Convenience accessors
 
+    def _home_away_from_scores(self) -> tuple[int, int] | None:
+        """Internal helper: derive (home_id, away_id) from ``scores``.
+
+        Mirrors ``_home_away_from_scores`` in ``match_state.py``. Kept
+        on Fixture so convenience accessors stay self-contained.
+        """
+        if not self.scores:
+            return None
+        home_id = away_id = None
+        for s in self.scores:
+            if s.participant_id is None:
+                continue
+            body = s.score or {}
+            loc = body.get("participant")
+            if loc == "home" and home_id is None:
+                home_id = s.participant_id
+            elif loc == "away" and away_id is None:
+                away_id = s.participant_id
+            if home_id is not None and away_id is not None:
+                return home_id, away_id
+        return None
+
+    def _home_away_from_statistics(self) -> tuple[int, int] | None:
+        """Internal helper: derive (home_id, away_id) from ``statistics[i].location``."""
+        if not self.statistics:
+            return None
+        home_id = away_id = None
+        for s in self.statistics:
+            if s.participant_id is None or s.location is None:
+                continue
+            if s.location == "home" and home_id is None:
+                home_id = s.participant_id
+            elif s.location == "away" and away_id is None:
+                away_id = s.participant_id
+            if home_id is not None and away_id is not None:
+                return home_id, away_id
+        return None
+
     def home_team(self) -> Participant | None:
+        """Return the home participant.
+
+        Resolution order: ``participants[i].meta.location`` →
+        ``scores[i].score.participant`` × ``participant_id`` →
+        ``statistics[i].location`` × ``participant_id`` →
+        ``participants[0]`` (last-resort fallback).
+
+        Day-4 (2026-05-13) regression: ``participants[0]`` is NOT
+        guaranteed to be the home team (Sportmonks may return either
+        order). Crystal Palace vs Man City exposed this — Palace was
+        ``participants[0]`` but City was the real home (Etihad).
+        """
         if not self.participants:
             return None
+        # Layer 1: meta.location
         for p in self.participants:
-            # Sportmonks uses 'meta.location' on participants — not in our schema
-            # yet; for now return first as home (matches API ordering convention).
-            return p
+            if p.is_home() is True:
+                return p
+        any_meta = any(p.meta is not None for p in self.participants)
+        if not any_meta:
+            # Layer 2: scores
+            pair = self._home_away_from_scores()
+            if pair is not None:
+                home_id, _ = pair
+                for p in self.participants:
+                    if p.id == home_id:
+                        return p
+            # Layer 3: statistics
+            pair = self._home_away_from_statistics()
+            if pair is not None:
+                home_id, _ = pair
+                for p in self.participants:
+                    if p.id == home_id:
+                        return p
+            # Layer 4: array-order fallback
+            return self.participants[0]
         return None
 
     def away_team(self) -> Participant | None:
+        """Return the away participant. Mirrors ``home_team`` semantics."""
         if not self.participants or len(self.participants) < 2:
             return None
-        return self.participants[1]
+        # Layer 1: meta.location
+        for p in self.participants:
+            if p.is_home() is False:
+                return p
+        any_meta = any(p.meta is not None for p in self.participants)
+        if not any_meta:
+            pair = self._home_away_from_scores()
+            if pair is not None:
+                _, away_id = pair
+                for p in self.participants:
+                    if p.id == away_id:
+                        return p
+            pair = self._home_away_from_statistics()
+            if pair is not None:
+                _, away_id = pair
+                for p in self.participants:
+                    if p.id == away_id:
+                        return p
+            return self.participants[1]
+        return None
 
     def is_live(self) -> bool:
         if self.state is None:
