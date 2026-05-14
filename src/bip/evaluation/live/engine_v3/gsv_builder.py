@@ -23,6 +23,8 @@ which is the whole point of v3.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import datetime, timezone
 
 from bip.evaluation.live.engine_v3.gsv import (
@@ -46,23 +48,26 @@ from bip.evaluation.live.engine_v3.gsv import (
     XGState,
 )
 from bip.evaluation.live.match_state import LiveMatchState
+from bip.sports.football.sportmonks.types import StatType
 
-# Priors λ-gap threshold below which we prefer the bookmaker FT-1X2
-# moneyline as the dominant-team signal. Empirical justification
-# (Day-4 2026-05-13, n=31 fixtures): when |λ_h − λ_a| ≥ 0.25 the
-# Sportmonks predictions match the FT-1X2 favourite in 28/28 cases. The
-# 3 disagreements (Espanyol-Athletic 0.09 gap, Charlotte-NYC 0.25,
-# Nashville-NE 0.13) all sit in this tight band — and in each one the
-# market favourite was the opposite side of the lambda favourite. The
-# market is sharper than form-based λ in this regime.
-_PRIORS_LAMBDA_TIEBREAK_GAP = 0.25
+# Minimum implied-probability gap between home and away (from team-named
+# bookmaker markets) above which we trust the market favourite. A gap
+# below this means the market sees a coin-flip; we then fall back to
+# the prior-λ signal. Day-4 (2026-05-13, n=31) empirical anchor: the
+# narrowest non-coin-flip gap observed was ~6 pp (Espanyol vs Athletic
+# Club: 39.3% home vs 39.3% away — exactly even, so falls back).
+_MARKET_DOM_MIN_PROB_GAP = 0.04
 
 # elo_diff threshold below which we treat the elo signal as "absent".
 # Production observed value across 31 Day-4 fixtures: 0.0 (never
 # populated). Kept as a forward-compatibility hook for when the feed
 # is wired up — see Papers/V3_DAY4_FIXES.md.
 _ELO_DIFF_USABLE_MIN = 25.0
-from bip.sports.football.sportmonks.types import StatType
+
+# Minimum token length to count as a match between a market-id team
+# fragment and the GSV team name. 3 catches the smallest meaningful
+# tokens (e.g., "ofi", "psg") while filtering filler like "fc", "de".
+_NAME_TOKEN_MIN_LEN = 3
 
 # Expected xG-diff conditional on goal-diff: empirical anchor used to
 # derive ``xg.xg_vs_score_divergence``. Pulled from a top-5-league
@@ -255,33 +260,105 @@ def _role_signal_for_sub(state: LiveMatchState, sub_minute: int, team_id: int) -
     return "unknown"
 
 
+def _normalize_team_name(name: str) -> set[str]:
+    """Strip accents, lower-case, split on non-alnum, drop short fillers.
+
+    Returns the set of meaningful tokens. Used to fuzzy-match a team
+    name from the GSV (e.g., ``"Manchester City"``) against a market-
+    id fragment (e.g., ``"man_city"``) since Sportmonks uses different
+    abbreviations across endpoints.
+    """
+    if not name:
+        return set()
+    no_accents = unicodedata.normalize("NFKD", name).encode(
+        "ascii", "ignore"
+    ).decode("ascii")
+    tokens = re.split(r"[^a-z0-9]+", no_accents.lower())
+    return {t for t in tokens if len(t) >= _NAME_TOKEN_MIN_LEN}
+
+
+def _name_matches(market_fragment: str, team_name: str) -> bool:
+    """True iff the market-id fragment and team name share at least one
+    meaningful (≥3 char) token. Common cases:
+
+    - ``"man_city"`` vs ``"Manchester City"`` → {"city"} overlap ✓
+    - ``"crystal_palace"`` vs ``"Crystal Palace"`` → exact set match ✓
+    - ``"man_city"`` vs ``"Crystal Palace"`` → ∅ ✗
+    - ``"barcelona"`` vs ``"FC Barcelona"`` → {"barcelona"} ✓
+    """
+    return bool(
+        _normalize_team_name(market_fragment) & _normalize_team_name(team_name)
+    )
+
+
+def _market_implied_win_probs(
+    state: LiveMatchState, markets: MarketSnapshot,
+) -> tuple[float | None, float | None]:
+    """Sum implied P(team wins) from team-named BTTS-x-result markets.
+
+    The Sportmonks "result + BTTS" market exposes 6 unambiguously
+    team-named outcomes per fixture:
+        result___both_teams_to_score_<home>_/_yes
+        result___both_teams_to_score_<home>_/_no
+        result___both_teams_to_score_<away>_/_yes
+        result___both_teams_to_score_<away>_/_no
+        result___both_teams_to_score_draw_/_yes
+        result___both_teams_to_score_draw_/_no
+
+    P(team wins) = 1/yes_odds + 1/no_odds (raw, with overround — relative
+    ordering survives un-vigging). These are the **load-bearing**
+    bookmaker signal: market-ids embed team names, so there's no
+    home/away convention ambiguity.
+
+    We deliberately ignore the numeric ``fulltime_result_1/_2`` lines:
+    Day-4 (2026-05-13, n=31) observed 8 fixtures where those lines
+    disagreed with the team-named markets (most egregiously Palace-
+    City: ``fulltime_result_1=1.30`` implied Palace ~77% to win, while
+    team-named markets put City at ~80% — a clean inversion). The
+    numeric labels do NOT reliably map to home/away in the Sportmonks
+    odds feed.
+    """
+    home_p: float | None = None
+    away_p: float | None = None
+    for mid, line in markets.lines.items():
+        if not mid.startswith("result___both_teams_to_score_"):
+            continue
+        # Strip the prefix and the "_/_yes" / "_/_no" suffix.
+        try:
+            tail = mid.split("result___both_teams_to_score_", 1)[1]
+            team_part = tail.split("_/_", 1)[0]
+        except IndexError:
+            continue
+        if "draw" in team_part:
+            continue
+        dec = line.side_a_decimal
+        if not dec or dec <= 1.0:
+            continue
+        implied = 1.0 / dec
+        if _name_matches(team_part, state.home_team_name or ""):
+            home_p = (home_p or 0.0) + implied
+        elif _name_matches(team_part, state.away_team_name or ""):
+            away_p = (away_p or 0.0) + implied
+    return home_p, away_p
+
+
 def _market_dominant_team_id(
     state: LiveMatchState, markets: MarketSnapshot,
 ) -> int | None:
-    """Return the FT-1X2 favourite's team_id, or None when the market
-    signal is absent / ambiguous.
+    """Return the bookmaker favourite's team_id from team-named markets.
 
-    Lower decimal odds = bookmaker favourite. We compare the FT match
-    winner lines (``fulltime_result_1`` = home, ``fulltime_result_2`` =
-    away). Caller is responsible for deciding whether to trust this
-    over the prior-λ signal.
-
-    A draw with both decimals equal returns None so the caller can fall
-    back. We don't attempt overround removal — the relative ordering
-    of the two outright decimals is invariant to it.
+    Returns ``None`` when:
+    - No team-named markets present (only numeric lines available).
+    - Only one side has team-named markets (incomplete data).
+    - The gap in implied P(win) is below ``_MARKET_DOM_MIN_PROB_GAP``
+      (market sees a coin-flip).
     """
-    home_line = markets.lines.get("fulltime_result_1")
-    away_line = markets.lines.get("fulltime_result_2")
-    if home_line is None or away_line is None:
+    home_p, away_p = _market_implied_win_probs(state, markets)
+    if home_p is None or away_p is None:
         return None
-    h_dec = home_line.side_a_decimal
-    a_dec = away_line.side_a_decimal
-    if h_dec <= 1.0 or a_dec <= 1.0:
+    if abs(home_p - away_p) < _MARKET_DOM_MIN_PROB_GAP:
         return None
-    if abs(h_dec - a_dec) < 0.01:
-        # Bookmaker sees a coin-flip; no signal.
-        return None
-    return state.home_team_id if h_dec < a_dec else state.away_team_id
+    return state.home_team_id if home_p > away_p else state.away_team_id
 
 
 def _choose_dominant_team_id(
@@ -289,36 +366,39 @@ def _choose_dominant_team_id(
     priors: PreMatchPriors,
     markets: MarketSnapshot,
 ) -> int:
-    """Decide the dominant team using priors + market + elo signals.
+    """Decide the dominant team — bookmaker market over form-based λ.
 
-    Priority order:
-    1. Strong elo_diff (≥ ``_ELO_DIFF_USABLE_MIN``). Forward-compatible:
-       elo_diff is currently always 0.0 in production (Sportmonks feed
-       does not populate it), but when wired up this is the highest-
-       fidelity signal.
-    2. Tight priors-λ AND market disagrees → trust the market. The
-       priors-λ in production is computed from Sportmonks' scores
-       distribution (predictions type_id=240), which has been observed
-       to disagree with the FT-1X2 favourite in close-call matches
-       (Day-4: Espanyol-Athletic, Charlotte-NYC, Nashville-NE). In all
-       three the lambda-gap was below 0.25 — well inside the noise
-       band of a form-based prediction.
-    3. Otherwise: use the higher-λ team. This is the legacy behaviour
-       and matches the market favourite in 28/31 Day-4 fixtures.
+    Precedence (top wins):
+
+    1. Strong elo_diff (≥ ``_ELO_DIFF_USABLE_MIN``). Forward-compatible
+       hook; production observed value is always 0.0 today.
+
+    2. Team-named bookmaker market favourite (BTTS-x-result outcomes
+       summed). This is the canonical pre-match favourite signal —
+       it reflects where the money is, with team-id-free ambiguity.
+
+    3. Higher-λ team from Sportmonks predictions (legacy fallback).
+       Used only when the bookmaker markets are missing / coin-flip.
+
+    Empirical Day-4 (2026-05-13, n=31) calibration:
+    - 8 fixtures had numeric ``fulltime_result_1/2`` *disagreeing* with
+      the team-named markets — that signal is structurally unreliable
+      and is no longer consulted.
+    - 7 fixtures had the priors λ *disagreeing* with the team-named
+      markets (most prominently Palace vs Man City: λ said Palace was
+      favourite, market clearly said City). The market is the sharper
+      signal in those cases.
     """
     elo = priors.elo_diff
     if abs(elo) >= _ELO_DIFF_USABLE_MIN:
         return state.home_team_id if elo > 0 else state.away_team_id
 
+    market_pick = _market_dominant_team_id(state, markets)
+    if market_pick is not None:
+        return market_pick
+
     lh, la = priors.lambda_home_prematch, priors.lambda_away_prematch
-    priors_pick = state.home_team_id if lh >= la else state.away_team_id
-
-    if abs(lh - la) < _PRIORS_LAMBDA_TIEBREAK_GAP:
-        market_pick = _market_dominant_team_id(state, markets)
-        if market_pick is not None:
-            return market_pick
-
-    return priors_pick
+    return state.home_team_id if lh >= la else state.away_team_id
 
 
 def _ref_period(minute: int, is_finished: bool, is_half_time: bool) -> str:

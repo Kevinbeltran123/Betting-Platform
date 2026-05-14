@@ -102,104 +102,142 @@ def test_cruise_mode_phase_late_lead(priors, market_snapshot):
     assert out.score.goal_diff == 1
 
 
-# ── Dominant-team-id resolution (T2 fix) ────────────────────────────────
+# ── Dominant-team-id resolution (T2 fix v2: team-named markets) ─────────
 
 
-def _markets_with_ft_1x2(home_decimal: float, away_decimal: float) -> MarketSnapshot:
-    """Synthesize a MarketSnapshot carrying only the moneyline lines."""
+def _markets_with_team_named_bttsxresult(
+    *,
+    home_team: str,
+    away_team: str,
+    home_yes_decimal: float,
+    home_no_decimal: float,
+    away_yes_decimal: float,
+    away_no_decimal: float,
+) -> MarketSnapshot:
+    """Synthesize the Sportmonks ``result___both_teams_to_score_<team>_/_<yes|no>``
+    lines that the dominant-team resolver consults. Six outcomes per
+    fixture but we only need the four team-specific ones."""
     now = datetime.now(timezone.utc)
+    norm_home = home_team.lower().replace(" ", "_")
+    norm_away = away_team.lower().replace(" ", "_")
     return MarketSnapshot(
         lines={
-            "fulltime_result_1": MarketLine(
-                market_id="fulltime_result_1",
-                side_a_decimal=home_decimal,
-                line_value=None,
-                max_stake_cap=200.0,
+            f"result___both_teams_to_score_{norm_home}_/_yes": MarketLine(
+                market_id=f"result___both_teams_to_score_{norm_home}_/_yes",
+                side_a_decimal=home_yes_decimal, max_stake_cap=200.0,
                 last_update_utc=now,
             ),
-            "fulltime_result_2": MarketLine(
-                market_id="fulltime_result_2",
-                side_a_decimal=away_decimal,
-                line_value=None,
-                max_stake_cap=200.0,
+            f"result___both_teams_to_score_{norm_home}_/_no": MarketLine(
+                market_id=f"result___both_teams_to_score_{norm_home}_/_no",
+                side_a_decimal=home_no_decimal, max_stake_cap=200.0,
+                last_update_utc=now,
+            ),
+            f"result___both_teams_to_score_{norm_away}_/_yes": MarketLine(
+                market_id=f"result___both_teams_to_score_{norm_away}_/_yes",
+                side_a_decimal=away_yes_decimal, max_stake_cap=200.0,
+                last_update_utc=now,
+            ),
+            f"result___both_teams_to_score_{norm_away}_/_no": MarketLine(
+                market_id=f"result___both_teams_to_score_{norm_away}_/_no",
+                side_a_decimal=away_no_decimal, max_stake_cap=200.0,
                 last_update_utc=now,
             ),
         }
     )
 
 
-def test_dominant_uses_priors_when_lambda_gap_is_wide():
-    """|λ_h − λ_a| ≥ 0.25 → priors win. Backward-compat with the
-    legacy heuristic for clearly-favoured matches (Day-4: 28/31)."""
+def _state_with_names(home_name: str, away_name: str):
+    """Override the conftest default Home FC / Away FC names so the
+    team-named market matcher has something to bind to."""
+    from dataclasses import replace
+    return replace(make_state(), home_team_name=home_name, away_team_name=away_name)
+
+
+def test_dominant_palace_city_market_says_city_overrides_priors():
+    """**The empirical case that motivates this fix.**
+
+    Day-4 Palace vs Man City had Sportmonks priors at λ_h=1.64, λ_a=0.86
+    (priors said Palace favourite) but the team-named bookmaker markets
+    had Palace P(win) ≈ 13% vs City P(win) ≈ 80% — a 6:1 inversion.
+    The fix must trust the market, regardless of how wide the λ-gap is.
+    """
+    priors = PreMatchPriors(
+        lambda_home_prematch=1.64, lambda_away_prematch=0.86,
+    )
+    state = _state_with_names("Crystal Palace", "Man City")
+    # Real Day-4 odds: Palace_yes=13.0 Palace_no=17.0 → P=13.6%
+    #                  City_yes=2.62  City_no=2.37  → P=80.4%
+    markets = _markets_with_team_named_bttsxresult(
+        home_team="Crystal Palace", away_team="Man City",
+        home_yes_decimal=13.0, home_no_decimal=17.0,
+        away_yes_decimal=2.62, away_no_decimal=2.37,
+    )
+    out = GSVBuilder().build(state, priors=priors, markets=markets)
+    assert out.score.dominant_team_id == AWAY_ID  # City
+
+
+def test_dominant_priors_used_when_no_team_named_markets():
+    """Bookmaker signal absent → fall back to λ. This covers fixtures
+    where the BTTS-x-result odds set hasn't been emitted yet."""
     priors = PreMatchPriors(
         lambda_home_prematch=1.80, lambda_away_prematch=0.90,
     )
     state = make_state()
-    # Market disagrees (away favorite) but priors are clear → priors win
-    markets = _markets_with_ft_1x2(home_decimal=2.50, away_decimal=1.80)
-    out = GSVBuilder().build(state, priors=priors, markets=markets)
+    out = GSVBuilder().build(state, priors=priors, markets=MarketSnapshot())
     assert out.score.dominant_team_id == HOME_ID
 
 
-def test_dominant_uses_market_when_lambda_gap_is_tight():
-    """|λ_h − λ_a| < 0.25 AND market disagrees → market wins.
-
-    Day-4 empirical case: Charlotte (λ_h=1.35) vs NY City (λ_a=1.10),
-    gap = 0.25 — exactly on boundary. Market had r1=r2=2.60 (no signal).
-    But Espanyol (λ_h=1.19) vs Athletic (λ_a=1.28), gap = 0.09 with
-    r1=2.75 r2=2.87 (home favourite). The fix flips the dominant to
-    match the market for the second case.
-    """
-    priors = PreMatchPriors(
-        lambda_home_prematch=1.19, lambda_away_prematch=1.28,
-    )
-    state = make_state()
-    # Market clearly favors HOME (2.75 < 2.87 by enough)
-    markets = _markets_with_ft_1x2(home_decimal=2.75, away_decimal=2.87)
-    out = GSVBuilder().build(state, priors=priors, markets=markets)
-    # Without the tiebreaker dominant would be AWAY (la > lh). With the
-    # market tiebreaker, dominant flips to HOME.
-    assert out.score.dominant_team_id == HOME_ID
-
-
-def test_dominant_falls_back_to_priors_when_market_is_coin_flip():
-    """|λ_h − λ_a| < 0.25 BUT market is dead even → priors win.
-
-    Charlotte-NYC case: r1 == r2 → market gives no signal, so we keep
-    the lambda-based pick instead of arbitrary tie-breaking."""
+def test_dominant_priors_used_when_market_is_coin_flip():
+    """Gap in implied P(win) < 4 pp → market gives no signal."""
     priors = PreMatchPriors(
         lambda_home_prematch=1.35, lambda_away_prematch=1.10,
     )
-    state = make_state()
-    markets = _markets_with_ft_1x2(home_decimal=2.60, away_decimal=2.60)
+    state = _state_with_names("Charlotte", "New York City")
+    # Synthesize even probabilities (~42% each)
+    markets = _markets_with_team_named_bttsxresult(
+        home_team="Charlotte", away_team="New York City",
+        home_yes_decimal=4.0, home_no_decimal=4.5,
+        away_yes_decimal=4.0, away_no_decimal=4.5,
+    )
     out = GSVBuilder().build(state, priors=priors, markets=markets)
+    # Market coin-flip → λ wins → home dominant (lh > la)
     assert out.score.dominant_team_id == HOME_ID
 
 
-def test_dominant_falls_back_to_priors_when_market_lines_absent():
-    """No FT 1X2 lines → can't tiebreak → use priors."""
+def test_dominant_market_picks_home_when_home_priced_in():
+    """Sanity: when the bookmaker clearly favours home, the resolver
+    picks home — even if λ would have picked away."""
     priors = PreMatchPriors(
-        lambda_home_prematch=1.27, lambda_away_prematch=1.14,
+        lambda_home_prematch=1.00, lambda_away_prematch=1.50,
     )
-    state = make_state()
-    out = GSVBuilder().build(state, priors=priors, markets=MarketSnapshot())
-    # 1.27 > 1.14 → home dominant
+    state = _state_with_names("Olympiacos", "Panathinaikos")
+    # Olympiacos heavy fav: P ≈ 74%; Pana P ≈ 14%
+    markets = _markets_with_team_named_bttsxresult(
+        home_team="Olympiacos", away_team="Panathinaikos",
+        home_yes_decimal=2.7, home_no_decimal=2.7,
+        away_yes_decimal=14.0, away_no_decimal=14.0,
+    )
+    out = GSVBuilder().build(state, priors=priors, markets=markets)
     assert out.score.dominant_team_id == HOME_ID
 
 
 def test_dominant_uses_strong_elo_diff_when_available():
-    """elo_diff ≥ 25 trumps both priors-λ and market signal.
+    """elo_diff ≥ 25 trumps both market and priors.
 
-    Currently always 0.0 in production but the precedence is wired so
-    when the upstream feed populates elo we automatically use it.
+    Production observed value: always 0.0 today. Kept as a forward-
+    compatibility hook for when the feed is wired up.
     """
     priors = PreMatchPriors(
         lambda_home_prematch=1.10, lambda_away_prematch=1.50,
         elo_diff=120.0,  # home strongly favoured by elo
     )
-    state = make_state()
-    # Market also says away — both contradict elo
-    markets = _markets_with_ft_1x2(home_decimal=2.50, away_decimal=1.70)
+    state = _state_with_names("Strong Home", "Weaker Away")
+    # Market also says away; elo overrides both
+    markets = _markets_with_team_named_bttsxresult(
+        home_team="Strong Home", away_team="Weaker Away",
+        home_yes_decimal=10.0, home_no_decimal=10.0,
+        away_yes_decimal=2.5, away_no_decimal=2.5,
+    )
     out = GSVBuilder().build(state, priors=priors, markets=markets)
     assert out.score.dominant_team_id == HOME_ID
 
@@ -216,3 +254,31 @@ def test_dominant_explicit_arg_still_overrides_everything():
         dominant_team_id=AWAY_ID,
     )
     assert out.score.dominant_team_id == AWAY_ID
+
+
+def test_numeric_fulltime_result_lines_are_ignored():
+    """Day-4 evidence: ``fulltime_result_1/2`` is unreliable (8/31
+    fixtures disagree with team-named markets). The resolver MUST NOT
+    consult those lines. We verify by giving inverted numeric labels
+    and confirming the resolver still picks the team-named favourite."""
+    priors = PreMatchPriors(
+        lambda_home_prematch=1.64, lambda_away_prematch=0.86,
+    )
+    state = _state_with_names("Crystal Palace", "Man City")
+    markets = _markets_with_team_named_bttsxresult(
+        home_team="Crystal Palace", away_team="Man City",
+        home_yes_decimal=13.0, home_no_decimal=17.0,
+        away_yes_decimal=2.62, away_no_decimal=2.37,
+    )
+    # Inject a misleading numeric line that says home is heavy fav
+    now = datetime.now(timezone.utc)
+    markets.lines["fulltime_result_1"] = MarketLine(
+        market_id="fulltime_result_1", side_a_decimal=1.30,
+        max_stake_cap=100.0, last_update_utc=now,
+    )
+    markets.lines["fulltime_result_2"] = MarketLine(
+        market_id="fulltime_result_2", side_a_decimal=8.50,
+        max_stake_cap=100.0, last_update_utc=now,
+    )
+    out = GSVBuilder().build(state, priors=priors, markets=markets)
+    assert out.score.dominant_team_id == AWAY_ID  # team-named wins
