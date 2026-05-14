@@ -1,12 +1,8 @@
-"""Replay Day-3 (2026-05-12) using the v3 engine AS COMMITTED — no monkey-patches.
+"""Replay a shadow-log day using the v3 engine AS COMMITTED — no monkey-patches.
 
-This isolates "what would the production watch loop have emitted today
-if the fixes in commits 468d257 / 6ec9dbb / 3f7d821 were live"?
-
-Runs ``V3Pipeline().run()`` (default constructor — picks up the new
-``line_max_age_sec=300`` default, the patched ``liquidity_score``, the
-relaxed A3/A5 thresholds), wired with the OOD v2 detector. Sources GSVs
-from ``data/cache/v3_shadow/dt=2026-05-12/gsv_log.parquet``.
+Defaults to Day-4 (2026-05-13). The V3Pipeline runs end-to-end on each
+historical GSV frame, so the T1 dedup filter applies and the headline
+pick count reflects production behaviour going forward.
 
 This is purely additive read-only against the existing shadow log; no
 production code is touched, no new pkl written.
@@ -27,15 +23,13 @@ import polars as pl  # noqa: E402
 from bip.evaluation.live.engine_v3.archetypes import generate_theses  # noqa: E402
 from bip.evaluation.live.engine_v3.conditional_predictor import (  # noqa: E402
     ConditionalPredictor,
-    make_fair_prob_provider,
 )
 from bip.evaluation.live.engine_v3.gsv import GameStateVector  # noqa: E402
-from bip.evaluation.live.engine_v3.market_selector import select_markets  # noqa: E402
 from bip.evaluation.live.engine_v3.mispricing_window import (  # noqa: E402
     MispricingWindowConfig,
 )
-from bip.evaluation.live.engine_v3.no_bet_gate import run_gate  # noqa: E402
 from bip.evaluation.live.engine_v3.ood_detector import OODDetector  # noqa: E402
+from bip.evaluation.live.engine_v3.pipeline import V3Pipeline  # noqa: E402
 
 
 def main() -> int:
@@ -43,7 +37,7 @@ def main() -> int:
     parser.add_argument(
         "--src",
         type=Path,
-        default=Path("data/cache/v3_shadow/dt=2026-05-12/gsv_log.parquet"),
+        default=Path("data/cache/v3_shadow/dt=2026-05-13/gsv_log.parquet"),
     )
     parser.add_argument(
         "--ood",
@@ -84,13 +78,17 @@ def main() -> int:
                   f"actual={s.empirical_win_rate:.2f}  ks_p={s.ks_p_value:.4f}  n={s.n}")
 
     predictor = ConditionalPredictor.default(calibrator=calibrator)
-    provider = make_fair_prob_provider(predictor)
     win_cfg = MispricingWindowConfig()
+    pipeline = V3Pipeline(
+        conditional_predictor=predictor,
+        ood_detector=ood,
+        drift_monitor=drift_monitor,
+        mispricing_window_cfg=win_cfg,
+    )
 
-    # NOTE: defaults come from the committed code — target_stake=100,
-    # mes_threshold=0.6, line_max_age_sec=300 (just changed in 6ec9dbb).
     total_candidates = 0
     total_allowed = 0
+    total_deduped = 0
     per_archetype: Counter[str] = Counter()
     per_family: Counter[str] = Counter()
     deny_by_rule: Counter[str] = Counter()
@@ -101,88 +99,72 @@ def main() -> int:
     sample: list[dict] = []
     name_by_fid: dict[int, str] = {}
 
-    for g in gsvs:
+    # Sort by fixture_id + state_version so dedup state behaves like
+    # production (sequential frame ordering per fixture).
+    gsvs_sorted = sorted(gsvs, key=lambda g: (g.fixture_id, g.state_version))
+
+    for g in gsvs_sorted:
         name_by_fid[g.fixture_id] = f"{g.home_team_name} vs {g.away_team_name}"
-        theses = generate_theses(g)
-        if not theses:
-            continue
-        candidates = select_markets(
-            theses, g, provider, top_k=3, target_stake=100.0, mes_threshold=0.6
-        )
-        total_candidates += len(candidates)
-        if not candidates:
-            continue
-        gate_results = run_gate(
-            theses,
-            candidates,
-            g,
-            mes_threshold=0.6,
-            # line_max_age_sec=None → family-specific thresholds from
-            # no_bet_gate._LINE_MAX_AGE_BY_FAMILY (corners 1800s, goals
-            # 1500s, btts 300s, …). Justified empirically by the per-
-            # family line-age percentiles in the Day-3 dataset.
-            line_max_age_sec=None,
-            commentary_required=False,
-            uncertainty_band=0.08,
-            ood_detector=ood,
-            mispricing_window_cfg=win_cfg,
-            drift_monitor=drift_monitor,
-        )
-        # OOD short-circuits → all denied with rule 9. Detect.
-        if gate_results and all(
-            not r.verdict.allowed and r.verdict.rule_number == 9 for r in gate_results
+        out = pipeline.run_on_gsv(g)
+        total_candidates += len(out.candidates)
+        total_deduped += out.deduped_count
+        if out.gate_results and all(
+            not r.verdict.allowed and r.verdict.rule_number == 9
+            for r in out.gate_results
         ):
             ood_skips += 1
-        for r in gate_results:
-            if r.verdict.allowed:
-                total_allowed += 1
-                fixtures_with_picks.add(g.fixture_id)
-                picks_per_fixture[g.fixture_id] += 1
-                arch = r.candidate.thesis.archetype.value
-                fam = r.candidate.family.value
-                per_archetype[arch] += 1
-                per_family[fam] += 1
-                direction = r.candidate.thesis.prediction.direction
-                if (
-                    g.score.dominant_losing
-                    and direction in ("under", "no")
-                    and arch != "cruise_mode"
-                ):
-                    anti_napoli_violations.append(
-                        {
-                            "fixture_id": g.fixture_id,
-                            "minute": g.time.minute,
-                            "score": f"{g.score.home_goals}-{g.score.away_goals}",
-                            "archetype": arch,
-                            "market_id": r.candidate.market_id,
-                        }
-                    )
-                if len(sample) < 30:
-                    sample.append(
-                        {
-                            "fid": g.fixture_id,
-                            "match": f"{g.home_team_name} vs {g.away_team_name}",
-                            "min": g.time.minute,
-                            "score": f"{g.score.home_goals}-{g.score.away_goals}",
-                            "dom_los": g.score.dominant_losing,
-                            "arch": arch,
-                            "market": r.candidate.market_id,
-                            "dir": direction,
-                            "mes": round(r.candidate.mes.score, 2),
-                            "edge": round(r.candidate.mes.base_edge, 3),
-                            "fair_p": round(r.candidate.fair_prob, 3),
-                        }
-                    )
-            else:
+        for r in out.gate_results:
+            if not r.verdict.allowed:
                 deny_by_rule[f"rule_{r.verdict.rule_number}"] += 1
+        for pick in out.allowed_picks:
+            total_allowed += 1
+            fixtures_with_picks.add(g.fixture_id)
+            picks_per_fixture[g.fixture_id] += 1
+            arch = pick.candidate.thesis.archetype.value
+            fam = pick.candidate.family.value
+            per_archetype[arch] += 1
+            per_family[fam] += 1
+            direction = pick.candidate.thesis.prediction.direction
+            if (
+                g.score.dominant_losing
+                and direction in ("under", "no")
+                and arch != "cruise_mode"
+            ):
+                anti_napoli_violations.append(
+                    {
+                        "fixture_id": g.fixture_id,
+                        "minute": g.time.minute,
+                        "score": f"{g.score.home_goals}-{g.score.away_goals}",
+                        "archetype": arch,
+                        "market_id": pick.candidate.market_id,
+                    }
+                )
+            if len(sample) < 30:
+                sample.append(
+                    {
+                        "fid": g.fixture_id,
+                        "match": f"{g.home_team_name} vs {g.away_team_name}",
+                        "min": g.time.minute,
+                        "score": f"{g.score.home_goals}-{g.score.away_goals}",
+                        "dom_los": g.score.dominant_losing,
+                        "arch": arch,
+                        "market": pick.candidate.market_id,
+                        "dir": direction,
+                        "mes": round(pick.candidate.mes.score, 2),
+                        "edge": round(pick.candidate.mes.base_edge, 3),
+                        "fair_p": round(pick.candidate.fair_prob, 3),
+                    }
+                )
 
     print()
     print("=" * 80)
-    print(f"REPLAY OF 2026-05-12 WITH COMMITTED FIXES (no monkey-patches)")
+    print(f"REPLAY OF {args.src.parent.name} WITH COMMITTED FIXES — DEDUP'D")
     print("=" * 80)
     print(f"  total candidates produced:     {total_candidates}")
-    print(f"  total ALLOWED picks:           {total_allowed}")
-    print(f"  fixtures with at least 1 pick: {len(fixtures_with_picks)} / 20")
+    print(f"  total ALLOWED picks (unique):  {total_allowed}")
+    print(f"  deduped re-emissions:          {total_deduped}")
+    print(f"  fixtures with at least 1 pick: {len(fixtures_with_picks)} / "
+          f"{len({g.fixture_id for g in gsvs_sorted})}")
     print(f"  OOD short-circuit frames:      {ood_skips}")
     print(f"  anti-Napoli violations:        {len(anti_napoli_violations)}")
     print()
