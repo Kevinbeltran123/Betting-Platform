@@ -7,9 +7,16 @@ downstream archetype detector misfires.
 """
 from __future__ import annotations
 
-from bip.evaluation.live.engine_v3 import GSVBuilder, MarketSnapshot
+from datetime import datetime, timezone
+
+from bip.evaluation.live.engine_v3 import (
+    GSVBuilder,
+    MarketLine,
+    MarketSnapshot,
+    PreMatchPriors,
+)
 from bip.sports.football.sportmonks.types import StatType
-from tests.evaluation.live.engine_v3.conftest import HOME_ID, make_state
+from tests.evaluation.live.engine_v3.conftest import AWAY_ID, HOME_ID, make_state
 
 
 def test_gsv_builder_smoke(priors, market_snapshot):
@@ -93,3 +100,119 @@ def test_cruise_mode_phase_late_lead(priors, market_snapshot):
     out = GSVBuilder().build(state, priors=priors, markets=market_snapshot)
     assert out.tactical.home_phase in ("parking_bus", "controlling")
     assert out.score.goal_diff == 1
+
+
+# ── Dominant-team-id resolution (T2 fix) ────────────────────────────────
+
+
+def _markets_with_ft_1x2(home_decimal: float, away_decimal: float) -> MarketSnapshot:
+    """Synthesize a MarketSnapshot carrying only the moneyline lines."""
+    now = datetime.now(timezone.utc)
+    return MarketSnapshot(
+        lines={
+            "fulltime_result_1": MarketLine(
+                market_id="fulltime_result_1",
+                side_a_decimal=home_decimal,
+                line_value=None,
+                max_stake_cap=200.0,
+                last_update_utc=now,
+            ),
+            "fulltime_result_2": MarketLine(
+                market_id="fulltime_result_2",
+                side_a_decimal=away_decimal,
+                line_value=None,
+                max_stake_cap=200.0,
+                last_update_utc=now,
+            ),
+        }
+    )
+
+
+def test_dominant_uses_priors_when_lambda_gap_is_wide():
+    """|λ_h − λ_a| ≥ 0.25 → priors win. Backward-compat with the
+    legacy heuristic for clearly-favoured matches (Day-4: 28/31)."""
+    priors = PreMatchPriors(
+        lambda_home_prematch=1.80, lambda_away_prematch=0.90,
+    )
+    state = make_state()
+    # Market disagrees (away favorite) but priors are clear → priors win
+    markets = _markets_with_ft_1x2(home_decimal=2.50, away_decimal=1.80)
+    out = GSVBuilder().build(state, priors=priors, markets=markets)
+    assert out.score.dominant_team_id == HOME_ID
+
+
+def test_dominant_uses_market_when_lambda_gap_is_tight():
+    """|λ_h − λ_a| < 0.25 AND market disagrees → market wins.
+
+    Day-4 empirical case: Charlotte (λ_h=1.35) vs NY City (λ_a=1.10),
+    gap = 0.25 — exactly on boundary. Market had r1=r2=2.60 (no signal).
+    But Espanyol (λ_h=1.19) vs Athletic (λ_a=1.28), gap = 0.09 with
+    r1=2.75 r2=2.87 (home favourite). The fix flips the dominant to
+    match the market for the second case.
+    """
+    priors = PreMatchPriors(
+        lambda_home_prematch=1.19, lambda_away_prematch=1.28,
+    )
+    state = make_state()
+    # Market clearly favors HOME (2.75 < 2.87 by enough)
+    markets = _markets_with_ft_1x2(home_decimal=2.75, away_decimal=2.87)
+    out = GSVBuilder().build(state, priors=priors, markets=markets)
+    # Without the tiebreaker dominant would be AWAY (la > lh). With the
+    # market tiebreaker, dominant flips to HOME.
+    assert out.score.dominant_team_id == HOME_ID
+
+
+def test_dominant_falls_back_to_priors_when_market_is_coin_flip():
+    """|λ_h − λ_a| < 0.25 BUT market is dead even → priors win.
+
+    Charlotte-NYC case: r1 == r2 → market gives no signal, so we keep
+    the lambda-based pick instead of arbitrary tie-breaking."""
+    priors = PreMatchPriors(
+        lambda_home_prematch=1.35, lambda_away_prematch=1.10,
+    )
+    state = make_state()
+    markets = _markets_with_ft_1x2(home_decimal=2.60, away_decimal=2.60)
+    out = GSVBuilder().build(state, priors=priors, markets=markets)
+    assert out.score.dominant_team_id == HOME_ID
+
+
+def test_dominant_falls_back_to_priors_when_market_lines_absent():
+    """No FT 1X2 lines → can't tiebreak → use priors."""
+    priors = PreMatchPriors(
+        lambda_home_prematch=1.27, lambda_away_prematch=1.14,
+    )
+    state = make_state()
+    out = GSVBuilder().build(state, priors=priors, markets=MarketSnapshot())
+    # 1.27 > 1.14 → home dominant
+    assert out.score.dominant_team_id == HOME_ID
+
+
+def test_dominant_uses_strong_elo_diff_when_available():
+    """elo_diff ≥ 25 trumps both priors-λ and market signal.
+
+    Currently always 0.0 in production but the precedence is wired so
+    when the upstream feed populates elo we automatically use it.
+    """
+    priors = PreMatchPriors(
+        lambda_home_prematch=1.10, lambda_away_prematch=1.50,
+        elo_diff=120.0,  # home strongly favoured by elo
+    )
+    state = make_state()
+    # Market also says away — both contradict elo
+    markets = _markets_with_ft_1x2(home_decimal=2.50, away_decimal=1.70)
+    out = GSVBuilder().build(state, priors=priors, markets=markets)
+    assert out.score.dominant_team_id == HOME_ID
+
+
+def test_dominant_explicit_arg_still_overrides_everything():
+    """Caller-provided ``dominant_team_id`` short-circuits the heuristic
+    entirely — the anti-Napoli regression suite relies on this."""
+    priors = PreMatchPriors(
+        lambda_home_prematch=1.80, lambda_away_prematch=0.90,
+    )
+    state = make_state()
+    out = GSVBuilder().build(
+        state, priors=priors, markets=MarketSnapshot(),
+        dominant_team_id=AWAY_ID,
+    )
+    assert out.score.dominant_team_id == AWAY_ID

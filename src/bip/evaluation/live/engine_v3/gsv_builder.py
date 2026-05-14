@@ -46,6 +46,22 @@ from bip.evaluation.live.engine_v3.gsv import (
     XGState,
 )
 from bip.evaluation.live.match_state import LiveMatchState
+
+# Priors λ-gap threshold below which we prefer the bookmaker FT-1X2
+# moneyline as the dominant-team signal. Empirical justification
+# (Day-4 2026-05-13, n=31 fixtures): when |λ_h − λ_a| ≥ 0.25 the
+# Sportmonks predictions match the FT-1X2 favourite in 28/28 cases. The
+# 3 disagreements (Espanyol-Athletic 0.09 gap, Charlotte-NYC 0.25,
+# Nashville-NE 0.13) all sit in this tight band — and in each one the
+# market favourite was the opposite side of the lambda favourite. The
+# market is sharper than form-based λ in this regime.
+_PRIORS_LAMBDA_TIEBREAK_GAP = 0.25
+
+# elo_diff threshold below which we treat the elo signal as "absent".
+# Production observed value across 31 Day-4 fixtures: 0.0 (never
+# populated). Kept as a forward-compatibility hook for when the feed
+# is wired up — see Papers/V3_DAY4_FIXES.md.
+_ELO_DIFF_USABLE_MIN = 25.0
 from bip.sports.football.sportmonks.types import StatType
 
 # Expected xG-diff conditional on goal-diff: empirical anchor used to
@@ -239,6 +255,72 @@ def _role_signal_for_sub(state: LiveMatchState, sub_minute: int, team_id: int) -
     return "unknown"
 
 
+def _market_dominant_team_id(
+    state: LiveMatchState, markets: MarketSnapshot,
+) -> int | None:
+    """Return the FT-1X2 favourite's team_id, or None when the market
+    signal is absent / ambiguous.
+
+    Lower decimal odds = bookmaker favourite. We compare the FT match
+    winner lines (``fulltime_result_1`` = home, ``fulltime_result_2`` =
+    away). Caller is responsible for deciding whether to trust this
+    over the prior-λ signal.
+
+    A draw with both decimals equal returns None so the caller can fall
+    back. We don't attempt overround removal — the relative ordering
+    of the two outright decimals is invariant to it.
+    """
+    home_line = markets.lines.get("fulltime_result_1")
+    away_line = markets.lines.get("fulltime_result_2")
+    if home_line is None or away_line is None:
+        return None
+    h_dec = home_line.side_a_decimal
+    a_dec = away_line.side_a_decimal
+    if h_dec <= 1.0 or a_dec <= 1.0:
+        return None
+    if abs(h_dec - a_dec) < 0.01:
+        # Bookmaker sees a coin-flip; no signal.
+        return None
+    return state.home_team_id if h_dec < a_dec else state.away_team_id
+
+
+def _choose_dominant_team_id(
+    state: LiveMatchState,
+    priors: PreMatchPriors,
+    markets: MarketSnapshot,
+) -> int:
+    """Decide the dominant team using priors + market + elo signals.
+
+    Priority order:
+    1. Strong elo_diff (≥ ``_ELO_DIFF_USABLE_MIN``). Forward-compatible:
+       elo_diff is currently always 0.0 in production (Sportmonks feed
+       does not populate it), but when wired up this is the highest-
+       fidelity signal.
+    2. Tight priors-λ AND market disagrees → trust the market. The
+       priors-λ in production is computed from Sportmonks' scores
+       distribution (predictions type_id=240), which has been observed
+       to disagree with the FT-1X2 favourite in close-call matches
+       (Day-4: Espanyol-Athletic, Charlotte-NYC, Nashville-NE). In all
+       three the lambda-gap was below 0.25 — well inside the noise
+       band of a form-based prediction.
+    3. Otherwise: use the higher-λ team. This is the legacy behaviour
+       and matches the market favourite in 28/31 Day-4 fixtures.
+    """
+    elo = priors.elo_diff
+    if abs(elo) >= _ELO_DIFF_USABLE_MIN:
+        return state.home_team_id if elo > 0 else state.away_team_id
+
+    lh, la = priors.lambda_home_prematch, priors.lambda_away_prematch
+    priors_pick = state.home_team_id if lh >= la else state.away_team_id
+
+    if abs(lh - la) < _PRIORS_LAMBDA_TIEBREAK_GAP:
+        market_pick = _market_dominant_team_id(state, markets)
+        if market_pick is not None:
+            return market_pick
+
+    return priors_pick
+
+
 def _ref_period(minute: int, is_finished: bool, is_half_time: bool) -> str:
     if is_finished:
         return "FT"
@@ -289,10 +371,10 @@ class GSVBuilder:
         """
         ts = now_utc or datetime.now(timezone.utc)
 
-        # Pick the dominant team — explicit arg wins, else fall back to priors.
+        # Pick the dominant team — explicit arg wins; else use the
+        # priors/market/elo decision (see ``_choose_dominant_team_id``).
         if dominant_team_id is None:
-            home_dom = priors.lambda_home_prematch >= priors.lambda_away_prematch
-            dominant_team_id = state.home_team_id if home_dom else state.away_team_id
+            dominant_team_id = _choose_dominant_team_id(state, priors, markets)
 
         # Score state — dominant_losing is the load-bearing predicate.
         leader_goals = state.home_goals if dominant_team_id == state.home_team_id else state.away_goals
