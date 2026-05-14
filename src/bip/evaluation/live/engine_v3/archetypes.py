@@ -527,12 +527,29 @@ def detect_underdog_leads_siege(gsv: GameStateVector) -> Thesis | None:
 
 
 def detect_open_game(gsv: GameStateVector) -> Thesis | None:
+    """A8 — open game (3+ goals before 60'). T3 relaxation (2026-05-14):
+    formation data is always ``unknown`` in production (Sportmonks does
+    not populate per-fixture formations on the live feed; Day-4 sampled
+    31/31 fixtures with ``formation_home='unknown'`` and
+    ``formation_away='unknown'``). The aggressive-formation gate was
+    a proxy for "match is genuinely open" — but ``is_open_game`` (= 3+
+    goals before 60') is itself a stronger empirical signal than the
+    formation proxy. We fire on the score+minute predicate and let the
+    no-bet gate downstream handle calibration / OOD filtering.
+
+    If the formation feed ever lights up we can re-tighten via
+    invalidation triggers; the proxy is no longer required for emission.
+    """
     if not gsv.is_open_game:
         return None
     aggressive_formations = {"4-3-3", "3-4-3", "4-2-4", "3-3-4"}
-    if (gsv.roster.formation_home not in aggressive_formations
-            and gsv.roster.formation_away not in aggressive_formations):
-        return None
+    has_aggressive_formation = (
+        gsv.roster.formation_home in aggressive_formations
+        or gsv.roster.formation_away in aggressive_formations
+    )
+    # Higher prior when formation confirms — both signals point the same
+    # way. Otherwise fall back to score-based prior alone.
+    confidence_prior = 0.65 if has_aggressive_formation else 0.55
     return _mk_thesis(
         arch=ThesisArchetype.OPEN_GAME_FORMATIONS,
         rule_id="A8",
@@ -540,12 +557,10 @@ def detect_open_game(gsv: GameStateVector) -> Thesis | None:
         premise=[
             GSVPredicate(path="score.home_goals", op="ge", value=0),
             GSVPredicate(path="time.minute", op="le", value=60),
-            GSVPredicate(path="roster.formation_home", op="in",
-                         value=sorted(aggressive_formations)),
         ],
         chain=[
             CausalStep(
-                cause="3+_goals_early_with_attacking_shape",
+                cause="3+_goals_early",
                 effect="prematch_priors_obsolete",
                 mechanism="structure demonstrably open, rate forward-extrapolates",
             ),
@@ -568,7 +583,7 @@ def detect_open_game(gsv: GameStateVector) -> Thesis | None:
                 description="manager switches to a defensive shape",
             ),
         ],
-        confidence_prior=0.63,
+        confidence_prior=confidence_prior,
     )
 
 
@@ -622,15 +637,34 @@ def detect_key_playmaker_off(gsv: GameStateVector) -> Thesis | None:
 
 
 def detect_second_half_reset(gsv: GameStateVector) -> Thesis | None:
+    """A10 — second-half reset (HT formation change by trailing favourite).
+    T3 relaxation (2026-05-14): ``formation_changes`` is empty in 31/31
+    production fixtures (Sportmonks does not emit formation-change
+    events on the live feed). The causal mechanism — favourite trails
+    at HT and pushes with new shape after the break — is captured by
+    ``dominant_losing=True`` at min 46-50 with positive xG divergence;
+    the formation-change event was a proxy for "manager intent to
+    change" and is not load-bearing.
+
+    Substitute requirement: ``xg_vs_score_divergence`` must be ≥ 0.5 —
+    a stronger version of A2's 0.3 threshold so we don't double-fire
+    A10 on every dominant-trailing 2H frame. The 0.5 floor isolates the
+    "favourite genuinely should be ahead" subset of the dominant-losing
+    population.
+    """
     if gsv.time.period != "2H" or not (46 <= gsv.time.minute <= 50):
         return None
     if not gsv.score.dominant_losing:
         return None
-    # Formation change by the dominant (losing) team
-    dom_id = gsv.score.dominant_team_id
-    relevant = [c for c in gsv.roster.formation_changes if c.team_id == dom_id]
-    if not relevant:
+    if abs(gsv.xg.xg_vs_score_divergence) < 0.5:
         return None
+    # Formation change by the dominant (losing) team, if available, is
+    # additive confidence but not required for emission.
+    dom_id = gsv.score.dominant_team_id
+    has_formation_change = any(
+        c.team_id == dom_id for c in gsv.roster.formation_changes
+    )
+    confidence_prior = 0.68 if has_formation_change else 0.60
     return _mk_thesis(
         arch=ThesisArchetype.SECOND_HALF_RESET,
         rule_id="A10",
@@ -639,16 +673,16 @@ def detect_second_half_reset(gsv: GameStateVector) -> Thesis | None:
             GSVPredicate(path="time.period", op="eq", value="2H"),
             GSVPredicate(path="time.minute", op="between", value=[46, 50]),
             GSVPredicate(path="score.dominant_losing", op="eq", value=True),
-            GSVPredicate(path="roster.formation_changes", op="contains", value="dominant"),
+            GSVPredicate(path="xg.xg_vs_score_divergence", op="ge", value=0.5),
         ],
         chain=[
             CausalStep(
-                cause="ht_formation_reset_by_dominant",
+                cause="favourite_trails_at_ht_with_xg_pressure",
                 effect="books_repriced_with_lag",
                 mechanism="manual line review takes 5-10 min after restart",
             ),
             CausalStep(
-                cause="dominant_pushes_with_new_shape",
+                cause="favourite_pushes_in_2H",
                 effect="next_goal_or_2H_goals_up",
                 mechanism="information asymmetry vs book closing-line",
             ),
@@ -668,7 +702,7 @@ def detect_second_half_reset(gsv: GameStateVector) -> Thesis | None:
                 payload={"minute": 55},
             ),
         ],
-        confidence_prior=0.66,
+        confidence_prior=confidence_prior,
     )
 
 

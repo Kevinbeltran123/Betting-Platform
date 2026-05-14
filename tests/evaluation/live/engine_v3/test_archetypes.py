@@ -146,3 +146,183 @@ def test_generate_theses_returns_list(priors, market_snapshot):
         # invariants on every produced thesis
         assert t.confidence_prior >= 0.0
         assert len(t.invalidation_triggers) >= 1
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A8 — open game (T3 relaxation: fires without formation data)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_a8_fires_with_3_goals_open_phase_no_aggressive_formation(
+    priors, market_snapshot,
+):
+    """Day-4 (Brest-Strasbourg 1-2 at minute 23) is the empirical
+    benchmark: 3 goals before 60' but ``formation_home`` and
+    ``formation_away`` both ``'unknown'`` → A8 must fire on the score-
+    based predicate alone. Pre-T3 the formation gate killed this."""
+    state = make_state(home_goals=1, away_goals=2, minute=35)
+    gsv = _gsv(state, priors, market_snapshot)
+    # Default formations from RosterState are "unknown"
+    assert gsv.roster.formation_home == "unknown"
+    assert gsv.roster.formation_away == "unknown"
+    t = archetypes.detect_open_game(gsv)
+    assert t is not None
+    assert t.archetype == ThesisArchetype.OPEN_GAME_FORMATIONS
+    assert t.prediction.direction == "over"
+
+
+def test_a8_no_fire_before_3_goals():
+    """Negative control — fewer than 3 goals → no fire even with aggressive
+    formations."""
+    from bip.evaluation.live.engine_v3 import PreMatchPriors
+    state = make_state(home_goals=1, away_goals=1, minute=35)
+    gsv = _gsv(state, PreMatchPriors(), MarketSnapshot())
+    assert archetypes.detect_open_game(gsv) is None
+
+
+def test_a8_higher_prior_when_aggressive_formation_present(priors, market_snapshot):
+    """The relaxed gate still rewards confirmation: aggressive formation
+    bumps the confidence prior from 0.55 to 0.65."""
+    state = make_state(home_goals=2, away_goals=1, minute=40)
+    # Synthesize a GSV with the open_game predicate true; then post-edit
+    # the formation field on the GSV to confirm prior shifts.
+    gsv = _gsv(state, priors, market_snapshot)
+    t_low = archetypes.detect_open_game(gsv)
+    assert t_low is not None
+    assert t_low.confidence_prior == 0.55
+
+    # Mutate (test-only): a new GSV with aggressive formation_home
+    gsv2 = gsv.model_copy(
+        update={"roster": gsv.roster.model_copy(update={"formation_home": "4-3-3"})}
+    )
+    t_high = archetypes.detect_open_game(gsv2)
+    assert t_high is not None
+    assert t_high.confidence_prior == 0.65
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A10 — second-half reset (T3 relaxation: fires on xG divergence,
+# formation_change no longer required)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_a10_fires_with_dom_losing_xg_div_no_formation_change(
+    priors, market_snapshot,
+):
+    """Empirical case (Alavés-Barcelona, dominant=Barcelona trailing
+    at minute 47): ``formation_changes=[]`` always in production. The
+    causal signal is dominant_losing + xG divergence ≥ 0.5 in the 46-50
+    window. Pre-T3 this required a formation_change record that never
+    appears in real Sportmonks data."""
+    stats_home = {
+        StatType.SHOTS_TOTAL: 3, StatType.SHOTS_INSIDEBOX: 1,
+        StatType.BIG_CHANCES_CREATED: 0,
+        StatType.BALL_POSSESSION: 35.0,
+        StatType.DANGEROUS_ATTACKS: 15, StatType.KEY_PASSES: 2,
+    }
+    stats_away = {
+        StatType.SHOTS_TOTAL: 12, StatType.SHOTS_INSIDEBOX: 7,
+        StatType.BIG_CHANCES_CREATED: 3,
+        StatType.SHOTS_ON_TARGET: 5,
+        StatType.BALL_POSSESSION: 65.0,
+        StatType.DANGEROUS_ATTACKS: 55, StatType.KEY_PASSES: 9,
+    }
+    # Home leads 1-0 but is the underdog — away is dominant per priors
+    # (la > lh in the fixture/conftest). At minute 47 with away
+    # heavily outshooting → A10 should fire.
+    state = make_state(
+        home_goals=1, away_goals=0, minute=47,
+        home_stats=stats_home, away_stats=stats_away,
+        goal_events=[(30, HOME_ID)],
+    )
+    # Inverted priors so AWAY is the dominant team and is trailing
+    from bip.evaluation.live.engine_v3 import PreMatchPriors
+    away_dom_priors = PreMatchPriors(
+        lambda_home_prematch=0.90, lambda_away_prematch=2.20,
+    )
+    gsv = _gsv(state, away_dom_priors, market_snapshot)
+    assert gsv.score.dominant_losing is True
+    # Sign is negative because dominant=AWAY has the xG advantage but
+    # is trailing (xg_diff = home - away is strongly negative). A10 uses
+    # |divergence| to remain symmetric across home/away dominance.
+    assert abs(gsv.xg.xg_vs_score_divergence) >= 0.5
+    assert gsv.roster.formation_changes == []
+    t = archetypes.detect_second_half_reset(gsv)
+    assert t is not None
+    assert t.archetype == ThesisArchetype.SECOND_HALF_RESET
+
+
+def test_a10_no_fire_when_xg_divergence_too_low():
+    """Negative control: dominant_losing but |xG divergence| < 0.5 →
+    don't fire (this is the new signal that replaces the formation
+    requirement).
+
+    To craft this: the trailing dominant team's xG should align with
+    the expected xG for the current goal-diff. Home is dominant (per
+    priors), trailing 0-1; expected xg_diff for -1 score state ≈ -0.8.
+    We want the actual xg_diff close to -0.8 so divergence is small.
+    """
+    from bip.evaluation.live.engine_v3 import PreMatchPriors
+    # home very few shots, away modest — gives home_xg ≈ 0.1,
+    # away_xg ≈ 0.48 → xg_diff ≈ -0.38 → divergence vs expected −0.8 ≈ +0.42
+    stats_home = {
+        StatType.SHOTS_TOTAL: 2, StatType.SHOTS_INSIDEBOX: 1,
+        StatType.BIG_CHANCES_CREATED: 0, StatType.SHOTS_ON_TARGET: 0,
+    }
+    stats_away = {
+        StatType.SHOTS_TOTAL: 5, StatType.SHOTS_INSIDEBOX: 2,
+        StatType.BIG_CHANCES_CREATED: 1, StatType.SHOTS_ON_TARGET: 1,
+    }
+    state = make_state(
+        home_goals=0, away_goals=1, minute=47,
+        home_stats=stats_home, away_stats=stats_away,
+    )
+    home_dom_priors = PreMatchPriors(
+        lambda_home_prematch=2.0, lambda_away_prematch=0.95,
+    )
+    gsv = _gsv(state, home_dom_priors, MarketSnapshot())
+    assert gsv.score.dominant_losing is True
+    assert abs(gsv.xg.xg_vs_score_divergence) < 0.5
+    assert archetypes.detect_second_half_reset(gsv) is None
+
+
+def test_a10_higher_prior_when_formation_change_present(priors, market_snapshot):
+    """Same as A8: formation_change confirms the manager-intent signal
+    and bumps the prior from 0.60 to 0.68 — but absence is no longer a
+    blocker."""
+    from bip.evaluation.live.engine_v3 import PreMatchPriors
+    from bip.evaluation.live.engine_v3.gsv import FormationChange
+    stats_home = {
+        StatType.SHOTS_TOTAL: 3, StatType.SHOTS_INSIDEBOX: 1,
+        StatType.BIG_CHANCES_CREATED: 0,
+        StatType.BALL_POSSESSION: 35.0,
+    }
+    stats_away = {
+        StatType.SHOTS_TOTAL: 12, StatType.SHOTS_INSIDEBOX: 7,
+        StatType.BIG_CHANCES_CREATED: 3, StatType.SHOTS_ON_TARGET: 5,
+        StatType.BALL_POSSESSION: 65.0,
+    }
+    state = make_state(
+        home_goals=1, away_goals=0, minute=47,
+        home_stats=stats_home, away_stats=stats_away,
+        goal_events=[(30, HOME_ID)],
+    )
+    away_dom_priors = PreMatchPriors(
+        lambda_home_prematch=0.90, lambda_away_prematch=2.20,
+    )
+    gsv = _gsv(state, away_dom_priors, market_snapshot)
+    t_no_change = archetypes.detect_second_half_reset(gsv)
+    assert t_no_change is not None
+    assert t_no_change.confidence_prior == 0.60
+
+    # Inject a formation change by the dominant team
+    fc = FormationChange(
+        minute=46, team_id=gsv.away_team_id,
+        from_formation="4-2-3-1", to_formation="3-4-3",
+    )
+    gsv2 = gsv.model_copy(
+        update={"roster": gsv.roster.model_copy(update={"formation_changes": [fc]})}
+    )
+    t_change = archetypes.detect_second_half_reset(gsv2)
+    assert t_change is not None
+    assert t_change.confidence_prior == 0.68
