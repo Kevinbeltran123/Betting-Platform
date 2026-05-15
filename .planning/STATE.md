@@ -129,7 +129,7 @@ None yet.
 | 260503-q43 | Move bip/scheduler to bip/core/scheduler (G-CODE-04/10) | 2026-05-03 | 2e192d8 | | [260503-q43-mover-bip-scheduler-a-bip-core-scheduler](./quick/260503-q43-mover-bip-scheduler-a-bip-core-scheduler/) |
 | 260503-txj | Reconcile knobs configurable via Settings (G-MAINT-10) | 2026-05-03 | 6cc30ca | | [260503-txj-reschedule-cadence-max-retries-a-setting](./quick/260503-txj-reschedule-cadence-max-retries-a-setting/) |
 | 260515-ghb | v3 engine: 5 vetted shadow-run fixes (suspended-line dedup, MES dead-zone gate, OOD trim, variance squash, napoli drift exempt) | 2026-05-15 | 3ddfc09 | Verified | [260515-ghb-v3-engine-5-vetted-shadow-run-fixes-susp](./quick/260515-ghb-v3-engine-5-vetted-shadow-run-fixes-susp/) |
-| 260515-nxn Wave 3 | Rule-11 principled gate, MES calibrated-winprob, penaltyblog lambda store + ML-lambda dominant-team tier | 2026-05-15 | 77ede92 | Complete | [260515-nxn-v3-measurement-calibration-overhaul-clv-](./quick/260515-nxn-v3-measurement-calibration-overhaul-clv-/) |
+| 260515-nxn | v3 measurement+calibration overhaul (3 tiers, 9 items, 4 waves): suppress numerical_sustained, dead-signal audit, V3_TELEGRAM parser, canonical grading, deliveries.parquet, v3 CLV sink, shadow-promotion report, Rule-11 principled gate (napoli exemption superseded), MES calibrated-winprob, penaltyblog lambda store + ML-lambda dominant tier | 2026-05-15 | ad9ee39 | Verified (593 engine_v3 + 78 anti-Napoli green on main) | [260515-nxn-v3-measurement-calibration-overhaul-clv-](./quick/260515-nxn-v3-measurement-calibration-overhaul-clv-/) |
 
 ## Deferred Items
 
