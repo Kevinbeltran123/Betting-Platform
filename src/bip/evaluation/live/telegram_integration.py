@@ -28,6 +28,7 @@ import asyncio
 import logging
 import os
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,29 @@ from bip.evaluation.live.telegram_state import (
 from bip.evaluation.live.value_detector import LivePick
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SendResult:
+    """Result of ``LiveAlertSender.send_pick_safe``.
+
+    Replaces the bare ``bool`` return so callers can thread the
+    ``telegram_message_id`` out for delivery observability (e.g.,
+    writing deliveries.parquet). Backward-compatible: ``bool(result)``
+    is equivalent to the old ``return True/False`` contract.
+
+    send_result values:
+        "sent"    — message delivered; message_id is the Telegram message id.
+        "skipped" — pick filtered before network call; message_id is None.
+        "failed"  — network/API error during send; message_id is None.
+    """
+
+    ok: bool
+    message_id: int | None
+    status: str  # "sent" | "skipped" | "failed"
+
+    def __bool__(self) -> bool:  # noqa: D105
+        return self.ok
 
 
 class LiveAlertSender:
@@ -244,11 +268,12 @@ class LiveAlertSender:
         home_score: int | None = None,
         away_score: int | None = None,
         league_name: str | None = None,
-    ) -> bool:
+    ) -> SendResult:
         """Send a pick alert with tier-aware routing + optional keyboard.
 
-        Returns True on success, False on skip/failure. Failure modes
-        are logged but never raised.
+        Returns a ``SendResult`` with ``ok``, ``message_id``, and
+        ``status`` (sent|skipped|failed). ``bool(result)`` is backward-
+        compatible with the old ``return True/False`` contract.
 
         ``pick_id`` enables interactive features (inline keyboard,
         message-id tracking). When None, falls back to v1 send-only
@@ -263,7 +288,7 @@ class LiveAlertSender:
                 if pick_id is not None and self.state is not None:
                     # Queue muted pick so /resume can replay.
                     self.state.enqueue_burst(pick_id, BurstReason.MUTED)
-            return False
+            return SendResult(ok=False, message_id=None, status="skipped")
 
         # Bandwidth gate: if the token bucket is exhausted and we have a
         # durable queue available, defer instead of throttling-and-sending.
@@ -277,7 +302,7 @@ class LiveAlertSender:
         ):
             self.state.enqueue_burst(pick_id, BurstReason.BURST)
             self.n_queued += 1
-            return False
+            return SendResult(ok=False, message_id=None, status="skipped")
 
         await self._throttle()
         try:
@@ -317,14 +342,14 @@ class LiveAlertSender:
                 )
 
             self.n_sent += 1
-            return True
+            return SendResult(ok=True, message_id=message_id, status="sent")
         except Exception as exc:  # noqa: BLE001
             self.n_failed += 1
             logger.warning(
                 "telegram_send_failed pick=%s/%s err=%s",
                 pick.market, pick.selection, exc,
             )
-            return False
+            return SendResult(ok=False, message_id=None, status="failed")
 
     async def run_burst_flush_forever(
         self, *, period_seconds: float = 30.0,

@@ -1,6 +1,22 @@
 """Re-grade Day-4 (2026-05-13) v3 picks from the raw Sportmonks cache.
 
-WHY a re-grade is necessary:
+.. deprecated::
+    **DEPRECATED** — This script reconstructs outcomes from raw
+    Sportmonks snapshots and re-runs the v3 pipeline to regenerate
+    picks. This creates a tight coupling between the replay logic and
+    the production pipeline, making it fragile to pipeline changes.
+
+    For fresh grading of any date, use the canonical grading path::
+
+        uv run python -m scripts.spike.v3.grade_v3_shadow --date 2026-05-13
+
+    The canonical path (``v3_grader.grade_picks_for_date``) fetches
+    fixture data from Sportmonks directly — no raw-snapshot parsing,
+    no pipeline re-run, no circularity.
+    This script is kept only for historical reproducibility of the
+    Day-4 home/away-fix validation performed on 2026-05-13.
+
+WHY a re-grade was necessary (historical context):
     The home/away identification bug (fixed in commit abb4a16) corrupted
     9 of 31 Day-4 fixtures — most visibly Crystal Palace vs Man City,
     where we displayed "Palace 3-0 City" for what was actually a 3-0
@@ -30,6 +46,7 @@ import argparse
 import json
 import re
 import sys
+import warnings
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -155,6 +172,17 @@ def _build_pipeline() -> V3Pipeline:
 
 
 def main() -> int:
+    warnings.warn(
+        "regrade_day4_from_raw.py is deprecated — it re-runs the v3 pipeline "
+        "on raw snapshots and reconstructs outcomes from match state, which "
+        "creates coupling between replay logic and production code. "
+        "Use the canonical grader instead:\n"
+        "  uv run python -m scripts.spike.v3.grade_v3_shadow --date <YYYY-MM-DD>\n"
+        "See bip.evaluation.live.engine_v3.runtime.v3_grader.run_grade_for_date "
+        "for the callable API.",
+        DeprecationWarning,
+        stacklevel=1,
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default="2026-05-13")
     parser.add_argument("--snapshots-root", type=Path,
