@@ -158,6 +158,26 @@ def book_slowness(family: MarketFamily, recent_event_age_sec: float | None) -> f
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _squashed_goals_cvar(raw: float) -> float:
+    """Squashed GOALS conditional variance: raw / (1 + raw).
+
+    This is a monotone squash that maps [0, ∞) → [0, 1). Used ONLY
+    inside rule_8's shadow comparison for half-time GOALS theses to
+    check whether the squashed value would pass the uncertainty band.
+
+    The raw formula (λ_total × horizon / 90) is structurally high for
+    normal half-time horizons (~40 min): a λ=2.5 total with 40 min
+    remaining gives raw ≈ 1.11, squashed ≈ 0.53. The squash reflects
+    that the remaining horizon matters less near HT — the first-half
+    info has already resolved much of the uncertainty.
+
+    DO NOT use this as the return value of conditional_variance —
+    that would silently change MES scoring for all GOALS picks.
+    This helper exists ONLY for the rule_8 shadow branch.
+    """
+    return raw / (1.0 + raw)
+
+
 def conditional_variance(family: MarketFamily, gsv: GameStateVector, horizon: int) -> float:
     """Rough variance estimate. Higher = less confident → divides MES.
 
@@ -172,6 +192,11 @@ def conditional_variance(family: MarketFamily, gsv: GameStateVector, horizon: in
     - Corners: similar to goals but ~3× higher absolute scale
     - Cards: ~0.5× corners
     - Next-X: variance roughly inverse to current rate
+
+    IMPORTANT: the return value of this function for GOALS is the RAW
+    formula (λ_total × horizon / 90). Do NOT change it to the squashed
+    variant (_squashed_goals_cvar) — that would silently change pick
+    selection for all GOALS candidates (constraint #2).
     """
     if family == MarketFamily.GOALS:
         lam = gsv.priors.lambda_home_prematch + gsv.priors.lambda_away_prematch
@@ -302,6 +327,7 @@ def compute_mes(
 
 __all__ = [
     "MESResult",
+    "_squashed_goals_cvar",
     "book_slowness",
     "compute_mes",
     "conditional_variance",

@@ -36,7 +36,9 @@ from bip.evaluation.live.engine_v3.no_bet_gate import (
     rule_8_predictive_uncertainty,
     rule_12_mes_dead_zone,
     run_gate,
+    GateResult,
 )
+from bip.evaluation.live.engine_v3.mes import _squashed_goals_cvar
 from bip.evaluation.live.engine_v3.thesis import (
     CausalChain,
     CausalStep,
@@ -329,3 +331,190 @@ def test_rule_12_control_non_cruise_goals_passes():
         ),
     )
     assert rule_12_mes_dead_zone(cand).allowed
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Rule 8 shadow path — horizon-squashed GOALS cvar at HT
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_goals_candidate_with_cvar(cvar: float) -> MarketCandidate:
+    """GOALS candidate with the given conditional_variance."""
+    thesis = Thesis(
+        id="GOALS_SHADOW",
+        archetype=ThesisArchetype.OPEN_GAME_FORMATIONS,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(
+            family=MarketFamily.GOALS,
+            direction="over",
+            magnitude_pp=0.05,
+            horizon=build_horizon("rest_of_match", 40),
+        ),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="g")],
+        confidence_prior=0.6,
+        source=ThesisSource(layer="rule", identifier="GOALS_SHADOW"),
+        activated_at_minute=45,
+    )
+    return MarketCandidate(
+        thesis=thesis,
+        market_id="match_goals_over_2.5",
+        family=MarketFamily.GOALS,
+        fair_prob=0.6,
+        mes=MESResult(
+            thesis_id="GOALS_SHADOW",
+            market_id="match_goals_over_2.5",
+            family=MarketFamily.GOALS,
+            base_edge=0.05,
+            signal_clarity=1.0,
+            book_slowness=1.0,
+            liquidity_score=1.0,
+            conditional_variance=cvar,
+            score=1.0,
+        ),
+    )
+
+
+def _stub_gsv_with_minute(minute: int) -> GameStateVector:
+    """_stub_gsv with a configurable minute."""
+    now = datetime.now(timezone.utc)
+    snapshot = MarketSnapshot(lines={
+        "match_goals_over_2.5": MarketLine(
+            market_id="match_goals_over_2.5", side_a_decimal=2.0,
+            max_stake_cap=500.0,
+            last_update_utc=now - timedelta(seconds=10),
+        ),
+    })
+    return GameStateVector(
+        fixture_id=99, state_version=1, timestamp_utc=now,
+        home_team_id=100, away_team_id=200,
+        score=ScoreState(home_goals=1, away_goals=1, goal_diff=0, dominant_team_id=100),
+        time=TimeState(minute=minute, period="2H" if minute > 45 else "1H", time_remaining_match=float(90 - minute)),
+        numerical=NumericalState(),
+        xg=XGState(),
+        flow=FlowState(),
+        corners=CornerState(),
+        cards=CardsState(),
+        roster=RosterState(),
+        tactical=TacticalState(),
+        priors=PreMatchPriors(),
+        markets=snapshot,
+        last_critical_event_age_sec=None,
+    )
+
+
+def test_rule_8_shadow_goals_ht_allowed_shadow_recorded(tmp_path):
+    """GOALS candidate at minute 48 with raw cvar > band but squashed <= band:
+    candidate PASSES (shadow-only) and shadow denial row is recorded."""
+    from bip.evaluation.live.engine_v3.shadow_logger import ShadowLogger
+
+    # raw_cvar=1.1, band=0.08*10=0.8 → raw > band
+    # squashed = 1.1/(1+1.1) ≈ 0.524 < 0.8 → squashed passes → shadow
+    raw_cvar = 1.1
+    assert raw_cvar > 0.08 * 10, "Precondition: raw must exceed band"
+    assert _squashed_goals_cvar(raw_cvar) <= 0.08 * 10, "Precondition: squashed must pass"
+
+    cand = _make_goals_candidate_with_cvar(raw_cvar)
+    gsv = _stub_gsv_with_minute(48)
+    shadow_log = ShadowLogger(output_root=tmp_path)
+    verdict = rule_8_predictive_uncertainty(
+        cand,
+        gsv=gsv,
+        shadow_logger=shadow_log,
+        fixture_id=gsv.fixture_id,
+        ts=gsv.timestamp_utc,
+    )
+    # Candidate PASSES (shadow-only)
+    assert verdict.allowed is True
+    # Shadow denial recorded
+    assert shadow_log.buffer_size()[1] == 1, "Expected 1 shadow denial in buffer"
+
+
+def test_rule_8_pre_min40_goals_still_denied(tmp_path):
+    """GOALS candidate BEFORE minute 40 with raw cvar > band:
+    shadow path does NOT apply — candidate is REALLY denied."""
+    from bip.evaluation.live.engine_v3.shadow_logger import ShadowLogger
+
+    raw_cvar = 1.1  # > 0.8 band
+    cand = _make_goals_candidate_with_cvar(raw_cvar)
+    gsv = _stub_gsv_with_minute(35)  # < 40 → no shadow
+    shadow_log = ShadowLogger(output_root=tmp_path)
+    verdict = rule_8_predictive_uncertainty(
+        cand,
+        gsv=gsv,
+        shadow_logger=shadow_log,
+        fixture_id=gsv.fixture_id,
+        ts=gsv.timestamp_utc,
+    )
+    assert verdict.allowed is False
+    assert verdict.rule_number == 8
+    # No shadow row (real deny)
+    assert shadow_log.buffer_size()[1] == 0
+
+
+def test_rule_8_mes_score_regression_unchanged():
+    """Regression test (constraint #2): an unrelated GOALS candidate's
+    mes.score is identical before and after this task's changes.
+
+    The enforced MES math must be byte-for-byte unchanged. We verify by
+    computing mes.score directly via compute_mes and checking the raw
+    conditional_variance matches the expected formula.
+
+    compute_mes: score = (base_edge * clarity * slowness * liq) / cvar / 0.1
+    With λ_total=2.5, horizon=45: raw_cvar = max(0.5, 2.5*45/90) = 1.25
+    """
+    from bip.evaluation.live.engine_v3.mes import compute_mes
+
+    now = datetime.now(timezone.utc)
+    markets = MarketSnapshot(lines={
+        "match_goals_over_2.5": MarketLine(
+            market_id="match_goals_over_2.5", side_a_decimal=2.0,
+            max_stake_cap=1.0,  # Phase-1 placeholder → liquidity_score=1.0
+            last_update_utc=now,
+        ),
+    })
+    gsv = GameStateVector(
+        fixture_id=42, state_version=1, timestamp_utc=now,
+        home_team_id=1, away_team_id=2,
+        score=ScoreState(home_goals=1, away_goals=0, goal_diff=1, dominant_team_id=1),
+        time=TimeState(minute=45, period="1H", time_remaining_match=45.0),
+        numerical=NumericalState(),
+        xg=XGState(),
+        flow=FlowState(),
+        corners=CornerState(),
+        cards=CardsState(),
+        roster=RosterState(),
+        tactical=TacticalState(),
+        priors=PreMatchPriors(lambda_home_prematch=1.35, lambda_away_prematch=1.15),
+        markets=markets,
+    )
+    thesis = Thesis(
+        id="REGRESSION",
+        archetype=ThesisArchetype.OPEN_GAME_FORMATIONS,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(
+            family=MarketFamily.GOALS, direction="over", magnitude_pp=0.05,
+            horizon=build_horizon("rest_of_match", 45),
+        ),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="g")],
+        confidence_prior=0.6,
+        source=ThesisSource(layer="rule", identifier="REGRESSION"),
+        activated_at_minute=45,
+    )
+    line = markets.lines["match_goals_over_2.5"]
+    result = compute_mes(
+        thesis, "match_goals_over_2.5", MarketFamily.GOALS, line, gsv,
+        fair_prob=0.55,
+    )
+    # λ_total=2.5, horizon=45: raw_cvar = max(0.5, 2.5*45/90) = 1.25
+    expected_cvar = max(0.5, 2.5 * 45 / 90.0)
+    assert result.conditional_variance == pytest.approx(expected_cvar), (
+        f"conditional_variance must be RAW formula (constraint #2): "
+        f"expected {expected_cvar}, got {result.conditional_variance}"
+    )
+    # Verify the squash helper produces a DIFFERENT value (i.e., not equal to raw)
+    squashed = _squashed_goals_cvar(result.conditional_variance)
+    assert result.conditional_variance != pytest.approx(squashed), (
+        "conditional_variance must be RAW (not squashed) — constraint #2"
+    )

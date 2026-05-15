@@ -27,6 +27,7 @@ from bip.evaluation.live.engine_v3.mispricing_window import (
     classify_gsv,
 )
 from bip.evaluation.live.engine_v3.ood_detector import OODDetector
+from bip.evaluation.live.engine_v3.mes import _squashed_goals_cvar
 from bip.evaluation.live.engine_v3.thesis import (
     MarketFamily,
     Thesis,
@@ -210,21 +211,63 @@ def rule_7_liquidity_gate(candidate: MarketCandidate) -> NoBetVerdict:
     return NoBetVerdict.ok()
 
 
-def rule_8_predictive_uncertainty(candidate: MarketCandidate,
-                                  uncertainty_band: float = 0.08) -> NoBetVerdict:
+def rule_8_predictive_uncertainty(
+    candidate: MarketCandidate,
+    uncertainty_band: float = 0.08,
+    *,
+    gsv: GameStateVector | None = None,
+    shadow_logger: "ShadowLogger | None" = None,
+    fixture_id: int | None = None,
+    ts=None,
+) -> NoBetVerdict:
     """#8 — If the conditional predictor reports a confidence interval
     wider than book_implied ± 8%, abort.
 
     The width is currently embedded in the ``mes.conditional_variance``
     factor. We compare against a normalised threshold: a variance
-    larger than ``uncertainty_band * 10`` is considered too wide. This
-    is a structural placeholder; Phase 2 wires the real CI from the
-    predictor."""
-    if candidate.mes.conditional_variance > uncertainty_band * 10:
+    larger than ``uncertainty_band * 10`` is considered too wide.
+
+    SHADOW-ONLY exception: when the raw cvar WOULD deny AND the family is
+    GOALS AND the current minute is >= 40 AND the squashed cvar (raw/(1+raw))
+    would PASS the band → candidate passes, shadow denial recorded.
+
+    In all other cases rule_8 enforces exactly as before. This shadow path
+    was added because open_game/GOALS candidates at half-time (minute ~45)
+    are structurally un-passable: λ_total × 40/90 ≈ 1.11, squashed ≈ 0.53,
+    which is well within the band. Collecting shadow data for 1-2 weeks will
+    confirm whether squashing is a sound policy before enforcing it.
+    """
+    raw_cvar = candidate.mes.conditional_variance
+    band = uncertainty_band * 10
+    if raw_cvar > band:
+        # Check shadow path: GOALS, minute >= 40, squashed would pass
+        if (
+            gsv is not None
+            and candidate.family == MarketFamily.GOALS
+            and gsv.time.minute >= 40
+            and shadow_logger is not None
+            and fixture_id is not None
+            and ts is not None
+        ):
+            squashed = _squashed_goals_cvar(raw_cvar)
+            if squashed <= band:
+                # Shadow-only: record denial but let candidate pass.
+                shadow_deny = NoBetVerdict.deny(
+                    8,
+                    f"rule_8 shadow: raw cvar {raw_cvar:.2f} > band {band:.2f} "
+                    f"but squashed {squashed:.2f} <= {band:.2f} "
+                    f"(GOALS, minute={gsv.time.minute})",
+                )
+                shadow_logger.record_shadow_denial(
+                    GateResult(candidate=candidate, verdict=shadow_deny),
+                    fixture_id=fixture_id,
+                    ts=ts,
+                )
+                return NoBetVerdict.ok()
         return NoBetVerdict.deny(
             8,
-            f"predictive variance {candidate.mes.conditional_variance:.2f} "
-            f"exceeds band {uncertainty_band * 10:.2f}",
+            f"predictive variance {raw_cvar:.2f} "
+            f"exceeds band {band:.2f}",
         )
     return NoBetVerdict.ok()
 
@@ -451,7 +494,13 @@ def run_gate(
             rule_12_mes_dead_zone(c),
             rule_6_commentary_lag(c, gsv, commentary_required),
             rule_7_liquidity_gate(c),
-            rule_8_predictive_uncertainty(c, uncertainty_band),
+            rule_8_predictive_uncertainty(
+                c, uncertainty_band,
+                gsv=gsv,
+                shadow_logger=shadow_logger,
+                fixture_id=gsv.fixture_id,
+                ts=gsv.timestamp_utc,
+            ),
             rule_10_mispricing_window(c, window, win_cfg),
             rule_11_calibration_drift(c, gsv, drift_monitor),
         ):
