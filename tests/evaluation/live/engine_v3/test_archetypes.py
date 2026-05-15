@@ -111,6 +111,29 @@ def test_a11_fires_on_sustained_advantage(priors, market_snapshot):
     assert t.prediction.family.value == "corners"
 
 
+def test_a11_suppressed_from_generate_theses(priors, market_snapshot):
+    """NUMERICAL_SUSTAINED must never appear in generate_theses output.
+
+    The detector still fires (confirmed above) — but it has been removed
+    from _ARCHETYPE_DETECTORS because both sample days showed net-negative
+    EV (D3: -5.79u wr=0.50 n=42; D4: -1.00u; MES anti-predictive).
+    """
+    # Build a GSV that would previously qualify for NUMERICAL_SUSTAINED:
+    # lead=1-0, red card 40 min ago (minute=65), not dominant_losing.
+    state = make_state(home_goals=1, away_goals=0, minute=65,
+                       red_card_events=[(25, AWAY_ID)])
+    gsv = _gsv(state, priors, market_snapshot)
+    # Verify the raw detector still fires (function is intact).
+    assert archetypes.detect_numerical_sustained(gsv) is not None
+    # Verify generate_theses never yields NUMERICAL_SUSTAINED.
+    theses = archetypes.generate_theses(gsv)
+    archetypes_found = [t.archetype for t in theses]
+    assert ThesisArchetype.NUMERICAL_SUSTAINED not in archetypes_found, (
+        f"NUMERICAL_SUSTAINED must not fire via generate_theses; "
+        f"got: {archetypes_found}"
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # A12 — cruise mode
 # ──────────────────────────────────────────────────────────────────────

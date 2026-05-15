@@ -68,6 +68,49 @@ def test_v3_shadow_enabled_unparseable_falls_open(monkeypatch):
     assert is_v3_shadow_enabled() is True
 
 
+# ──────────────────────────────────────────────────────────────────────
+# V3_TELEGRAM_ENABLED: unified parser contract
+# ──────────────────────────────────────────────────────────────────────
+# watch.py previously used a bespoke 4-token set {"1","true","yes","on"}
+# for V3_TELEGRAM_ENABLED (fail-closed on unknowns). It now delegates to
+# is_v3_shadow_enabled("V3_TELEGRAM_ENABLED") — same parser as the
+# DualWriteRuntime internal gate.  Both sides produce the same decision
+# for any env-var value.
+#
+# This test asserts the unified parser behaviour for all relevant tokens.
+# The "watch.py decision" is is_v3_shadow_enabled("V3_TELEGRAM_ENABLED")
+# because that is what watch.py now calls.
+
+
+@pytest.mark.parametrize("raw,expected", [
+    # unset → True (fail-open: default to enabled, operator sees logs)
+    (None, True),
+    # truthy tokens
+    ("true",  True),
+    ("y",     True),
+    ("on",    True),
+    # falsy tokens
+    ("false", False),
+    ("0",     False),
+    # garbage → True (fail-open: same as unset — operator notices via logs)
+    ("garbage", True),
+])
+def test_v3_telegram_enabled_parser_unified(monkeypatch, raw, expected):
+    """watch.py and DualWriteRuntime use the same is_v3_shadow_enabled parser
+    for V3_TELEGRAM_ENABLED.  Assert the canonical decision for each token.
+
+    Fail-open semantics: unset and unparseable both return True so the
+    operator sees Telegram traffic and can confirm the env-var spelling
+    rather than having alerts silently dropped.
+    """
+    if raw is None:
+        monkeypatch.delenv("V3_TELEGRAM_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("V3_TELEGRAM_ENABLED", raw)
+    # Both watch.py and DualWriteRuntime now call the same function:
+    assert is_v3_shadow_enabled("V3_TELEGRAM_ENABLED") is expected
+
+
 def test_kill_switch_absent_returns_false(tmp_path):
     path = tmp_path / "never_exists.flag"
     assert is_v3_kill_switch_engaged(path) is False

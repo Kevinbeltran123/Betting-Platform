@@ -29,8 +29,10 @@ def test_pipeline_runs_on_napoli_scenario(priors, market_snapshot, state_napoli_
 
 
 def test_pipeline_on_numerical_advantage(priors, market_snapshot):
-    """Late game with sustained 11v10 — archetype 11 should fire AND
-    the rule-2 inversion gate must NOT block (dominant is leading)."""
+    """Late game with sustained 11v10 — NUMERICAL_SUSTAINED is suppressed
+    from the _ARCHETYPE_DETECTORS registry (net-negative both sample days:
+    D3 -5.79u wr=0.50 n=42; D4 -1.00u).  The detector function still exists
+    but must NOT appear in pipeline output."""
     state = make_state(
         home_goals=1, away_goals=0, minute=70,
         red_card_events=[(25, AWAY_ID)],
@@ -50,7 +52,8 @@ def test_pipeline_on_numerical_advantage(priors, market_snapshot):
     out = pipeline.run(state, priors=priors, markets=market_snapshot,
                        dominant_team_id=HOME_ID)
     arch_ids = {t.archetype.value for t in out.theses}
-    assert "numerical_sustained" in arch_ids
+    # Suppressed: detector removed from _ARCHETYPE_DETECTORS.
+    assert "numerical_sustained" not in arch_ids
 
 
 def test_pipeline_zero_picks_when_no_thesis(priors, market_snapshot):

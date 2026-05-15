@@ -51,7 +51,10 @@ from bip.evaluation.live import (  # noqa: E402
     LiveMatchState,
     ValueDetector,
 )
-from bip.evaluation.live.engine_v3.runtime import DualWriteRuntime  # noqa: E402
+from bip.evaluation.live.engine_v3.runtime import (  # noqa: E402
+    DualWriteRuntime,
+    is_v3_shadow_enabled,
+)
 from bip.evaluation.live.pick_tracker import (  # noqa: E402
     DEFAULT_DB_PATH,
     PickTracker,
@@ -594,12 +597,16 @@ async def watch_loop(
             build_observer_from_env,
         )
         observer = build_observer_from_env()
-        # Telegram promotion: if V3_TELEGRAM_ENABLED is truthy AND a
-        # LiveAlertSender exists, wire it into the runtime so v3 picks
-        # flow through the same alert pipeline as v2 used to.
-        v3_telegram_on = os.environ.get(
-            "V3_TELEGRAM_ENABLED", "",
-        ).strip().lower() in {"1", "true", "yes", "on"}
+        # AND-gate: v3 Telegram promotion requires BOTH conditions to be true:
+        #   (1) telegram_sender is wired (a LiveAlertSender was constructed), AND
+        #   (2) V3_TELEGRAM_ENABLED env-var is truthy (runtime opt-in).
+        # is_v3_shadow_enabled is the single canonical truthy/falsy parser —
+        # it accepts {"1","true","yes","on","y","t"} as true and defaults to
+        # True when the var is unset (fail-open). watch.py previously used a
+        # bespoke 4-token set {"1","true","yes","on"} (fail-closed for unknowns),
+        # creating a latent inconsistency with DualWriteRuntime's internal gate.
+        # Now unified: both sides call the same parser, same token set.
+        v3_telegram_on = is_v3_shadow_enabled("V3_TELEGRAM_ENABLED")
         v3_telegram_sender = telegram_sender if v3_telegram_on else None
         v3_runtime: DualWriteRuntime | None = DualWriteRuntime.from_paths(
             observer=observer,
