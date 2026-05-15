@@ -10,10 +10,25 @@ Design doc, section 8, Risk #2:
 > distribution); no-bet por regla #8 cuando OOD.
 
 This module realizes that mitigation. The detector projects a GSV onto
-a fixed 17-feature numeric vector, learns the mean and (regularized)
-covariance of the training distribution, and scores each new GSV by
-Mahalanobis distance from the training centroid. Anything past the
-99th percentile of training scores is flagged OOD.
+a fixed numeric vector, learns the mean and (regularized) covariance
+of the training distribution, and scores each new GSV by Mahalanobis
+distance from the training centroid. Anything past the 99th percentile
+of training scores is flagged OOD.
+
+Feature schema history:
+  v1 (17-feature): included total_goals, xg_total, goal_diff — these
+    are correlated with the target and contributed to distribution shift
+    when high-scoring MLS/Swiss games (total_goals 8-12) appeared.
+    The v2 detector (ood_detector_v2_real.pkl) was fit on this schema.
+  v2 (14-feature, current FEATURE_NAMES): drop total_goals, xg_total,
+    goal_diff. Forward-looking refit schema. New fits use vectorize_gsv
+    (14-dim). Legacy-loaded detectors use vectorize_gsv_legacy (17-dim)
+    to score without shape mismatch.
+
+OOD scoring path:
+  OODDetector.score() checks the detector's own ``feature_names`` field
+  (persisted with joblib). If it matches the legacy 17-feature set,
+  vectorize_gsv_legacy is used. Otherwise vectorize_gsv (14-feature).
 
 The regularization is Ledoit-Wolf-style shrinkage scaled by
 ``tr(Σ)/d``: this is well-defined even when n < d, so the detector
@@ -42,7 +57,35 @@ _log = structlog.get_logger(__name__)
 # ── Feature projection ───────────────────────────────────────────────────
 
 
+# FORWARD-LOOKING schema (14 features) — used for new refits and by
+# vectorize_gsv(). Drops the three forward-looking/correlated features
+# that caused distribution shift in MLS/Swiss high-scoring games:
+#   - total_goals  (correlated with score → OOD for high-scoring states)
+#   - xg_total     (same issue)
+#   - goal_diff    (directly reflects score; better captured by minutes_since_last_goal)
+# To refit with this schema: run scripts/spike/v3/refit_ood_v2_real.py
+# (do NOT run it now — refit is a deliberate offline step after shadow accrual).
 FEATURE_NAMES: tuple[str, ...] = (
+    "minute",
+    "numerical_advantage",
+    "xg_diff",
+    "xg_vs_score_divergence",
+    "xg_per_min_home_last_15",
+    "xg_per_min_away_last_15",
+    "possession_home_5min",
+    "attacks_last_10min",
+    "dangerous_attacks_last_10min",
+    "total_corners",
+    "corner_rate_last_15min",
+    "total_yellows",
+    "card_rate_last_15min",
+    "minutes_since_last_goal",
+)
+N_FEATURES = len(FEATURE_NAMES)
+
+# LEGACY schema (17 features) — the full feature set that ood_detector_v2_real.pkl
+# was fitted on. Required to score the loaded legacy pkl without a shape mismatch.
+_FEATURE_NAMES_LEGACY: tuple[str, ...] = (
     "minute",
     "goal_diff",
     "total_goals",
@@ -61,15 +104,49 @@ FEATURE_NAMES: tuple[str, ...] = (
     "card_rate_last_15min",
     "minutes_since_last_goal",
 )
-N_FEATURES = len(FEATURE_NAMES)
+_N_FEATURES_LEGACY = len(_FEATURE_NAMES_LEGACY)  # 17
 
 
 def vectorize_gsv(gsv: GameStateVector) -> np.ndarray:
-    """Project a GSV into a fixed-length numeric feature vector.
+    """Project a GSV into the 14-feature forward vector.
 
     Missing values map to 0.0 by construction — the GSV schema already
     fills defaults so this is rarely needed, but the tuple-sum guards
     against tuples being None at edge cases.
+
+    Use this function for NEW refits (scripts/spike/v3/refit_ood_v2_real.py).
+    For scoring the legacy 17-feature pkl use vectorize_gsv_legacy.
+    """
+    a_home, a_away = gsv.flow.attacks_last_10min
+    da_home, da_away = gsv.flow.dangerous_attacks_last_10min
+    y_home, y_away = gsv.cards.yellows
+    return np.asarray(
+        [
+            float(gsv.time.minute),
+            float(gsv.numerical.numerical_advantage),
+            float(gsv.xg.xg_diff),
+            float(gsv.xg.xg_vs_score_divergence),
+            float(gsv.xg.xg_per_min_home_last_15),
+            float(gsv.xg.xg_per_min_away_last_15),
+            float(gsv.flow.possession_home_5min),
+            float((a_home or 0) + (a_away or 0)),
+            float((da_home or 0) + (da_away or 0)),
+            float(gsv.corners.corners_home + gsv.corners.corners_away),
+            float(gsv.corners.corner_rate_last_15min),
+            float((y_home or 0) + (y_away or 0)),
+            float(gsv.cards.card_rate_last_15min),
+            float(gsv.score.minutes_since_last_goal),
+        ],
+        dtype=np.float64,
+    )
+
+
+def vectorize_gsv_legacy(gsv: GameStateVector) -> np.ndarray:
+    """Project a GSV into the legacy 17-feature vector.
+
+    Used ONLY to score OODDetector instances that were fit on the
+    17-feature schema (ood_detector_v2_real.pkl). Do NOT use for new
+    refits — new fits should use vectorize_gsv (14-feature).
     """
     a_home, a_away = gsv.flow.attacks_last_10min
     da_home, da_away = gsv.flow.dangerous_attacks_last_10min
@@ -174,15 +251,38 @@ class OODDetector:
         self.is_fitted = True
         return self
 
+    def _select_vectorizer(self):
+        """Return the correct vectorize function for this detector's schema.
+
+        If the detector was persisted with the legacy 17-feature schema
+        (``_FEATURE_NAMES_LEGACY``), use ``vectorize_gsv_legacy`` so the
+        vector dimension matches the stored mean/cov_inv. Otherwise use
+        the current 14-feature ``vectorize_gsv``.
+
+        This prevents the shape mismatch that would occur if we scored
+        the legacy ood_detector_v2_real.pkl (17-dim) with the new
+        14-feature vectorizer. See known_correctness_constraint #1.
+        """
+        if self.feature_names == _FEATURE_NAMES_LEGACY:
+            return vectorize_gsv_legacy
+        return vectorize_gsv
+
     def score(self, gsv: GameStateVector) -> float:
         """Mahalanobis distance from the training centroid.
 
         Returns ``0.0`` if not fitted. Callers that care about the
-        unfitted state should check ``is_fitted``."""
+        unfitted state should check ``is_fitted``.
+
+        Automatically selects the correct vectorizer based on the
+        detector's persisted ``feature_names`` (legacy 17-dim vs
+        forward 14-dim) so a loaded legacy pkl scores without a shape
+        mismatch.
+        """
         if not self.is_fitted:
             return 0.0
         assert self.mean is not None and self.cov_inv is not None
-        v = vectorize_gsv(gsv) - self.mean
+        vec_fn = self._select_vectorizer()
+        v = vec_fn(gsv) - self.mean
         d2 = float(v @ self.cov_inv @ v)
         return math.sqrt(max(d2, 0.0))
 
@@ -225,4 +325,5 @@ __all__ = [
     "N_FEATURES",
     "OODDetector",
     "vectorize_gsv",
+    "vectorize_gsv_legacy",
 ]

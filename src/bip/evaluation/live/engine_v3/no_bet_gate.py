@@ -34,6 +34,14 @@ from bip.evaluation.live.engine_v3.thesis import (
     UNDER_DIRECTION_ALLOWED_ARCHETYPES,
 )
 
+if TYPE_CHECKING:
+    from bip.evaluation.live.engine_v3.shadow_logger import ShadowLogger
+
+# Sanity bound: total goals outside [0, 15] indicate a genuinely broken
+# GSV (parser error, fixture ID collision, etc.) and are ENFORCED denials
+# even in the shadow-only OOD path.
+_TOTAL_GOALS_SANITY_MAX = 15
+
 
 # Family-specific line freshness thresholds (sec).
 # Justified empirically by Day-3 line age percentiles per family (see
@@ -294,21 +302,40 @@ def rule_9_ood_detector(
     *,
     threshold: float | None = None,
 ) -> NoBetVerdict:
-    """#9 — Out-of-distribution game state (Risk #2 mitigation).
+    """#9 — Out-of-distribution game state (SHADOW-ONLY).
 
-    When ``detector`` is unfitted or ``None`` the rule passes (fail-safe);
-    when fitted and the GSV's Mahalanobis distance from the training
-    centroid exceeds the threshold, the candidate is denied with the
-    score embedded in the reason so the audit log captures it.
+    This rule is now SHADOW-ONLY: if the legacy detector would deny,
+    a shadow denial row is recorded (is_shadow=True) and the candidate
+    PASSES. The shadow data accrues so a new detector can be refit with
+    the trimmed 14-feature schema (scripts/spike/v3/refit_ood_v2_real.py).
+
+    EXCEPTION: total_goals outside [0, 15] is a REAL enforced deny —
+    that indicates a genuinely broken GSV (parser error, fixture ID
+    collision). No detector is needed for this sanity check.
+
+    When ``detector`` is unfitted or ``None`` the rule passes (fail-safe).
+
+    The shadow recording happens in run_gate (which has access to the
+    shadow_logger). This function returns the would-be verdict so
+    run_gate can decide: REAL deny (sanity fail) or shadow-and-pass.
     """
+    total_goals = gsv.score.home_goals + gsv.score.away_goals
+    if total_goals < 0 or total_goals > _TOTAL_GOALS_SANITY_MAX:
+        return NoBetVerdict.deny(
+            9,
+            f"broken GSV: total_goals={total_goals} outside [0, {_TOTAL_GOALS_SANITY_MAX}]",
+        )
+
     if detector is None or not detector.is_fitted:
         return NoBetVerdict.ok()
     score = detector.score(gsv)
     cutoff = detector.threshold if threshold is None else threshold
     if score > cutoff:
+        # Shadow-only: return a special deny so run_gate can record the
+        # shadow row and then pass the candidate through.
         return NoBetVerdict.deny(
             9,
-            f"OOD game state — Mahalanobis {score:.2f} > threshold {cutoff:.2f} "
+            f"OOD game state (shadow) — Mahalanobis {score:.2f} > threshold {cutoff:.2f} "
             f"(trained on n={detector.n_train})",
         )
     return NoBetVerdict.ok()
@@ -365,21 +392,27 @@ def run_gate(
     ood_detector: OODDetector | None = None,
     mispricing_window_cfg: MispricingWindowConfig | None = None,
     drift_monitor: "CalibrationDriftMonitor | None" = None,
+    shadow_logger: "ShadowLogger | None" = None,
 ) -> list[GateResult]:
-    """Run the 10 rules against each candidate.
+    """Run the rules against each candidate.
 
     Returns one ``GateResult`` per candidate; callers filter by
     ``r.verdict.allowed``. Even denied results are returned (with their
     rule number + reason) so the audit log can capture them — sec 7.2
     requires that "every rejected pick is logged with reason".
 
-    Rule 9 (OOD) is global to the GSV — it would emit the same verdict
-    for every candidate at this state — so we short-circuit on it first
-    when the detector is fitted and the state is OOD.
+    Rule 9 (OOD) is global to the GSV — it has two sub-paths:
+      - total_goals sanity fail → REAL enforced deny (still short-circuits)
+      - Mahalanobis OOD → SHADOW-ONLY: candidate passes, shadow row logged
 
     Rule 10 (mispricing window) is per-candidate (it inspects the
     candidate's base_edge against a window-dependent threshold) but
     the window classification itself is GSV-level, computed once.
+
+    ``shadow_logger``: when provided, shadow-only verdicts from rule_9
+    and rule_8 are recorded via ``shadow_logger.record_shadow_denial``.
+    Required to capture shadow denials without affecting the candidate's
+    allowed/denied outcome.
     """
     # Rule 1 is global (applies once). If no theses, every candidate is denied
     # against rule 1; we short-circuit to one verdict per candidate.
@@ -388,11 +421,24 @@ def run_gate(
             GateResult(candidate=c, verdict=NoBetVerdict.deny(1, "no theses"))
             for c in candidates
         ]
-    # Rule 9 is also state-global. If the GSV is OOD, every candidate dies
-    # against rule 9 — short-circuit so the audit log shows the real reason.
+    # Rule 9 — OOD check (state-global).
     ood_verdict = rule_9_ood_detector(gsv, ood_detector)
     if not ood_verdict.allowed:
-        return [GateResult(candidate=c, verdict=ood_verdict) for c in candidates]
+        # Sanity fail (total_goals out of range): real enforced deny.
+        # Mahalanobis OOD: shadow-only — pass candidates through but log.
+        is_sanity_fail = "broken GSV" in ood_verdict.reason
+        if is_sanity_fail:
+            return [GateResult(candidate=c, verdict=ood_verdict) for c in candidates]
+        # Shadow: log and allow candidates to continue through remaining rules.
+        if shadow_logger is not None:
+            for c in candidates:
+                shadow_logger.record_shadow_denial(
+                    GateResult(candidate=c, verdict=ood_verdict),
+                    fixture_id=gsv.fixture_id,
+                    ts=gsv.timestamp_utc,
+                )
+        # Fall through — candidates are NOT blocked by shadow OOD.
+
     win_cfg = mispricing_window_cfg or MispricingWindowConfig()
     window = classify_gsv(gsv, win_cfg)
     out: list[GateResult] = []
