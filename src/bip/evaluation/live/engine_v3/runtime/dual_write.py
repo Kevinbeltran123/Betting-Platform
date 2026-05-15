@@ -69,8 +69,9 @@ import logging
 import os
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from bip.evaluation.live.engine_v3 import (
     ConditionalPredictor,
@@ -256,6 +257,41 @@ def _build_market_id(description: str, label: str, total: float | None) -> str:
     return "_".join(bits)
 
 
+def _delivery_row(
+    *,
+    pick: Any,
+    fixture_id: int,
+    ts: datetime,
+    book_odd: float | None,
+    message_id: int | None,
+    send_result: str,
+) -> dict[str, Any]:
+    """Build one delivery observability row for deliveries.parquet.
+
+    Schema mirrors the plan spec:
+      fixture_id, timestamp_utc, thesis_id, archetype, family,
+      market_id, direction, bookmaker_odd, telegram_message_id,
+      send_result (sent|skipped|failed)
+    """
+    thesis = pick.full_thesis
+    return {
+        "fixture_id": int(fixture_id),
+        "timestamp_utc": ts,
+        "thesis_id": str(thesis.id),
+        "archetype": str(thesis.archetype.value),
+        "family": str(thesis.prediction.family.value),
+        "market_id": str(pick.candidate.market_id),
+        "direction": str(thesis.prediction.direction),
+        "bookmaker_odd": (
+            float(book_odd) if book_odd is not None else None
+        ),
+        "telegram_message_id": (
+            int(message_id) if message_id is not None else None
+        ),
+        "send_result": send_result,
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Runtime
 # ──────────────────────────────────────────────────────────────────────
@@ -299,6 +335,9 @@ class DualWriteRuntime:
     alerts_skipped: int = 0
     alerts_failed: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _delivery_buf: list[dict[str, Any]] = field(
+        default_factory=list, repr=False,
+    )  # buffered delivery rows — flushed by watch.py flush site
 
     @classmethod
     def from_paths(
@@ -489,8 +528,31 @@ class DualWriteRuntime:
         Failures are caught individually so a bad single pick doesn't
         block the others. The send method itself is already failure-
         safe (``send_pick_safe`` never raises).
+
+        After each attempt, appends a delivery row to ``_delivery_buf``
+        with fields: fixture_id, timestamp_utc, thesis_id, archetype,
+        family, market_id, direction, bookmaker_odd, telegram_message_id,
+        send_result (sent|skipped|failed). The buffer is flushed by
+        the same watch.py flush site that flushes ShadowLogger.
         """
         for pick in out.allowed_picks:
+            thesis = pick.full_thesis
+            cand = pick.candidate
+            now_utc = datetime.now(timezone.utc)
+            # Extract bookmaker_odd from the GSV market lines (same as shadow_logger)
+            line = out.gsv.markets.lines.get(cand.market_id)
+            book_odd: float | None = None
+            if line is not None:
+                d = thesis.prediction.direction.lower()
+                if d in ("over", "yes", "home"):
+                    book_odd = line.side_a_decimal
+                elif d in ("under", "no", "away", "draw"):
+                    book_odd = line.side_b_decimal or line.side_a_decimal
+                else:
+                    book_odd = line.side_a_decimal
+                if book_odd is not None and book_odd <= 1.0:
+                    book_odd = None
+
             try:
                 live_pick = shadow_pick_to_live_pick(pick, out.gsv)
             except Exception as exc:  # noqa: BLE001
@@ -499,26 +561,55 @@ class DualWriteRuntime:
                     "v3_alert_adapter_error fixture=%s reason=%s",
                     out.gsv.fixture_id, type(exc).__name__,
                 )
+                self._delivery_buf.append(_delivery_row(
+                    pick=pick, fixture_id=out.gsv.fixture_id,
+                    ts=now_utc, book_odd=book_odd,
+                    message_id=None, send_result="failed",
+                ))
                 continue
             if live_pick is None:
                 self.alerts_skipped += 1
+                self._delivery_buf.append(_delivery_row(
+                    pick=pick, fixture_id=out.gsv.fixture_id,
+                    ts=now_utc, book_odd=book_odd,
+                    message_id=None, send_result="skipped",
+                ))
                 continue
             try:
-                sent = await self.telegram_sender.send_pick_safe(
+                result = await self.telegram_sender.send_pick_safe(
                     live_pick,
                     home_score=out.gsv.score.home_goals,
                     away_score=out.gsv.score.away_goals,
                 )
-                if sent:
+                # Support both bare bool (legacy) and SendResult (v2)
+                if hasattr(result, "message_id"):
+                    msg_id = result.message_id
+                    send_status = result.status
+                    ok = bool(result)
+                else:
+                    ok = bool(result)
+                    msg_id = None
+                    send_status = "sent" if ok else "skipped"
+                if ok:
                     self.alerts_sent += 1
                 else:
                     self.alerts_skipped += 1
+                self._delivery_buf.append(_delivery_row(
+                    pick=pick, fixture_id=out.gsv.fixture_id,
+                    ts=now_utc, book_odd=book_odd,
+                    message_id=msg_id, send_result=send_status,
+                ))
             except Exception as exc:  # noqa: BLE001
                 self.alerts_failed += 1
                 log.warning(
                     "v3_alert_send_error fixture=%s reason=%s",
                     out.gsv.fixture_id, type(exc).__name__,
                 )
+                self._delivery_buf.append(_delivery_row(
+                    pick=pick, fixture_id=out.gsv.fixture_id,
+                    ts=now_utc, book_odd=book_odd,
+                    message_id=None, send_result="failed",
+                ))
 
     def _run_pipeline_sync(
         self,
@@ -557,9 +648,60 @@ class DualWriteRuntime:
             return out
 
     def flush(self) -> dict[str, Path]:
-        """Forwarding helper — flush the underlying ShadowLogger buffers."""
+        """Flush ShadowLogger buffers AND delivery buffer to parquet.
+
+        Delivery rows are partitioned by ``timestamp_utc`` (same
+        convention as ShadowLogger) to
+        ``{shadow_root}/dt=YYYY-MM-DD/deliveries.parquet``.
+        Uses ``diagonal_relaxed`` append so schema evolution is safe.
+        """
         with self._lock:
-            return self.logger.flush()
+            paths = self.logger.flush()
+            if self._delivery_buf:
+                paths.update(self._flush_deliveries())
+        return paths
+
+    def _flush_deliveries(self) -> dict[str, Path]:
+        """Write buffered delivery rows to deliveries.parquet partitions.
+
+        Called within the lock held by ``flush()``. Mirrors
+        ShadowLogger._append_parquet convention.
+        """
+        import polars as pl
+
+        wall_ts = datetime.now(timezone.utc)
+        shadow_root = self.logger.output_root
+
+        def _part_key(row: dict[str, Any]) -> str:
+            row_ts = row.get("timestamp_utc")
+            if isinstance(row_ts, datetime):
+                return row_ts.strftime("dt=%Y-%m-%d")
+            return wall_ts.strftime("dt=%Y-%m-%d")
+
+        # Bucket by partition date
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for row in self._delivery_buf:
+            key = _part_key(row)
+            buckets.setdefault(key, []).append(row)
+        self._delivery_buf.clear()
+
+        out: dict[str, Path] = {}
+        for part, rows in sorted(buckets.items()):
+            date_dir = shadow_root / part
+            date_dir.mkdir(parents=True, exist_ok=True)
+            path = date_dir / "deliveries.parquet"
+            new_df = pl.DataFrame(rows)
+            if path.exists():
+                try:
+                    existing = pl.read_parquet(path)
+                    combined = pl.concat([existing, new_df], how="diagonal_relaxed")
+                except Exception:  # noqa: BLE001
+                    combined = new_df
+            else:
+                combined = new_df
+            combined.write_parquet(path)
+            out["deliveries"] = path  # last partition wins
+        return out
 
     @property
     def stats(self) -> dict[str, int]:
