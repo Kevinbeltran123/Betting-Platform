@@ -1,5 +1,16 @@
 """Grade v3 shadow picks against final fixture outcomes.
 
+**Canonical grading path.** This module is the SINGLE authoritative
+grader for v3 picks. All grading that needs fresh Sportmonks data must
+go through ``grade_picks_for_date`` (or the callable API
+``run_grade_for_date`` which adds write-to-disk). Do NOT build ad-hoc
+graders that read gsv_log.parquet to reconstruct outcomes — that creates
+circularity between the logging layer and the measurement layer.
+
+Scripts that previously implemented their own grading loops
+(grade_day4_real.py, regrade_day4_from_raw.py) are DEPRECATED and
+kept only for historical reproducibility. Use this module instead.
+
 Closes the operational gap: cohort_accountant + calibration analyses
 consume ``picks_outcomes.parquet``, but nothing populates it. v2 has
 ``analyze_jornada`` for its own picks, but v3 emits market families
@@ -18,8 +29,17 @@ module is the v3-side grader.
   ``FinalOutcome`` via ``derive_final_outcome_from_state``. Single
   source of truth for "final state of a fixture".
 
+  The authoritative fetch uses:
+    includes=["participants", "state", "periods", "scores",
+              "statistics", "events"]
+  This is the canonical include set — do NOT omit any of these.
+
 - Idempotent: writing ``picks_outcomes.parquet`` for the same day twice
   produces the same file. The grader does NOT modify ``picks.parquet``.
+
+- No circularity: ``grade_picks_for_date`` reads ONLY
+  ``picks.parquet`` for pick rows, then fetches live fixture data
+  from Sportmonks. It never reads ``gsv_log.parquet``.
 
 - Defensive on ungradable picks: when grade_pick returns None (void or
   unknown market), we emit status="void" with profit_units=0. When the
@@ -34,6 +54,13 @@ module is the v3-side grader.
 It reads ``data/cache/v3_shadow/dt=YYYY-MM-DD/picks.parquet``, fetches
 each unique fixture's FT state via Sportmonks, grades every pick, and
 writes ``picks_outcomes.parquet`` to the same partition.
+
+# Callable API for Wave-2 promotion report
+
+Use ``run_grade_for_date(date_iso, shadow_root=..., client=...)``
+to run end-to-end (grade + write parquet) from another script without
+going through the CLI. Returns ``(graded_picks, report, out_path)``
+where ``out_path`` is the written parquet (or None on dry-run).
 """
 
 from __future__ import annotations
@@ -395,6 +422,33 @@ def write_outcomes_parquet(
     return path
 
 
+async def run_grade_for_date(
+    date_iso: str,
+    *,
+    shadow_root: Path,
+    client: Any,
+    dry_run: bool = False,
+) -> tuple[list[GradedPick], GradeReport, Path | None]:
+    """Callable API: grade + optionally write picks_outcomes.parquet.
+
+    Convenience wrapper around ``grade_picks_for_date`` +
+    ``write_outcomes_parquet`` for callers that don't want to use the
+    CLI (e.g., the Wave-2 shadow-promotion report).
+
+    Returns ``(graded_picks, report, out_path)`` where ``out_path`` is
+    the written parquet path (or ``None`` when ``dry_run=True`` or when
+    there are no picks to grade).
+    """
+    graded, report = await grade_picks_for_date(
+        date_iso, shadow_root=shadow_root, client=client,
+    )
+    if not graded or dry_run:
+        return graded, report, None
+    partition = shadow_root / f"dt={date_iso}"
+    out_path = write_outcomes_parquet(graded, partition)
+    return graded, report, out_path
+
+
 __all__ = [
     "GradeReport",
     "GradedPick",
@@ -403,6 +457,7 @@ __all__ = [
     "grade_picks_for_date",
     "grade_v3_pick",
     "profit_units_for",
+    "run_grade_for_date",
     "status_for",
     "write_outcomes_parquet",
 ]
