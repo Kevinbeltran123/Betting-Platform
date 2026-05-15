@@ -153,16 +153,28 @@ def _state_with_names(home_name: str, away_name: str):
     return replace(make_state(), home_team_name=home_name, away_team_name=away_name)
 
 
-def test_dominant_palace_city_market_says_city_overrides_priors():
-    """**The empirical case that motivates this fix.**
+def test_dominant_palace_city_market_says_city_overrides_coin_flip_priors():
+    """Day-4 Palace vs Man City empirical case — updated for Wave-3 ML-λ tier.
 
-    Day-4 Palace vs Man City had Sportmonks priors at λ_h=1.64, λ_a=0.86
-    (priors said Palace favourite) but the team-named bookmaker markets
-    had Palace P(win) ≈ 13% vs City P(win) ≈ 80% — a 6:1 inversion.
-    The fix must trust the market, regardless of how wide the λ-gap is.
+    Wave-3 adds an ML-λ tier (Dixon-Coles) ABOVE the bookmaker market.
+    When the λ-gap is DECISIVE (|lh - la| >= 0.15), ML-λ overrides market
+    as the more reliable signal. The original Sportmonks λ_h=1.64/λ_a=0.86
+    gap (0.78) would now invoke the ML-λ tier.
+
+    This test is updated to use a COIN-FLIP λ (gap=0.08 < 0.15) to verify
+    that the bookmaker market (City strongly favoured) still wins when the
+    ML-λ signal is inconclusive. The empirical insight that the MARKET is
+    sharper than SPORTMONKS λ in ambiguous cases is preserved — it is now
+    the fallback when ML-λ defers.
+
+    Historical note: the original test used λ_h=1.64/λ_a=0.86 to represent
+    Sportmonks' prediction (which was wrong — City is clearly stronger).
+    A properly fitted Dixon-Coles ML-λ would show City as stronger and
+    would correctly invoke the ML-λ tier without relying on market. The
+    coin-flip scenario here tests the market-fallback tier specifically.
     """
     priors = PreMatchPriors(
-        lambda_home_prematch=1.64, lambda_away_prematch=0.86,
+        lambda_home_prematch=1.25, lambda_away_prematch=1.17,  # gap=0.08 < 0.15 → coin-flip
     )
     state = _state_with_names("Crystal Palace", "Man City")
     # Real Day-4 odds: Palace_yes=13.0 Palace_no=17.0 → P=13.6%
@@ -173,7 +185,7 @@ def test_dominant_palace_city_market_says_city_overrides_priors():
         away_yes_decimal=2.62, away_no_decimal=2.37,
     )
     out = GSVBuilder().build(state, priors=priors, markets=markets)
-    assert out.score.dominant_team_id == AWAY_ID  # City
+    assert out.score.dominant_team_id == AWAY_ID  # City wins via market tier
 
 
 def test_dominant_priors_used_when_no_team_named_markets():
@@ -204,11 +216,20 @@ def test_dominant_priors_used_when_market_is_coin_flip():
     assert out.score.dominant_team_id == HOME_ID
 
 
-def test_dominant_market_picks_home_when_home_priced_in():
-    """Sanity: when the bookmaker clearly favours home, the resolver
-    picks home — even if λ would have picked away."""
+def test_dominant_market_picks_home_when_lambda_coin_flip():
+    """Market picks home when ML-λ is inconclusive (coin-flip gap).
+
+    Wave-3 ML-λ tier: when |lh - la| < 0.15, λ is a coin-flip and the
+    bookmaker market is consulted. Here Olympiacos is heavily favoured
+    by the market (P≈74%), and the λ-gap is small (0.10 < 0.15) → home
+    wins via market tier (tier 3).
+
+    Updated from the pre-Wave-3 test that used λ_h=1.00/λ_a=1.50 (gap=0.50
+    which now triggers the ML-λ tier picking away). The new scenario uses
+    near-equal λ to isolate the market-fallback path.
+    """
     priors = PreMatchPriors(
-        lambda_home_prematch=1.00, lambda_away_prematch=1.50,
+        lambda_home_prematch=1.25, lambda_away_prematch=1.15,  # gap=0.10 < 0.15 → coin-flip
     )
     state = _state_with_names("Olympiacos", "Panathinaikos")
     # Olympiacos heavy fav: P ≈ 74%; Pana P ≈ 14%
@@ -260,9 +281,15 @@ def test_numeric_fulltime_result_lines_are_ignored():
     """Day-4 evidence: ``fulltime_result_1/2`` is unreliable (8/31
     fixtures disagree with team-named markets). The resolver MUST NOT
     consult those lines. We verify by giving inverted numeric labels
-    and confirming the resolver still picks the team-named favourite."""
+    and confirming the resolver still picks the team-named favourite.
+
+    Wave-3 update: λ-gap must be coin-flip (< 0.15) so the ML-λ tier
+    defers to market, allowing us to test the numeric-line-ignore behavior
+    of the market tier specifically. Original priors λ_h=1.64/λ_a=0.86
+    now trigger ML-λ tier — updated to near-equal λ.
+    """
     priors = PreMatchPriors(
-        lambda_home_prematch=1.64, lambda_away_prematch=0.86,
+        lambda_home_prematch=1.25, lambda_away_prematch=1.17,  # gap=0.08 < 0.15 → coin-flip
     )
     state = _state_with_names("Crystal Palace", "Man City")
     markets = _markets_with_team_named_bttsxresult(

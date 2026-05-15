@@ -156,15 +156,73 @@ def is_v3_kill_switch_engaged(path: Path = DEFAULT_KILL_SWITCH_PATH) -> bool:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def derive_priors_from_fixture(fixture) -> PreMatchPriors:
-    """Best-effort priors from Sportmonks predictions, mirror of
-    ``replay_shadow.derive_priors_from_predictions`` for parity.
+DEFAULT_LAMBDA_STORE_PATH = Path("data/cache/lambda_store.parquet")
+_LAMBDA_STORE_CACHE: "dict[int, object] | None" = None
+_LAMBDA_STORE_CACHE_PATH: Path | None = None
 
-    Returns neutral defaults if predictions are absent or malformed —
-    v3 doesn't crash, it just makes weaker thesis claims.
+
+def _load_lambda_store(store_path: Path) -> "dict[int, object]":
+    """Load the lambda store parquet into memory (module-level cache).
+
+    Returns an empty dict when the file doesn't exist. The cache is
+    keyed on the store_path so a new path invalidates the cache.
     """
+    global _LAMBDA_STORE_CACHE, _LAMBDA_STORE_CACHE_PATH
+    if _LAMBDA_STORE_CACHE is not None and _LAMBDA_STORE_CACHE_PATH == store_path:
+        return _LAMBDA_STORE_CACHE
+    try:
+        from scripts.spike.v3.build_lambda_store import read_lambda_store
+        _LAMBDA_STORE_CACHE = read_lambda_store(store_path)
+        _LAMBDA_STORE_CACHE_PATH = store_path
+        log.debug("lambda_store_loaded path=%s n=%d", store_path, len(_LAMBDA_STORE_CACHE))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("lambda_store_load_skipped err=%s", exc)
+        _LAMBDA_STORE_CACHE = {}
+        _LAMBDA_STORE_CACHE_PATH = store_path
+    return _LAMBDA_STORE_CACHE
+
+
+def derive_priors_from_fixture(
+    fixture,
+    *,
+    lambda_store_path: Path | None = None,
+) -> PreMatchPriors:
+    """Best-effort priors from Sportmonks predictions + ML lambda store.
+
+    Priority:
+    1. ML lambda store (penaltyblog Dixon-Coles fit): if a row for
+       ``fixture.id`` exists in ``lambda_store_path``, use those lambdas.
+    2. Sportmonks type_id-240 score-probability distribution (legacy).
+    3. Neutral defaults (1.35 / 1.15) if both are absent or malformed.
+
+    The lambda store is loaded on first call and module-level cached.
+    Set ``lambda_store_path=Path("/dev/null")`` in tests to bypass.
+    """
+    fixture_id = getattr(fixture, "id", None)
     lam_h = 1.35
     lam_a = 1.15
+    source = "defaults"
+
+    # 1. ML lambda store
+    if lambda_store_path is None:
+        lambda_store_path = DEFAULT_LAMBDA_STORE_PATH
+    if fixture_id is not None:
+        store = _load_lambda_store(lambda_store_path)
+        row = store.get(int(fixture_id))
+        if row is not None:
+            lam_h = float(row.lambda_home)
+            lam_a = float(row.lambda_away)
+            source = f"ml_lambda_store:{row.model_version}"
+            log.debug(
+                "priors_from_ml_lambda fixture=%d lam_h=%.3f lam_a=%.3f",
+                fixture_id, lam_h, lam_a,
+            )
+            return PreMatchPriors(
+                lambda_home_prematch=lam_h,
+                lambda_away_prematch=lam_a,
+            )
+
+    # 2. Sportmonks type_id-240 score distribution (legacy fallback)
     for p in getattr(fixture, "predictions", None) or []:
         if p.type_id != 240 or not p.predictions:
             continue
@@ -188,7 +246,13 @@ def derive_priors_from_fixture(fixture) -> PreMatchPriors:
         if total > 0:
             lam_h = e_h / total
             lam_a = e_a / total
+            source = "sportmonks_type240"
         break
+
+    log.debug(
+        "priors_derived fixture=%s source=%s lam_h=%.3f lam_a=%.3f",
+        fixture_id, source, lam_h, lam_a,
+    )
     return PreMatchPriors(
         lambda_home_prematch=lam_h,
         lambda_away_prematch=lam_a,
