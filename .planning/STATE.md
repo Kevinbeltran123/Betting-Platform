@@ -29,7 +29,7 @@ Phase: 4 (production-orchestration) — COMPLETE pending staging smoke test
 Plan: 9 of 9 (all SUMMARY.md files written)
 Next: Operator runs `deploy/SMOKE_TEST.md` on Hetzner VPS, then `/gsd-verify-work 4` (or proceed directly to Phase 5 if staging is queued for later)
 Status: Phase 4 ready for operator staging exercise
-Last activity: 2026-05-04 -- 19 commits across 9 plans; 350 tests passing, 0 skipped, 0 regressions; migration 005 live in Supabase
+Last activity: 2026-05-15 - Completed quick task 260515-ghb: v3 engine 5 vetted shadow-run fixes (suspended-line dedup, MES dead-zone gate, OOD trim, variance squash, napoli drift exempt)
 
 Progress: [██████████] 100%
 
@@ -116,15 +116,16 @@ None yet.
 
 ### Quick Tasks Completed
 
-| # | Description | Date | Commit | Directory |
-|---|-------------|------|--------|-----------|
-| 260503-iql | Vig removal en CLV recorder | 2026-05-03 | 783b05c | [260503-iql-vig-removal-en-clv-recorder](./quick/260503-iql-vig-removal-en-clv-recorder/) |
-| 260503-j74 | Per-market edge thresholds desde YAML | 2026-05-03 | db0075d | [260503-j74-per-market-edge-thresholds-desde-yaml](./quick/260503-j74-per-market-edge-thresholds-desde-yaml/) |
-| 260503-jkf | Orchestrator/Plugin/Engine wiring (Strategy 2) | 2026-05-03 | e68df0e | [260503-jkf-orchestrator-plugin-engine-wiring-predic](./quick/260503-jkf-orchestrator-plugin-engine-wiring-predic/) |
-| 260503-k8k | Wire ClvRecorder + OddsApiClient en orchestrator (kickoff-1m + find_event_by_fixture) | 2026-05-03 | cc0db4d | [260503-k8k-wire-clvrecorder-oddsapiclient-en-orches](./quick/260503-k8k-wire-clvrecorder-oddsapiclient-en-orches/) |
-| 260503-oml | MarketKey enum + migrate callers (G-MAINT-05) | 2026-05-03 | fc0ced1 | [260503-oml-marketkey-enum-migrar-callers-g-maint-05](./quick/260503-oml-marketkey-enum-migrar-callers-g-maint-05/) |
-| 260503-q43 | Move bip/scheduler to bip/core/scheduler (G-CODE-04/10) | 2026-05-03 | 2e192d8 | [260503-q43-mover-bip-scheduler-a-bip-core-scheduler](./quick/260503-q43-mover-bip-scheduler-a-bip-core-scheduler/) |
-| 260503-txj | Reconcile knobs configurable via Settings (G-MAINT-10) | 2026-05-03 | 6cc30ca | [260503-txj-reschedule-cadence-max-retries-a-setting](./quick/260503-txj-reschedule-cadence-max-retries-a-setting/) |
+| # | Description | Date | Commit | Status | Directory |
+|---|-------------|------|--------|--------|-----------|
+| 260503-iql | Vig removal en CLV recorder | 2026-05-03 | 783b05c | | [260503-iql-vig-removal-en-clv-recorder](./quick/260503-iql-vig-removal-en-clv-recorder/) |
+| 260503-j74 | Per-market edge thresholds desde YAML | 2026-05-03 | db0075d | | [260503-j74-per-market-edge-thresholds-desde-yaml](./quick/260503-j74-per-market-edge-thresholds-desde-yaml/) |
+| 260503-jkf | Orchestrator/Plugin/Engine wiring (Strategy 2) | 2026-05-03 | e68df0e | | [260503-jkf-orchestrator-plugin-engine-wiring-predic](./quick/260503-jkf-orchestrator-plugin-engine-wiring-predic/) |
+| 260503-k8k | Wire ClvRecorder + OddsApiClient en orchestrator (kickoff-1m + find_event_by_fixture) | 2026-05-03 | cc0db4d | | [260503-k8k-wire-clvrecorder-oddsapiclient-en-orches](./quick/260503-k8k-wire-clvrecorder-oddsapiclient-en-orches/) |
+| 260503-oml | MarketKey enum + migrate callers (G-MAINT-05) | 2026-05-03 | fc0ced1 | | [260503-oml-marketkey-enum-migrar-callers-g-maint-05](./quick/260503-oml-marketkey-enum-migrar-callers-g-maint-05/) |
+| 260503-q43 | Move bip/scheduler to bip/core/scheduler (G-CODE-04/10) | 2026-05-03 | 2e192d8 | | [260503-q43-mover-bip-scheduler-a-bip-core-scheduler](./quick/260503-q43-mover-bip-scheduler-a-bip-core-scheduler/) |
+| 260503-txj | Reconcile knobs configurable via Settings (G-MAINT-10) | 2026-05-03 | 6cc30ca | | [260503-txj-reschedule-cadence-max-retries-a-setting](./quick/260503-txj-reschedule-cadence-max-retries-a-setting/) |
+| 260515-ghb | v3 engine: 5 vetted shadow-run fixes (suspended-line dedup, MES dead-zone gate, OOD trim, variance squash, napoli drift exempt) | 2026-05-15 | 3ddfc09 | Verified | [260515-ghb-v3-engine-5-vetted-shadow-run-fixes-susp](./quick/260515-ghb-v3-engine-5-vetted-shadow-run-fixes-susp/) |
 
 ## Deferred Items
 
