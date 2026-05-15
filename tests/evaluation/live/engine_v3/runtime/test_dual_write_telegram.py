@@ -11,6 +11,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
 from bip.evaluation.live.engine_v3 import (
     MarketLine,
     MarketSnapshot,
@@ -25,6 +30,7 @@ from bip.evaluation.live.engine_v3.pipeline import (
 )
 from bip.evaluation.live.engine_v3.runtime.dual_write import DualWriteRuntime
 from bip.evaluation.live.engine_v3.shadow_logger import ShadowLogger
+from bip.evaluation.live.telegram_integration import SendResult
 from bip.evaluation.live.engine_v3.thesis import (
     CausalChain,
     CausalStep,
@@ -87,7 +93,7 @@ def _build_shadow_pick_and_gsv():
     return pick, gsv
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio("asyncio")
 async def test_send_alerts_sends_one_per_allowed_pick(monkeypatch):
     """When V3_TELEGRAM_ENABLED is truthy, every allowed pick is adapted
     and sent through the LiveAlertSender. ``alerts_sent`` increments."""
@@ -113,7 +119,7 @@ async def test_send_alerts_sends_one_per_allowed_pick(monkeypatch):
     assert runtime.alerts_sent == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio("asyncio")
 async def test_send_alerts_counts_skipped(monkeypatch):
     """LiveAlertSender returning False → counts as skipped, not failed."""
     monkeypatch.setenv("V3_TELEGRAM_ENABLED", "true")
@@ -137,7 +143,7 @@ async def test_send_alerts_counts_skipped(monkeypatch):
     assert runtime.alerts_sent == 0
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio("asyncio")
 async def test_send_alerts_handles_exceptions(monkeypatch):
     """Sender raising an exception → counted as failed, doesn't propagate."""
     sender = AsyncMock()
@@ -159,7 +165,7 @@ async def test_send_alerts_handles_exceptions(monkeypatch):
     assert runtime.alerts_failed == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio("asyncio")
 async def test_run_shadow_skips_telegram_when_env_disabled(monkeypatch):
     """Sender wired but ``V3_TELEGRAM_ENABLED`` unset → no sends."""
     monkeypatch.delenv("V3_TELEGRAM_ENABLED", raising=False)
@@ -185,3 +191,100 @@ async def test_run_shadow_skips_telegram_when_env_disabled(monkeypatch):
     # We assert nothing was sent through our mock since it isn't attached.
     assert sender.send_pick_safe.await_count == 0
     assert runtime.alerts_sent == 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# deliveries.parquet trace tests
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.anyio("asyncio")
+async def test_delivery_row_written_with_message_id_on_sent(tmp_path):
+    """Sender returns SendResult(ok=True, message_id=42) → deliveries.parquet
+    has one row with telegram_message_id=42 and send_result='sent'."""
+    import polars as pl
+
+    pick, gsv = _build_shadow_pick_and_gsv()
+    out = PipelineOutput(
+        gsv=gsv, theses=[pick.candidate.thesis],
+        candidates=[pick.candidate], gate_results=[],
+        allowed_picks=[pick],
+    )
+    sender = AsyncMock()
+    sender.send_pick_safe = AsyncMock(
+        return_value=SendResult(ok=True, message_id=42, status="sent"),
+    )
+
+    runtime = DualWriteRuntime(
+        pipeline=V3Pipeline(),
+        logger=ShadowLogger(output_root=tmp_path),
+        telegram_sender=sender,
+    )
+    await runtime._send_alerts_for(out)
+    assert runtime.alerts_sent == 1
+
+    # Flush and verify deliveries.parquet
+    paths = runtime.flush()
+    assert "deliveries" in paths
+    df = pl.read_parquet(paths["deliveries"])
+    assert df.height == 1
+    row = df.row(0, named=True)
+    assert row["telegram_message_id"] == 42
+    assert row["send_result"] == "sent"
+    assert row["fixture_id"] == gsv.fixture_id
+    assert row["thesis_id"] == pick.full_thesis.id
+    assert row["archetype"] == pick.full_thesis.archetype.value
+    assert row["family"] == pick.full_thesis.prediction.family.value
+    assert row["market_id"] == pick.candidate.market_id
+    assert row["direction"] == pick.full_thesis.prediction.direction
+
+
+@pytest.mark.anyio("asyncio")
+async def test_delivery_row_skipped_pick_no_live_pick(tmp_path):
+    """When shadow_pick_to_live_pick returns None (skipped), the delivery
+    row has send_result='skipped' and telegram_message_id=None."""
+    import polars as pl
+
+    pick, gsv = _build_shadow_pick_and_gsv()
+    out = PipelineOutput(
+        gsv=gsv, theses=[pick.candidate.thesis],
+        candidates=[pick.candidate], gate_results=[],
+        allowed_picks=[pick],
+    )
+    sender = AsyncMock()
+    # Return False (old-style bool) — skipped path
+    sender.send_pick_safe = AsyncMock(return_value=False)
+
+    runtime = DualWriteRuntime(
+        pipeline=V3Pipeline(),
+        logger=ShadowLogger(output_root=tmp_path),
+        telegram_sender=sender,
+    )
+    await runtime._send_alerts_for(out)
+    assert runtime.alerts_skipped == 1
+
+    paths = runtime.flush()
+    assert "deliveries" in paths
+    df = pl.read_parquet(paths["deliveries"])
+    assert df.height == 1
+    row = df.row(0, named=True)
+    assert row["send_result"] == "skipped"
+    assert row["telegram_message_id"] is None
+
+
+@pytest.mark.anyio("asyncio")
+async def test_existing_telegram_tests_still_pass_with_send_result(monkeypatch):
+    """Smoke: existing callers that use bool(send_pick_safe result) still work
+    because SendResult.__bool__ returns ok."""
+    result_sent = SendResult(ok=True, message_id=99, status="sent")
+    result_skip = SendResult(ok=False, message_id=None, status="skipped")
+    result_fail = SendResult(ok=False, message_id=None, status="failed")
+
+    assert bool(result_sent) is True
+    assert bool(result_skip) is False
+    assert bool(result_fail) is False
+    # Truthiness in if-statements
+    if result_sent:
+        pass
+    else:
+        raise AssertionError("SendResult(ok=True) must be truthy")

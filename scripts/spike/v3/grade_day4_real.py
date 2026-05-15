@@ -1,9 +1,19 @@
 """Grade the REAL Day-4 v3 picks against outcomes derived from the GSV log.
 
-Differs from grade_day3_replay.py: reads the actual picks.parquet that
-the live watch loop persisted today, instead of regenerating picks from
-the pipeline. Reflects "what we actually emitted" rather than "what the
-pipeline would emit re-replayed".
+.. deprecated::
+    **DEPRECATED** — This script derives outcomes from the GSV log,
+    which creates a circular dependency between the logging layer and
+    the measurement layer (gsv_log is produced by the same pipeline
+    that generated the picks being graded).
+
+    Use the canonical grading path instead::
+
+        uv run python -m scripts.spike.v3.grade_v3_shadow --date 2026-05-13
+
+    The canonical path (``v3_grader.grade_picks_for_date``) fetches
+    fresh fixture data from Sportmonks directly — no circularity.
+    This script is kept only for historical reproducibility of Day-4
+    metrics produced before the canonical grader was established.
 
 Outcomes are reconstructed from the GSV log:
 - Final score / corner / card totals from the latest GSV per fixture.
@@ -18,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -68,6 +79,15 @@ def reconstruct_outcome(gsvs: list[GameStateVector]) -> FinalOutcome:
 
 
 def main() -> int:
+    warnings.warn(
+        "grade_day4_real.py is deprecated — it derives outcomes from gsv_log.parquet "
+        "(circular dependency). Use the canonical grader instead:\n"
+        "  uv run python -m scripts.spike.v3.grade_v3_shadow --date <YYYY-MM-DD>\n"
+        "See bip.evaluation.live.engine_v3.runtime.v3_grader.run_grade_for_date "
+        "for the callable API.",
+        DeprecationWarning,
+        stacklevel=1,
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default="2026-05-13")
     args = parser.parse_args()
