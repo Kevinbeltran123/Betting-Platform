@@ -334,6 +334,115 @@ def test_rule_12_control_non_cruise_goals_passes():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Wave-3 Task 3.2: rule_12 calibrated-winprob mode tests
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _cruise_goals_candidate_with_cal(
+    mes_score: float, calibrated_winprob: float | None
+) -> MarketCandidate:
+    """cruise_mode + GOALS candidate with optional calibrated_winprob."""
+    thesis = Thesis(
+        id="CRUISE_CAL",
+        archetype=ThesisArchetype.CRUISE_MODE,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(
+            family=MarketFamily.GOALS, direction="under", magnitude_pp=0.05,
+            horizon=build_horizon("rest_of_match", 60),
+        ),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="g")],
+        confidence_prior=0.6,
+        source=ThesisSource(layer="rule", identifier="CRUISE_CAL"),
+        activated_at_minute=60,
+    )
+    return MarketCandidate(
+        thesis=thesis,
+        market_id="match_goals_under_2.5",
+        family=MarketFamily.GOALS,
+        fair_prob=0.6,
+        mes=MESResult(
+            thesis_id="CRUISE_CAL",
+            market_id="match_goals_under_2.5",
+            family=MarketFamily.GOALS,
+            base_edge=0.05, signal_clarity=1.0, book_slowness=1.0,
+            liquidity_score=1.0, conditional_variance=1.0,
+            score=mes_score,
+            calibrated_winprob=calibrated_winprob,
+        ),
+    )
+
+
+def test_rule_12_calibrated_mode_suppresses_low_winprob():
+    """rule_12 in calibrated mode: calibrated_winprob < 0.45 → deny."""
+    cand = _cruise_goals_candidate_with_cal(mes_score=5.0, calibrated_winprob=0.30)
+    verdict = rule_12_mes_dead_zone(cand)
+    assert not verdict.allowed, "Low calibrated_winprob must deny in calibrated mode"
+    assert verdict.rule_number == 12
+    assert "calibrated_winprob" in verdict.reason
+
+
+def test_rule_12_calibrated_mode_passes_high_winprob():
+    """rule_12 in calibrated mode: calibrated_winprob >= 0.45 → allow."""
+    cand = _cruise_goals_candidate_with_cal(mes_score=3.0, calibrated_winprob=0.55)
+    verdict = rule_12_mes_dead_zone(cand)
+    assert verdict.allowed, (
+        "High calibrated_winprob must pass in calibrated mode "
+        f"(raw score {3.0:.1f} would deny in raw-band mode)"
+    )
+
+
+def test_rule_12_raw_fallback_byte_identical():
+    """rule_12 without calibrator: raw-band [2.5, 4.0) behavior is unchanged."""
+    # score=3.0 (in dead-zone) without calibrated_winprob → deny (raw mode)
+    cand_deny = _cruise_goals_candidate_with_cal(mes_score=3.0, calibrated_winprob=None)
+    assert not rule_12_mes_dead_zone(cand_deny).allowed, "score=3.0 must deny in raw-band mode"
+
+    # score=4.0 (at upper boundary, open interval) without calibrator → allow
+    cand_pass = _cruise_goals_candidate_with_cal(mes_score=4.0, calibrated_winprob=None)
+    assert rule_12_mes_dead_zone(cand_pass).allowed, "score=4.0 must allow in raw-band mode"
+
+
+def test_rule_5_calibrated_floor_denies_low_winprob():
+    """rule_5 with calibrated_winprob < 0.35 denies even if raw MES passes."""
+    from bip.evaluation.live.engine_v3.no_bet_gate import rule_5_thesis_market_mismatch
+    cand = _stub_candidate(score=0.9)  # raw MES passes threshold 0.6
+    # Inject calibrated_winprob below floor
+    from dataclasses import replace
+    cand_low_cal = MarketCandidate(
+        thesis=cand.thesis,
+        market_id=cand.market_id,
+        family=cand.family,
+        fair_prob=cand.fair_prob,
+        mes=MESResult(
+            thesis_id=cand.mes.thesis_id,
+            market_id=cand.mes.market_id,
+            family=cand.mes.family,
+            base_edge=cand.mes.base_edge,
+            signal_clarity=cand.mes.signal_clarity,
+            book_slowness=cand.mes.book_slowness,
+            liquidity_score=cand.mes.liquidity_score,
+            conditional_variance=cand.mes.conditional_variance,
+            score=cand.mes.score,
+            calibrated_winprob=0.25,  # below floor 0.35
+        ),
+    )
+    verdict = rule_5_thesis_market_mismatch(cand_low_cal)
+    assert not verdict.allowed, "calibrated_winprob < floor must deny via rule_5"
+    assert verdict.rule_number == 5
+    assert "calibrated_winprob" in verdict.reason
+
+
+def test_rule_5_raw_fallback_byte_identical():
+    """rule_5 without calibrated_winprob: raw-threshold behavior unchanged."""
+    cand_pass = _stub_candidate(score=0.7)  # passes threshold
+    assert rule_5_thesis_market_mismatch(cand_pass).allowed
+
+    cand_deny = _stub_candidate(score=0.3)  # below threshold
+    assert not rule_5_thesis_market_mismatch(cand_deny).allowed
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Rule 8 shadow path — horizon-squashed GOALS cvar at HT
 # ──────────────────────────────────────────────────────────────────────
 

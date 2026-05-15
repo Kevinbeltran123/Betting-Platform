@@ -26,9 +26,13 @@ calibrates well — the failure mode that the v3 design is built to fix.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from bip.evaluation.live.engine_v3.gsv import GameStateVector, MarketLine
 from bip.evaluation.live.engine_v3.thesis import MarketFamily, Thesis, ThesisArchetype
+
+if TYPE_CHECKING:
+    from bip.evaluation.live.engine_v3.calibrator import IsotonicCalibrator
 
 # ──────────────────────────────────────────────────────────────────────
 # Signal-clarity matrix: (archetype × market_family) → clarity in [0, 1]
@@ -256,7 +260,14 @@ class MESResult:
     """Per-(thesis × market) routing score with full breakdown.
 
     The breakdown is preserved so the audit log can answer "why was this
-    market chosen?" — required by sec 7.2 (causal audit)."""
+    market chosen?" — required by sec 7.2 (causal audit).
+
+    ``calibrated_winprob``: when a fitted MES→win-prob IsotonicCalibrator
+    is available at compute_mes call time, this field carries the
+    calibrated win probability (calibrator.transform(fair_prob, family,
+    minute)). None → calibrator not available; gate logic falls back to
+    raw-score thresholds (byte-identical backward-compatible behavior).
+    """
 
     thesis_id: str
     market_id: str
@@ -267,6 +278,7 @@ class MESResult:
     liquidity_score: float
     conditional_variance: float
     score: float
+    calibrated_winprob: float | None = None
 
     def passes_threshold(self, threshold: float = 0.6) -> bool:
         return self.score >= threshold
@@ -286,6 +298,7 @@ def compute_mes(
     *,
     fair_prob: float,
     target_stake: float = 100.0,
+    mes_calibrator: "IsotonicCalibrator | None" = None,
 ) -> MESResult:
     """Compute MES for one (thesis, market) pair.
 
@@ -293,6 +306,12 @@ def compute_mes(
         fair_prob: probability the conditional predictor assigns to the
             outcome the thesis points to.
         target_stake: the operator's pre-Kelly stake target.
+        mes_calibrator: optional fitted ``IsotonicCalibrator`` mapping raw
+            fair_prob → calibrated win probability for the (family,
+            minute) cell. When provided, populates
+            ``MESResult.calibrated_winprob`` so rule_5 / rule_12 can gate
+            on the calibrated value. None → ``calibrated_winprob=None``
+            (byte-identical behavior, no change to any existing gate).
     """
     implied = 1.0 / line.side_a_decimal if line.side_a_decimal > 1.0 else 0.0
     base_edge = max(0.0, fair_prob - implied)
@@ -312,6 +331,13 @@ def compute_mes(
         # from the same calibration anchor.
         score = score / 0.1
 
+    # Calibrated win probability — populated only when a fitted calibrator
+    # is available. Does NOT affect score or any raw-threshold gates.
+    cal_winprob: float | None = None
+    if mes_calibrator is not None and mes_calibrator.is_fitted:
+        minute = gsv.time.minute if gsv is not None else 45
+        cal_winprob = mes_calibrator.transform(fair_prob, family, minute)
+
     return MESResult(
         thesis_id=thesis.id,
         market_id=market_id,
@@ -322,6 +348,7 @@ def compute_mes(
         liquidity_score=liq,
         conditional_variance=cvar,
         score=score,
+        calibrated_winprob=cal_winprob,
     )
 
 
