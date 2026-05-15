@@ -826,7 +826,9 @@ _ARCHETYPE_DETECTORS: tuple[Callable[[GameStateVector], Thesis | None], ...] = (
     detect_open_game,
     detect_key_playmaker_off,
     detect_second_half_reset,
-    detect_numerical_sustained,
+    # detect_numerical_sustained removed: net-negative both sample days
+    # (D3: -5.79u wr=0.50 n=42; D4: -1.00u; MES anti-predictive on corners).
+    # Function + __all__ export retained for import stability.
     detect_cruise_mode,
 )
 
