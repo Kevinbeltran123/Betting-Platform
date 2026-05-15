@@ -58,6 +58,14 @@ from bip.sports.football.sportmonks.types import StatType
 # Club: 39.3% home vs 39.3% away — exactly even, so falls back).
 _MARKET_DOM_MIN_PROB_GAP = 0.04
 
+# Shadow gap for dominant-team identification (2026-05-14 forensic, task 5a).
+# Computed alongside the enforced 0.04 gap to collect data on whether
+# a narrower threshold (0.025) would resolve more near-coin-flip markets.
+# The enforced dominant_team_id uses _MARKET_DOM_MIN_PROB_GAP (0.04).
+# The shadow value uses this lower gap and is stored in gsv.shadow_dominant_team_id.
+# One week of shadow data will determine if 0.025 is a sound policy.
+_MARKET_DOM_MIN_PROB_GAP_SHADOW = 0.025
+
 # elo_diff threshold below which we treat the elo signal as "absent".
 # Production observed value across 31 Day-4 fixtures: 0.0 (never
 # populated). Kept as a forward-compatibility hook for when the feed
@@ -344,19 +352,24 @@ def _market_implied_win_probs(
 
 def _market_dominant_team_id(
     state: LiveMatchState, markets: MarketSnapshot,
+    *,
+    min_prob_gap: float = _MARKET_DOM_MIN_PROB_GAP,
 ) -> int | None:
     """Return the bookmaker favourite's team_id from team-named markets.
 
     Returns ``None`` when:
     - No team-named markets present (only numeric lines available).
     - Only one side has team-named markets (incomplete data).
-    - The gap in implied P(win) is below ``_MARKET_DOM_MIN_PROB_GAP``
-      (market sees a coin-flip).
+    - The gap in implied P(win) is below ``min_prob_gap``
+      (market sees a coin-flip). Defaults to the enforced 0.04 gap.
+
+    Pass ``min_prob_gap=_MARKET_DOM_MIN_PROB_GAP_SHADOW`` to compute the
+    shadow dominant team id at the 0.025 threshold.
     """
     home_p, away_p = _market_implied_win_probs(state, markets)
     if home_p is None or away_p is None:
         return None
-    if abs(home_p - away_p) < _MARKET_DOM_MIN_PROB_GAP:
+    if abs(home_p - away_p) < min_prob_gap:
         return None
     return state.home_team_id if home_p > away_p else state.away_team_id
 
@@ -455,6 +468,13 @@ class GSVBuilder:
         # priors/market/elo decision (see ``_choose_dominant_team_id``).
         if dominant_team_id is None:
             dominant_team_id = _choose_dominant_team_id(state, priors, markets)
+
+        # Shadow dominant-team at 0.025 gap (task 5a). This is SEPARATE from the
+        # enforced selection above and does NOT affect dominant_losing or any other
+        # derived field. Stored in gsv.shadow_dominant_team_id for offline analysis.
+        shadow_dominant_team_id = _market_dominant_team_id(
+            state, markets, min_prob_gap=_MARKET_DOM_MIN_PROB_GAP_SHADOW,
+        )
 
         # Score state — dominant_losing is the load-bearing predicate.
         leader_goals = state.home_goals if dominant_team_id == state.home_team_id else state.away_goals
@@ -618,6 +638,7 @@ class GSVBuilder:
             markets=markets,
             last_critical_event=last_critical_event,
             last_critical_event_age_sec=last_critical_event_age_sec,
+            shadow_dominant_team_id=shadow_dominant_team_id,
         )
 
 

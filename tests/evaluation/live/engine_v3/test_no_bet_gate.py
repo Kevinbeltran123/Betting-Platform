@@ -518,3 +518,161 @@ def test_rule_8_mes_score_regression_unchanged():
     assert result.conditional_variance != pytest.approx(squashed), (
         "conditional_variance must be RAW (not squashed) — constraint #2"
     )
+
+
+# ── Task 5: shadow_dominant_team_id + rule_11 napoli exemption ──────────────
+
+
+def _make_goals_candidate(
+    *,
+    mes_score: float = 0.7,
+    archetype: ThesisArchetype = ThesisArchetype.OPEN_GAME_FORMATIONS,
+) -> MarketCandidate:
+    """GOALS candidate with configurable mes_score and archetype."""
+    thesis = Thesis(
+        id="T-GOALS",
+        archetype=archetype,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(
+            family=MarketFamily.GOALS,
+            direction="over",
+            magnitude_pp=0.05,
+            horizon=build_horizon("rest_of_match", 45),
+        ),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="g")],
+        confidence_prior=0.6,
+        source=ThesisSource(layer="rule", identifier="T-GOALS"),
+        activated_at_minute=45,
+    )
+    return MarketCandidate(
+        thesis=thesis,
+        market_id="match_goals_over_2.5",
+        family=MarketFamily.GOALS,
+        fair_prob=0.6,
+        mes=MESResult(
+            thesis_id="T-GOALS",
+            market_id="match_goals_over_2.5",
+            family=MarketFamily.GOALS,
+            base_edge=0.05,
+            signal_clarity=1.0,
+            book_slowness=1.0,
+            liquidity_score=1.0,
+            conditional_variance=0.5,
+            score=mes_score,
+        ),
+    )
+
+
+def _make_drift_monitor_drifted(family: MarketFamily, minute: int = 60):
+    """Return a CalibrationDriftMonitor whose cell for (family, minute) is drifted.
+
+    We feed enough observations with predicted_p=0.9 but outcome=0 to make
+    the KS test register drift (empirical WR much lower than predicted).
+    Default minute=60 matches the _stub_gsv() time.minute=60 bucket.
+    """
+    from bip.evaluation.live.engine_v3.drift_monitor import CalibrationDriftMonitor
+
+    monitor = CalibrationDriftMonitor()
+    # Need ≥30 obs to warm (default min_observations=30). Use 35 with strong
+    # signal: predicted 90% but lose every one → KS drift detected.
+    for _ in range(35):
+        monitor.observe(family=family, minute=minute, predicted_p=0.9, outcome=0)
+    return monitor
+
+
+def _make_thesis_for_archetype(archetype: ThesisArchetype, family: MarketFamily = MarketFamily.GOALS) -> Thesis:
+    return Thesis(
+        id="T-TEST",
+        archetype=archetype,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(
+            family=family, direction="over", magnitude_pp=0.05,
+            horizon=build_horizon("rest_of_match", 45),
+        ),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="g")],
+        confidence_prior=0.6,
+        source=ThesisSource(layer="rule", identifier="T-TEST"),
+        activated_at_minute=45,
+    )
+
+
+def test_shadow_dominant_team_id_field_in_model_dump():
+    """GSV exposes shadow_dominant_team_id and it appears in model_dump."""
+    gsv = _stub_gsv()
+    dumped = gsv.model_dump()
+    assert "shadow_dominant_team_id" in dumped, (
+        "shadow_dominant_team_id must be serialized by model_dump"
+    )
+    # Default is None (backward-compatible with existing parquet readers)
+    assert dumped["shadow_dominant_team_id"] is None
+
+
+def test_shadow_dominant_team_id_can_be_set():
+    """shadow_dominant_team_id accepts an int team id."""
+    now = datetime.now(timezone.utc)
+    gsv = GameStateVector(
+        fixture_id=999,
+        state_version=1,
+        timestamp_utc=now,
+        home_team_id=10,
+        away_team_id=20,
+        score=ScoreState(home_goals=0, away_goals=0, goal_diff=0),
+        time=TimeState(minute=45, period="1H"),
+        numerical=NumericalState(),
+        xg=XGState(),
+        flow=FlowState(),
+        corners=CornerState(),
+        cards=CardsState(),
+        roster=RosterState(),
+        tactical=TacticalState(),
+        priors=PreMatchPriors(lambda_home_prematch=1.35, lambda_away_prematch=1.15),
+        markets=MarketSnapshot(),
+        shadow_dominant_team_id=10,
+    )
+    assert gsv.shadow_dominant_team_id == 10
+    dumped = gsv.model_dump()
+    assert dumped["shadow_dominant_team_id"] == 10
+
+
+def test_rule_11_napoli_exemption_with_drifted_monitor():
+    """DOMINANT_LOSING_NAPOLI candidate passes rule_11 even when monitor is drifted.
+
+    This guards the forensic insight: napoli is graded on P/L (+96u/14 Day-3),
+    not win rate — so the win-rate-derived KS drift gate must not block it.
+    """
+    from bip.evaluation.live.engine_v3.no_bet_gate import rule_11_calibration_drift
+
+    gsv = _stub_gsv()  # minute=60, bucket "60-75"
+    monitor = _make_drift_monitor_drifted(MarketFamily.GOALS, minute=60)
+    # Confirm monitor is actually drifted for this cell
+    status = monitor.status(MarketFamily.GOALS, gsv.time.minute)
+    assert status.is_warm and status.is_drifted, (
+        "Test precondition failed: drift monitor not drifted after 25 observations"
+    )
+
+    cand = _make_goals_candidate(mes_score=0.7, archetype=ThesisArchetype.DOMINANT_LOSING_NAPOLI)
+
+    verdict = rule_11_calibration_drift(cand, gsv, monitor)
+    assert verdict.allowed, (
+        "DOMINANT_LOSING_NAPOLI must be exempt from rule_11 drift gate"
+    )
+
+
+def test_rule_11_non_napoli_still_denied_when_drifted():
+    """Non-napoli candidates are still denied by rule_11 when the cell is drifted."""
+    from bip.evaluation.live.engine_v3.no_bet_gate import rule_11_calibration_drift
+
+    gsv = _stub_gsv()  # minute=60, bucket "60-75"
+    monitor = _make_drift_monitor_drifted(MarketFamily.GOALS, minute=60)
+    status = monitor.status(MarketFamily.GOALS, gsv.time.minute)
+    assert status.is_warm and status.is_drifted, (
+        "Test precondition: drift monitor must be drifted"
+    )
+
+    # A non-napoli archetype — open_game_formations
+    cand = _make_goals_candidate(mes_score=0.7, archetype=ThesisArchetype.OPEN_GAME_FORMATIONS)
+    verdict = rule_11_calibration_drift(cand, gsv, monitor)
+    assert not verdict.allowed
+    assert verdict.rule_number == 11

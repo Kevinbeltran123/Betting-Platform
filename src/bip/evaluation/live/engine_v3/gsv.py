@@ -287,6 +287,14 @@ class GameStateVector(BaseModel):
     last_critical_event: CriticalEvent | None = None
     last_critical_event_age_sec: float | None = None
 
+    # Shadow dominant-team gap field (2026-05-14 forensic, task 5a).
+    # Computed at _MARKET_DOM_MIN_PROB_GAP_SHADOW=0.025 by gsv_builder.build()
+    # alongside the enforced dominant_team_id (which uses 0.04 gap).
+    # Optional with default None so model_dump_json() stays backward-compatible
+    # with existing gsv_log.parquet readers that don't know this field.
+    # Enforced dominant_team_id (score.dominant_team_id) is UNCHANGED.
+    shadow_dominant_team_id: int | None = None
+
     # ── tier-A derived helpers ──────────────────────────────────────────
 
     @property

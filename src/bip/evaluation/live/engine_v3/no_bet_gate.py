@@ -321,7 +321,16 @@ def rule_11_calibration_drift(
       with a structlog note. The cell needs more observations before
       drift can be diagnosed; until then, defer to the other rules.
     - cell warm and drifted → deny.
+
+    NAPOLI EXEMPTION: DOMINANT_LOSING_NAPOLI candidates are exempt from
+    rule_11 regardless of drift status.
+    REVOKE THIS FIRST if live napoli P/L turns negative — napoli is graded
+    on P/L not WR (+96u/14 Day-3); rule_11's WR-drift gate uses a 0.67
+    prior the long-shot archetype never claimed.
     """
+    # NAPOLI EXEMPTION — see docstring above.
+    if candidate.thesis.archetype == ThesisArchetype.DOMINANT_LOSING_NAPOLI:
+        return NoBetVerdict.ok()
     if monitor is None:
         return NoBetVerdict.ok()
     family = candidate.family
