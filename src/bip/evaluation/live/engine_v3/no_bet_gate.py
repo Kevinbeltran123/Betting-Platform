@@ -30,6 +30,7 @@ from bip.evaluation.live.engine_v3.ood_detector import OODDetector
 from bip.evaluation.live.engine_v3.thesis import (
     MarketFamily,
     Thesis,
+    ThesisArchetype,
     UNDER_DIRECTION_ALLOWED_ARCHETYPES,
 )
 
@@ -313,6 +314,34 @@ def rule_9_ood_detector(
     return NoBetVerdict.ok()
 
 
+def rule_12_mes_dead_zone(candidate: MarketCandidate) -> NoBetVerdict:
+    """#12 — cruise_mode/GOALS MES dead-zone suppression (ENFORCED).
+
+    Replicated-loss evidence (2026-05-14 forensic):
+    - Day-3 (n=31 cruise_mode/GOALS picks in bin [3,4)): WR 38.7%, -13.78u
+    - Day-4 (n=5 in same bin): WR 40%, -2.50u
+
+    The [2.5, 4.0) MES band is a structural dead zone for cruise_mode/GOALS:
+    the thesis fires but the market expression score is too uncertain to
+    justify a pick. Candidates at MES >= 4.0 (high conviction) or < 2.5
+    (below the gate's general threshold) are handled by rule_5 / allowed
+    normally.
+
+    Scope: ONLY cruise_mode + GOALS in [2.5, 4.0). Other archetypes and
+    other market families are unaffected.
+    """
+    if (
+        candidate.thesis.archetype == ThesisArchetype.CRUISE_MODE
+        and candidate.family == MarketFamily.GOALS
+        and 2.5 <= candidate.mes.score < 4.0
+    ):
+        return NoBetVerdict.deny(
+            12,
+            f"cruise_mode/goals MES dead-zone [2.5,4.0): score={candidate.mes.score:.3f}",
+        )
+    return NoBetVerdict.ok()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Compose
 # ──────────────────────────────────────────────────────────────────────
@@ -373,6 +402,7 @@ def run_gate(
             rule_3_critical_event_freshness(gsv),
             rule_4_line_freshness(c, gsv, line_max_age_sec),
             rule_5_thesis_market_mismatch(c, mes_threshold),
+            rule_12_mes_dead_zone(c),
             rule_6_commentary_lag(c, gsv, commentary_required),
             rule_7_liquidity_gate(c),
             rule_8_predictive_uncertainty(c, uncertainty_band),
@@ -407,5 +437,6 @@ __all__ = [
     "rule_9_ood_detector",
     "rule_10_mispricing_window",
     "rule_11_calibration_drift",
+    "rule_12_mes_dead_zone",
     "run_gate",
 ]

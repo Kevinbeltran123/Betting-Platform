@@ -1,10 +1,12 @@
-"""No-Bet gate unit tests for rules 1, 3, 4, 5, 7, 8.
+"""No-Bet gate unit tests for rules 1, 3, 4, 5, 7, 8, 12.
 
 Rule 2 (Napoli) gets exhaustive coverage in ``test_anti_napoli.py``.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from bip.evaluation.live.engine_v3 import (
     GameStateVector,
@@ -32,6 +34,7 @@ from bip.evaluation.live.engine_v3.no_bet_gate import (
     rule_5_thesis_market_mismatch,
     rule_7_liquidity_gate,
     rule_8_predictive_uncertainty,
+    rule_12_mes_dead_zone,
     run_gate,
 )
 from bip.evaluation.live.engine_v3.thesis import (
@@ -188,3 +191,141 @@ def test_run_gate_records_all_results_including_denials():
     assert len(results) == 1
     assert not results[0].verdict.allowed
     assert results[0].verdict.rule_number == 3
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Rule 12 — cruise_mode/goals MES dead-zone [2.5, 4.0)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _cruise_goals_candidate(mes_score: float) -> MarketCandidate:
+    """cruise_mode archetype + GOALS family candidate at the given MES score."""
+    thesis = Thesis(
+        id="CRUISE",
+        archetype=ThesisArchetype.CRUISE_MODE,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(
+            family=MarketFamily.GOALS,
+            direction="under",
+            magnitude_pp=0.05,
+            horizon=build_horizon("rest_of_match", 60),
+        ),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="g")],
+        confidence_prior=0.6,
+        source=ThesisSource(layer="rule", identifier="CRUISE"),
+        activated_at_minute=60,
+    )
+    return MarketCandidate(
+        thesis=thesis,
+        market_id="match_goals_under_2.5",
+        family=MarketFamily.GOALS,
+        fair_prob=0.6,
+        mes=MESResult(
+            thesis_id="CRUISE",
+            market_id="match_goals_under_2.5",
+            family=MarketFamily.GOALS,
+            base_edge=0.05,
+            signal_clarity=1.0,
+            book_slowness=1.0,
+            liquidity_score=1.0,
+            conditional_variance=1.0,
+            score=mes_score,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "mes_score, expected_allowed",
+    [
+        (2.49, True),   # below dead-zone → rule_5 handles it; rule_12 passes
+        (2.5,  False),  # exact lower boundary → deny
+        (3.99, False),  # just inside dead-zone → deny
+        (4.0,  True),   # exact upper boundary → allow (half-open [2.5, 4.0))
+    ],
+)
+def test_rule_12_cruise_goals_boundaries(mes_score, expected_allowed):
+    """Parametrized boundary test: 2.49 allow / 2.5 deny / 3.99 deny / 4.0 allow."""
+    cand = _cruise_goals_candidate(mes_score)
+    verdict = rule_12_mes_dead_zone(cand)
+    assert verdict.allowed is expected_allowed
+    if not expected_allowed:
+        assert verdict.rule_number == 12
+        assert "cruise_mode/goals MES dead-zone" in verdict.reason
+
+
+def test_rule_12_control_cruise_corners_passes():
+    """cruise_mode + CORNERS at score=3.0 → rule_12 is NOT triggered
+    (wrong family)."""
+    thesis = Thesis(
+        id="CRUISE_C",
+        archetype=ThesisArchetype.CRUISE_MODE,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(
+            family=MarketFamily.CORNERS,
+            direction="under",
+            magnitude_pp=0.05,
+            horizon=build_horizon("rest_of_match", 60),
+        ),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="g")],
+        confidence_prior=0.6,
+        source=ThesisSource(layer="rule", identifier="CRUISE_C"),
+        activated_at_minute=60,
+    )
+    cand = MarketCandidate(
+        thesis=thesis,
+        market_id="match_corners_under_10.5",
+        family=MarketFamily.CORNERS,
+        fair_prob=0.6,
+        mes=MESResult(
+            thesis_id="CRUISE_C",
+            market_id="match_corners_under_10.5",
+            family=MarketFamily.CORNERS,
+            base_edge=0.05,
+            signal_clarity=1.0,
+            book_slowness=1.0,
+            liquidity_score=1.0,
+            conditional_variance=1.0,
+            score=3.0,
+        ),
+    )
+    assert rule_12_mes_dead_zone(cand).allowed
+
+
+def test_rule_12_control_non_cruise_goals_passes():
+    """non-cruise archetype + GOALS at score=3.0 → rule_12 is NOT triggered
+    (wrong archetype)."""
+    cand = MarketCandidate(
+        thesis=Thesis(
+            id="OPEN",
+            archetype=ThesisArchetype.OPEN_GAME_FORMATIONS,
+            premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+            mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+            prediction=ConditionalShift(
+                family=MarketFamily.GOALS,
+                direction="over",
+                magnitude_pp=0.05,
+                horizon=build_horizon("rest_of_match", 60),
+            ),
+            invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="g")],
+            confidence_prior=0.6,
+            source=ThesisSource(layer="rule", identifier="OPEN"),
+            activated_at_minute=60,
+        ),
+        market_id="match_goals_over_2.5",
+        family=MarketFamily.GOALS,
+        fair_prob=0.6,
+        mes=MESResult(
+            thesis_id="OPEN",
+            market_id="match_goals_over_2.5",
+            family=MarketFamily.GOALS,
+            base_edge=0.05,
+            signal_clarity=1.0,
+            book_slowness=1.0,
+            liquidity_score=1.0,
+            conditional_variance=1.0,
+            score=3.0,
+        ),
+    )
+    assert rule_12_mes_dead_zone(cand).allowed
