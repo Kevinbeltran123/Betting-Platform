@@ -206,9 +206,37 @@ def market_snapshot_from_odds(odds, captured_at: datetime) -> MarketSnapshot:
 
     For Phase-1 we cap ``max_stake_cap`` at 1.0 — replay_shadow
     convention. Phase 2 will wire real caps from Sportmonks when emitted.
+
+    Suspended-quote policy (2026-05-14 forensic fix):
+    - Any odd where ``suspended`` or ``stopped`` is True is SKIPPED.
+    - DROP-AMBIGUOUS: if a market_id had ANY suspended/stopped quote in
+      the payload (even alongside a live quote), the entire market_id is
+      dropped. This is the conservative policy chosen to protect CLV
+      measurement during the freshly-promoted live Telegram path.
+      Root cause: 81/138 Rule-4 denials on 2026-05-14 were frozen
+      suspended quotes shadowing fresh live ones via the former
+      first-wins dedup.
     """
+    all_odds_list = list(odds or [])
+
+    # First pass: collect market_ids that have ANY suspended/stopped quote.
+    suspended_market_ids: set[str] = set()
+    for o in all_odds_list:
+        if getattr(o, "suspended", False) or getattr(o, "stopped", False):
+            desc = (getattr(o, "market_description", None) or "").strip().lower()
+            label = (getattr(o, "label", None) or "").strip().lower()
+            total = getattr(o, "total", None)
+            total_val = _parse_total(total)
+            if desc:
+                suspended_market_ids.add(_build_market_id(desc, label, total_val))
+
+    # Second pass: build MarketLine only from non-suspended quotes whose
+    # market_id is NOT in the suspended set (drop-ambiguous policy).
     lines: dict[str, MarketLine] = {}
-    for o in odds or []:
+    for o in all_odds_list:
+        # Skip suspended/stopped quotes.
+        if getattr(o, "suspended", False) or getattr(o, "stopped", False):
+            continue
         desc = (getattr(o, "market_description", None) or "").strip().lower()
         label = (getattr(o, "label", None) or "").strip().lower()
         value = getattr(o, "value", None) or getattr(o, "decimal", None)
@@ -223,6 +251,9 @@ def market_snapshot_from_odds(odds, captured_at: datetime) -> MarketSnapshot:
         total = getattr(o, "total", None)
         total_val = _parse_total(total)
         market_id = _build_market_id(desc, label, total_val)
+        # Drop-ambiguous: skip market_ids that had a suspended quote.
+        if market_id in suspended_market_ids:
+            continue
         if market_id in lines:
             continue
         last_update = getattr(o, "latest_bookmaker_update", None) or captured_at

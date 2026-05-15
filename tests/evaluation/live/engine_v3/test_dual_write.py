@@ -91,6 +91,8 @@ def _odd(
     value="2.10",
     total="2.5",
     update=None,
+    suspended=False,
+    stopped=False,
 ):
     return SimpleNamespace(
         market_description=desc,
@@ -98,6 +100,8 @@ def _odd(
         value=value,
         total=total,
         latest_bookmaker_update=update,
+        suspended=suspended,
+        stopped=stopped,
     )
 
 
@@ -125,6 +129,63 @@ def test_market_snapshot_dedupes_by_market_id():
     assert len(snap.lines) == 1
     line = next(iter(snap.lines.values()))
     assert line.side_a_decimal == pytest.approx(2.10)
+
+
+def test_market_snapshot_skips_suspended_quote():
+    """A quote where suspended=True must be dropped entirely."""
+    captured = datetime.now(UTC)
+    odds = [
+        _odd(desc="match corners", label="over", value="2.10", total="10.5", suspended=True),
+    ]
+    snap = market_snapshot_from_odds(odds, captured_at=captured)
+    assert len(snap.lines) == 0
+
+
+def test_market_snapshot_skips_stopped_quote():
+    """A quote where stopped=True must be dropped, same as suspended."""
+    captured = datetime.now(UTC)
+    odds = [
+        _odd(desc="match corners", label="over", value="2.10", total="10.5", stopped=True),
+    ]
+    snap = market_snapshot_from_odds(odds, captured_at=captured)
+    assert len(snap.lines) == 0
+
+
+def test_market_snapshot_keeps_pure_live_market():
+    """A market with only live (non-suspended) quotes is kept normally."""
+    captured = datetime.now(UTC)
+    odds = [
+        _odd(desc="match corners", label="over", value="2.10", total="10.5"),
+    ]
+    snap = market_snapshot_from_odds(odds, captured_at=captured)
+    assert len(snap.lines) == 1
+
+
+def test_market_snapshot_drop_ambiguous_market():
+    """When a market has BOTH a live quote and a suspended quote, the
+    entire market_id is dropped (conservative drop-ambiguous policy)."""
+    captured = datetime.now(UTC)
+    # Same desc/label/total → same market_id.
+    odds = [
+        _odd(desc="match corners", label="over", value="2.10", total="10.5"),  # live
+        _odd(desc="match corners", label="over", value="1.85", total="10.5", suspended=True),  # suspended
+    ]
+    snap = market_snapshot_from_odds(odds, captured_at=captured)
+    # Drop-ambiguous: the entire market is dropped even though the live quote was present.
+    assert len(snap.lines) == 0
+
+
+def test_market_snapshot_other_markets_unaffected_by_suspended():
+    """A suspended quote for market A does NOT pollute market B."""
+    captured = datetime.now(UTC)
+    odds = [
+        _odd(desc="match goals", label="over", value="2.10", total="2.5", suspended=True),
+        _odd(desc="match corners", label="over", value="1.90", total="10.5"),  # different market
+    ]
+    snap = market_snapshot_from_odds(odds, captured_at=captured)
+    # Only corners survived — goals was suspended.
+    assert len(snap.lines) == 1
+    assert any("corners" in mid for mid in snap.lines)
 
 
 def test_derive_priors_handles_missing_predictions():

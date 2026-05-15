@@ -47,12 +47,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
 from bip.evaluation.live.engine_v3.gsv import GameStateVector
 from bip.evaluation.live.engine_v3.pipeline import PipelineOutput
+
+if TYPE_CHECKING:
+    from bip.evaluation.live.engine_v3.no_bet_gate import GateResult
 
 DEFAULT_SHADOW_ROOT = Path("data/cache/v3_shadow")
 
@@ -146,7 +149,15 @@ def _derive_stake_fields(
     return (float(book_odd), float(kelly), line_value)
 
 
-def _denial_row(result, fixture_id: int, ts: datetime) -> dict[str, Any]:
+def _denial_row(result, fixture_id: int, ts: datetime, *, is_shadow: bool = False) -> dict[str, Any]:
+    """Build a row for gate_denials.parquet.
+
+    ``is_shadow=True`` marks rows that were NOT enforced: the candidate
+    PASSED the gate but a shadow denial is recorded for offline analysis.
+    Existing enforced-denial rows always have ``is_shadow=False``.
+    The parquet is written with ``diagonal_relaxed`` concat so existing
+    readers without the column receive ``null`` — backward-compatible.
+    """
     cand = result.candidate
     return {
         "fixture_id": int(fixture_id),
@@ -159,6 +170,7 @@ def _denial_row(result, fixture_id: int, ts: datetime) -> dict[str, Any]:
         "reason": result.verdict.reason,
         "mes_score": float(cand.mes.score),
         "direction": cand.thesis.prediction.direction,
+        "is_shadow": bool(is_shadow),
     }
 
 
@@ -209,6 +221,22 @@ class ShadowLogger:
         self._pick_buf: list[dict[str, Any]] = []
         self._denial_buf: list[dict[str, Any]] = []
         self._gsv_buf: list[dict[str, Any]] = []
+
+    def record_shadow_denial(
+        self,
+        result: "GateResult",
+        fixture_id: int,
+        ts: datetime,
+    ) -> None:
+        """Record a shadow denial row — candidate PASSED but would have been
+        denied by the shadow rule. ``is_shadow=True`` distinguishes these
+        from enforced denials in gate_denials.parquet so offline analysis
+        can compare shadow vs real gate outcomes.
+
+        This is the injection point for rule_9 (OOD, shadow-only) and
+        rule_8 (horizon-squashed cvar, shadow-only for HT GOALS).
+        """
+        self._denial_buf.append(_denial_row(result, fixture_id, ts, is_shadow=True))
 
     def record(self, output: PipelineOutput) -> tuple[int, int, int]:
         """Append the picks + denials + GSV from one pipeline frame.

@@ -369,7 +369,11 @@ def test_rule_11_passes_when_monitor_absent():
 
 
 def test_rule_11_denies_when_cell_drifted():
-    """If the monitor flags the cell drifted, the gate must deny."""
+    """If the monitor flags the cell drifted, the gate must deny for non-napoli archetypes.
+
+    Note: DOMINANT_LOSING_NAPOLI is exempt from rule_11 (see rule_11_calibration_drift
+    docstring). This test uses BTTS_LATE_COMPRESSION to cover the general drift path.
+    """
     from bip.evaluation.live.engine_v3.no_bet_gate import (
         rule_11_calibration_drift,
     )
@@ -386,7 +390,7 @@ def test_rule_11_denies_when_cell_drifted():
 
     thesis = Thesis(
         id="T2@m37",
-        archetype=ThesisArchetype.DOMINANT_LOSING_NAPOLI,
+        archetype=ThesisArchetype.OPEN_GAME_FORMATIONS,  # non-napoli archetype
         premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
         mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
         prediction=ConditionalShift(family=MarketFamily.BTTS, direction="yes",

@@ -27,11 +27,21 @@ from bip.evaluation.live.engine_v3.mispricing_window import (
     classify_gsv,
 )
 from bip.evaluation.live.engine_v3.ood_detector import OODDetector
+from bip.evaluation.live.engine_v3.mes import _squashed_goals_cvar
 from bip.evaluation.live.engine_v3.thesis import (
     MarketFamily,
     Thesis,
+    ThesisArchetype,
     UNDER_DIRECTION_ALLOWED_ARCHETYPES,
 )
+
+if TYPE_CHECKING:
+    from bip.evaluation.live.engine_v3.shadow_logger import ShadowLogger
+
+# Sanity bound: total goals outside [0, 15] indicate a genuinely broken
+# GSV (parser error, fixture ID collision, etc.) and are ENFORCED denials
+# even in the shadow-only OOD path.
+_TOTAL_GOALS_SANITY_MAX = 15
 
 
 # Family-specific line freshness thresholds (sec).
@@ -201,21 +211,63 @@ def rule_7_liquidity_gate(candidate: MarketCandidate) -> NoBetVerdict:
     return NoBetVerdict.ok()
 
 
-def rule_8_predictive_uncertainty(candidate: MarketCandidate,
-                                  uncertainty_band: float = 0.08) -> NoBetVerdict:
+def rule_8_predictive_uncertainty(
+    candidate: MarketCandidate,
+    uncertainty_band: float = 0.08,
+    *,
+    gsv: GameStateVector | None = None,
+    shadow_logger: "ShadowLogger | None" = None,
+    fixture_id: int | None = None,
+    ts=None,
+) -> NoBetVerdict:
     """#8 — If the conditional predictor reports a confidence interval
     wider than book_implied ± 8%, abort.
 
     The width is currently embedded in the ``mes.conditional_variance``
     factor. We compare against a normalised threshold: a variance
-    larger than ``uncertainty_band * 10`` is considered too wide. This
-    is a structural placeholder; Phase 2 wires the real CI from the
-    predictor."""
-    if candidate.mes.conditional_variance > uncertainty_band * 10:
+    larger than ``uncertainty_band * 10`` is considered too wide.
+
+    SHADOW-ONLY exception: when the raw cvar WOULD deny AND the family is
+    GOALS AND the current minute is >= 40 AND the squashed cvar (raw/(1+raw))
+    would PASS the band → candidate passes, shadow denial recorded.
+
+    In all other cases rule_8 enforces exactly as before. This shadow path
+    was added because open_game/GOALS candidates at half-time (minute ~45)
+    are structurally un-passable: λ_total × 40/90 ≈ 1.11, squashed ≈ 0.53,
+    which is well within the band. Collecting shadow data for 1-2 weeks will
+    confirm whether squashing is a sound policy before enforcing it.
+    """
+    raw_cvar = candidate.mes.conditional_variance
+    band = uncertainty_band * 10
+    if raw_cvar > band:
+        # Check shadow path: GOALS, minute >= 40, squashed would pass
+        if (
+            gsv is not None
+            and candidate.family == MarketFamily.GOALS
+            and gsv.time.minute >= 40
+            and shadow_logger is not None
+            and fixture_id is not None
+            and ts is not None
+        ):
+            squashed = _squashed_goals_cvar(raw_cvar)
+            if squashed <= band:
+                # Shadow-only: record denial but let candidate pass.
+                shadow_deny = NoBetVerdict.deny(
+                    8,
+                    f"rule_8 shadow: raw cvar {raw_cvar:.2f} > band {band:.2f} "
+                    f"but squashed {squashed:.2f} <= {band:.2f} "
+                    f"(GOALS, minute={gsv.time.minute})",
+                )
+                shadow_logger.record_shadow_denial(
+                    GateResult(candidate=candidate, verdict=shadow_deny),
+                    fixture_id=fixture_id,
+                    ts=ts,
+                )
+                return NoBetVerdict.ok()
         return NoBetVerdict.deny(
             8,
-            f"predictive variance {candidate.mes.conditional_variance:.2f} "
-            f"exceeds band {uncertainty_band * 10:.2f}",
+            f"predictive variance {raw_cvar:.2f} "
+            f"exceeds band {band:.2f}",
         )
     return NoBetVerdict.ok()
 
@@ -269,7 +321,16 @@ def rule_11_calibration_drift(
       with a structlog note. The cell needs more observations before
       drift can be diagnosed; until then, defer to the other rules.
     - cell warm and drifted → deny.
+
+    NAPOLI EXEMPTION: DOMINANT_LOSING_NAPOLI candidates are exempt from
+    rule_11 regardless of drift status.
+    REVOKE THIS FIRST if live napoli P/L turns negative — napoli is graded
+    on P/L not WR (+96u/14 Day-3); rule_11's WR-drift gate uses a 0.67
+    prior the long-shot archetype never claimed.
     """
+    # NAPOLI EXEMPTION — see docstring above.
+    if candidate.thesis.archetype == ThesisArchetype.DOMINANT_LOSING_NAPOLI:
+        return NoBetVerdict.ok()
     if monitor is None:
         return NoBetVerdict.ok()
     family = candidate.family
@@ -293,22 +354,69 @@ def rule_9_ood_detector(
     *,
     threshold: float | None = None,
 ) -> NoBetVerdict:
-    """#9 — Out-of-distribution game state (Risk #2 mitigation).
+    """#9 — Out-of-distribution game state (SHADOW-ONLY).
 
-    When ``detector`` is unfitted or ``None`` the rule passes (fail-safe);
-    when fitted and the GSV's Mahalanobis distance from the training
-    centroid exceeds the threshold, the candidate is denied with the
-    score embedded in the reason so the audit log captures it.
+    This rule is now SHADOW-ONLY: if the legacy detector would deny,
+    a shadow denial row is recorded (is_shadow=True) and the candidate
+    PASSES. The shadow data accrues so a new detector can be refit with
+    the trimmed 14-feature schema (scripts/spike/v3/refit_ood_v2_real.py).
+
+    EXCEPTION: total_goals outside [0, 15] is a REAL enforced deny —
+    that indicates a genuinely broken GSV (parser error, fixture ID
+    collision). No detector is needed for this sanity check.
+
+    When ``detector`` is unfitted or ``None`` the rule passes (fail-safe).
+
+    The shadow recording happens in run_gate (which has access to the
+    shadow_logger). This function returns the would-be verdict so
+    run_gate can decide: REAL deny (sanity fail) or shadow-and-pass.
     """
+    total_goals = gsv.score.home_goals + gsv.score.away_goals
+    if total_goals < 0 or total_goals > _TOTAL_GOALS_SANITY_MAX:
+        return NoBetVerdict.deny(
+            9,
+            f"broken GSV: total_goals={total_goals} outside [0, {_TOTAL_GOALS_SANITY_MAX}]",
+        )
+
     if detector is None or not detector.is_fitted:
         return NoBetVerdict.ok()
     score = detector.score(gsv)
     cutoff = detector.threshold if threshold is None else threshold
     if score > cutoff:
+        # Shadow-only: return a special deny so run_gate can record the
+        # shadow row and then pass the candidate through.
         return NoBetVerdict.deny(
             9,
-            f"OOD game state — Mahalanobis {score:.2f} > threshold {cutoff:.2f} "
+            f"OOD game state (shadow) — Mahalanobis {score:.2f} > threshold {cutoff:.2f} "
             f"(trained on n={detector.n_train})",
+        )
+    return NoBetVerdict.ok()
+
+
+def rule_12_mes_dead_zone(candidate: MarketCandidate) -> NoBetVerdict:
+    """#12 — cruise_mode/GOALS MES dead-zone suppression (ENFORCED).
+
+    Replicated-loss evidence (2026-05-14 forensic):
+    - Day-3 (n=31 cruise_mode/GOALS picks in bin [3,4)): WR 38.7%, -13.78u
+    - Day-4 (n=5 in same bin): WR 40%, -2.50u
+
+    The [2.5, 4.0) MES band is a structural dead zone for cruise_mode/GOALS:
+    the thesis fires but the market expression score is too uncertain to
+    justify a pick. Candidates at MES >= 4.0 (high conviction) or < 2.5
+    (below the gate's general threshold) are handled by rule_5 / allowed
+    normally.
+
+    Scope: ONLY cruise_mode + GOALS in [2.5, 4.0). Other archetypes and
+    other market families are unaffected.
+    """
+    if (
+        candidate.thesis.archetype == ThesisArchetype.CRUISE_MODE
+        and candidate.family == MarketFamily.GOALS
+        and 2.5 <= candidate.mes.score < 4.0
+    ):
+        return NoBetVerdict.deny(
+            12,
+            f"cruise_mode/goals MES dead-zone [2.5,4.0): score={candidate.mes.score:.3f}",
         )
     return NoBetVerdict.ok()
 
@@ -336,21 +444,27 @@ def run_gate(
     ood_detector: OODDetector | None = None,
     mispricing_window_cfg: MispricingWindowConfig | None = None,
     drift_monitor: "CalibrationDriftMonitor | None" = None,
+    shadow_logger: "ShadowLogger | None" = None,
 ) -> list[GateResult]:
-    """Run the 10 rules against each candidate.
+    """Run the rules against each candidate.
 
     Returns one ``GateResult`` per candidate; callers filter by
     ``r.verdict.allowed``. Even denied results are returned (with their
     rule number + reason) so the audit log can capture them — sec 7.2
     requires that "every rejected pick is logged with reason".
 
-    Rule 9 (OOD) is global to the GSV — it would emit the same verdict
-    for every candidate at this state — so we short-circuit on it first
-    when the detector is fitted and the state is OOD.
+    Rule 9 (OOD) is global to the GSV — it has two sub-paths:
+      - total_goals sanity fail → REAL enforced deny (still short-circuits)
+      - Mahalanobis OOD → SHADOW-ONLY: candidate passes, shadow row logged
 
     Rule 10 (mispricing window) is per-candidate (it inspects the
     candidate's base_edge against a window-dependent threshold) but
     the window classification itself is GSV-level, computed once.
+
+    ``shadow_logger``: when provided, shadow-only verdicts from rule_9
+    and rule_8 are recorded via ``shadow_logger.record_shadow_denial``.
+    Required to capture shadow denials without affecting the candidate's
+    allowed/denied outcome.
     """
     # Rule 1 is global (applies once). If no theses, every candidate is denied
     # against rule 1; we short-circuit to one verdict per candidate.
@@ -359,11 +473,24 @@ def run_gate(
             GateResult(candidate=c, verdict=NoBetVerdict.deny(1, "no theses"))
             for c in candidates
         ]
-    # Rule 9 is also state-global. If the GSV is OOD, every candidate dies
-    # against rule 9 — short-circuit so the audit log shows the real reason.
+    # Rule 9 — OOD check (state-global).
     ood_verdict = rule_9_ood_detector(gsv, ood_detector)
     if not ood_verdict.allowed:
-        return [GateResult(candidate=c, verdict=ood_verdict) for c in candidates]
+        # Sanity fail (total_goals out of range): real enforced deny.
+        # Mahalanobis OOD: shadow-only — pass candidates through but log.
+        is_sanity_fail = "broken GSV" in ood_verdict.reason
+        if is_sanity_fail:
+            return [GateResult(candidate=c, verdict=ood_verdict) for c in candidates]
+        # Shadow: log and allow candidates to continue through remaining rules.
+        if shadow_logger is not None:
+            for c in candidates:
+                shadow_logger.record_shadow_denial(
+                    GateResult(candidate=c, verdict=ood_verdict),
+                    fixture_id=gsv.fixture_id,
+                    ts=gsv.timestamp_utc,
+                )
+        # Fall through — candidates are NOT blocked by shadow OOD.
+
     win_cfg = mispricing_window_cfg or MispricingWindowConfig()
     window = classify_gsv(gsv, win_cfg)
     out: list[GateResult] = []
@@ -373,9 +500,16 @@ def run_gate(
             rule_3_critical_event_freshness(gsv),
             rule_4_line_freshness(c, gsv, line_max_age_sec),
             rule_5_thesis_market_mismatch(c, mes_threshold),
+            rule_12_mes_dead_zone(c),
             rule_6_commentary_lag(c, gsv, commentary_required),
             rule_7_liquidity_gate(c),
-            rule_8_predictive_uncertainty(c, uncertainty_band),
+            rule_8_predictive_uncertainty(
+                c, uncertainty_band,
+                gsv=gsv,
+                shadow_logger=shadow_logger,
+                fixture_id=gsv.fixture_id,
+                ts=gsv.timestamp_utc,
+            ),
             rule_10_mispricing_window(c, window, win_cfg),
             rule_11_calibration_drift(c, gsv, drift_monitor),
         ):
@@ -407,5 +541,6 @@ __all__ = [
     "rule_9_ood_detector",
     "rule_10_mispricing_window",
     "rule_11_calibration_drift",
+    "rule_12_mes_dead_zone",
     "run_gate",
 ]

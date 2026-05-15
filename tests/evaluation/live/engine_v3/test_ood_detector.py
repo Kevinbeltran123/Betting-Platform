@@ -21,6 +21,7 @@ Tested invariants:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -271,10 +272,25 @@ def test_rule_9_denies_with_score_in_reason(priors, market_snapshot):
     assert "Mahalanobis" in verdict.reason
 
 
-def test_run_gate_short_circuits_on_ood(priors):
-    """When OOD fires, every candidate dies under rule 9 — the gate
-    short-circuits so the audit log shows the real reason and not some
-    accidental rule-7 liquidity miss."""
+def test_run_gate_ood_is_shadow_only(priors, tmp_path):
+    """Rule 9 OOD (Mahalanobis) is now SHADOW-ONLY: a candidate in an OOD
+    state PASSES the gate, but a shadow denial row is recorded with
+    is_shadow=True in the shadow_logger.
+
+    Previously the gate short-circuited on rule 9. Now the candidate
+    falls through to other rules. If all other rules pass, the candidate
+    is ALLOWED. If another rule denies (e.g. rule_8), the denial is
+    recorded under that rule's number.
+
+    Sanity exception: total_goals outside [0,15] is still a REAL deny.
+    """
+    from bip.evaluation.live.engine_v3 import MarketCandidate, MarketFamily, MESResult, Thesis
+    from bip.evaluation.live.engine_v3.thesis import (
+        CausalChain, CausalStep, ConditionalShift, GSVPredicate,
+        InvalidationTrigger, ThesisArchetype, ThesisSource, build_horizon,
+    )
+    from bip.evaluation.live.engine_v3.shadow_logger import ShadowLogger
+
     # Use an isolated narrow training set so a normal state goes OOD.
     builder = GSVBuilder()
     now = datetime.now(timezone.utc)
@@ -298,13 +314,8 @@ def test_run_gate_short_circuits_on_ood(priors):
         make_state(minute=15), priors=priors, markets=markets,
     )
 
-    from bip.evaluation.live.engine_v3 import MarketCandidate, MarketFamily, MESResult, Thesis
-    from bip.evaluation.live.engine_v3.thesis import (
-        CausalChain, CausalStep, ConditionalShift, GSVPredicate,
-        InvalidationTrigger, ThesisArchetype, ThesisSource, build_horizon,
-    )
-
-    # Build any candidate — rule 9 should kill it regardless.
+    # Build a candidate that passes all other rules (score=1.0 > 0.6, cvar=1.0 < 0.8*10=0.8? No).
+    # Let's make a candidate that passes rule_8 too by keeping cvar low.
     thesis = Thesis(
         id="T@m15",
         archetype=ThesisArchetype.OPEN_GAME_FORMATIONS,
@@ -328,13 +339,20 @@ def test_run_gate_short_circuits_on_ood(priors):
             thesis_id=thesis.id, market_id="match_goals_over_2.5",
             family=MarketFamily.GOALS,
             base_edge=0.05, signal_clarity=1.0, book_slowness=1.0,
-            liquidity_score=1.0, conditional_variance=1.0, score=1.0,
+            liquidity_score=1.0,
+            conditional_variance=0.5,  # low enough to pass rule_8 (0.5 < 0.08*10=0.8)
+            score=1.0,
         ),
     )
-    results = run_gate([thesis], [candidate], test_gsv, ood_detector=det)
+    shadow_log = ShadowLogger(output_root=tmp_path)
+    results = run_gate([thesis], [candidate], test_gsv, ood_detector=det, shadow_logger=shadow_log)
     assert len(results) == 1
-    assert results[0].verdict.allowed is False
-    assert results[0].verdict.rule_number == 9
+    # Candidate PASSES (shadow-only OOD doesn't block it)
+    assert results[0].verdict.allowed is True, (
+        f"Expected allowed=True (shadow-only OOD), got rule_number={results[0].verdict.rule_number}"
+    )
+    # Shadow denial was recorded
+    assert shadow_log.buffer_size()[1] == 1, "Expected 1 shadow denial in buffer"
 
 
 def test_pipeline_with_ood_detector_passes_normal_state(priors, market_snapshot):
@@ -367,3 +385,162 @@ def test_save_load_roundtrip_preserves_scores(tmp_path, priors, market_snapshot)
     builder = GSVBuilder()
     probe = builder.build(make_state(minute=42), priors=priors, markets=market_snapshot)
     assert abs(det.score(probe) - loaded.score(probe)) < 1e-9
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Task-3 regression tests: shadow-only rule_9 + sanity bound
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_rule_9_shadow_high_scoring_gsv_allowed_shadow_recorded(priors, market_snapshot, tmp_path):
+    """A GSV that the detector flags as OOD: candidate PASSES the gate
+    (shadow-only) and a shadow denial row is recorded.
+
+    Strategy: train on late-game states (minute=85), test with early-game
+    (minute=5). The minute dimension creates the OOD signal without
+    relying on total_goals (which was removed from FEATURE_NAMES).
+    """
+    from bip.evaluation.live.engine_v3 import MarketCandidate, MarketFamily, MESResult, Thesis
+    from bip.evaluation.live.engine_v3.thesis import (
+        CausalChain, CausalStep, ConditionalShift, GSVPredicate,
+        InvalidationTrigger, ThesisArchetype, ThesisSource, build_horizon,
+    )
+    from bip.evaluation.live.engine_v3.shadow_logger import ShadowLogger
+
+    # Fit detector on late-game states only (minute ~85)
+    builder = GSVBuilder()
+    now = datetime.now(timezone.utc)
+    from bip.evaluation.live.engine_v3 import MarketLine, MarketSnapshot
+    tight_markets = MarketSnapshot(lines={
+        "match_goals_over_2.5": MarketLine(
+            market_id="match_goals_over_2.5",
+            side_a_decimal=1.95, side_b_decimal=1.95,
+            line_value=2.5, max_stake_cap=500.0,
+            last_update_utc=now - timedelta(seconds=20),
+        ),
+    })
+    training_gsvs = [
+        builder.build(make_state(minute=85), priors=priors, markets=tight_markets)
+        for _ in range(20)
+    ]
+    # Aggressive threshold (50th %ile) to ensure early-game states flag OOD.
+    det = OODDetector().fit(training_gsvs, threshold_percentile=50.0)
+
+    # Build a GSV at minute=5 — well outside training distribution (minute=85)
+    gsv = builder.build(make_state(minute=5), priors=priors, markets=tight_markets)
+
+    # Verify detector actually flags it as OOD.
+    assert det.is_ood(gsv), "Precondition: early-game GSV must be OOD vs late-game training set"
+
+    thesis = Thesis(
+        id="SHADOW_TEST",
+        archetype=ThesisArchetype.OPEN_GAME_FORMATIONS,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(
+            family=MarketFamily.GOALS, direction="over", magnitude_pp=0.05,
+            horizon=build_horizon("rest_of_match", 20),
+        ),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="x")],
+        confidence_prior=0.5,
+        source=ThesisSource(layer="rule", identifier="SHADOW_TEST"),
+        activated_at_minute=70,
+    )
+    candidate = MarketCandidate(
+        thesis=thesis,
+        market_id="match_goals_over_2.5",
+        family=MarketFamily.GOALS,
+        fair_prob=0.6,
+        mes=MESResult(
+            thesis_id=thesis.id, market_id="match_goals_over_2.5",
+            family=MarketFamily.GOALS,
+            base_edge=0.05, signal_clarity=1.0, book_slowness=1.0,
+            liquidity_score=1.0, conditional_variance=0.5, score=1.0,
+        ),
+    )
+    shadow_log = ShadowLogger(output_root=tmp_path)
+    results = run_gate([thesis], [candidate], gsv, ood_detector=det, shadow_logger=shadow_log)
+
+    # Candidate must PASS (shadow-only: OOD doesn't block)
+    assert len(results) == 1
+    assert results[0].verdict.allowed is True
+    # Shadow denial must be recorded
+    assert shadow_log.buffer_size()[1] >= 1, "Shadow denial row must be in the denial buffer"
+
+
+def test_rule_9_sanity_total_goals_20_real_deny(priors, market_snapshot):
+    """total_goals > 15 is a REAL enforced deny (genuinely broken GSV),
+    NOT a shadow denial. Candidate is blocked regardless of is_shadow."""
+    from bip.evaluation.live.engine_v3 import MarketCandidate, MarketFamily, MESResult, Thesis
+    from bip.evaluation.live.engine_v3.thesis import (
+        CausalChain, CausalStep, ConditionalShift, GSVPredicate,
+        InvalidationTrigger, ThesisArchetype, ThesisSource, build_horizon,
+    )
+
+    # Build a GSV with 20 total goals (clearly broken)
+    builder = GSVBuilder()
+    broken_state = make_state(home_goals=12, away_goals=8, minute=70)
+    gsv = builder.build(broken_state, priors=priors, markets=market_snapshot)
+
+    thesis = Thesis(
+        id="SANITY_TEST",
+        archetype=ThesisArchetype.OPEN_GAME_FORMATIONS,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(
+            family=MarketFamily.GOALS, direction="over", magnitude_pp=0.05,
+            horizon=build_horizon("rest_of_match", 20),
+        ),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="x")],
+        confidence_prior=0.5,
+        source=ThesisSource(layer="rule", identifier="SANITY_TEST"),
+        activated_at_minute=70,
+    )
+    candidate = MarketCandidate(
+        thesis=thesis,
+        market_id="match_goals_over_2.5",
+        family=MarketFamily.GOALS,
+        fair_prob=0.6,
+        mes=MESResult(
+            thesis_id=thesis.id, market_id="match_goals_over_2.5",
+            family=MarketFamily.GOALS,
+            base_edge=0.05, signal_clarity=1.0, book_slowness=1.0,
+            liquidity_score=1.0, conditional_variance=0.5, score=1.0,
+        ),
+    )
+    # No detector needed for sanity check
+    results = run_gate([thesis], [candidate], gsv, ood_detector=None)
+    assert len(results) == 1
+    assert results[0].verdict.allowed is False
+    assert results[0].verdict.rule_number == 9
+    assert "broken GSV" in results[0].verdict.reason
+
+
+_V2_REAL_PKL = Path("data/cache/ood_detector_v2_real.pkl")
+
+
+@pytest.mark.skipif(
+    not _V2_REAL_PKL.exists(),
+    reason="ood_detector_v2_real.pkl not found in data/cache/ — skip on CI without real pkl",
+)
+def test_real_pkl_loads_and_scores_without_exception(priors, market_snapshot):
+    """Loading the real 17-feature ood_detector_v2_real.pkl and scoring a
+    GSV must NOT raise a shape-mismatch error.
+
+    This is known_correctness_constraint #1: the pkl was fit on the legacy
+    17-feature schema. OODDetector.score() now auto-selects vectorize_gsv_legacy
+    (17-dim) for detectors with the legacy feature_names, so the loaded pkl
+    scores correctly without a dimension mismatch.
+    """
+    from bip.evaluation.live.engine_v3.ood_detector import _FEATURE_NAMES_LEGACY
+
+    det = OODDetector.load(_V2_REAL_PKL)
+    assert det.is_fitted
+    # Confirm it was fit on the legacy 17-feature schema
+    assert det.feature_names == _FEATURE_NAMES_LEGACY or len(det.feature_names) == 17
+
+    builder = GSVBuilder()
+    gsv = builder.build(make_state(minute=45), priors=priors, markets=market_snapshot)
+    # Must not raise — shape mismatch was the bug this test guards
+    score = det.score(gsv)
+    assert score >= 0.0  # Mahalanobis distance is non-negative
