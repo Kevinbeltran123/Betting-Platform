@@ -636,27 +636,54 @@ def test_shadow_dominant_team_id_can_be_set():
     assert dumped["shadow_dominant_team_id"] == 10
 
 
-def test_rule_11_napoli_exemption_with_drifted_monitor():
-    """DOMINANT_LOSING_NAPOLI candidate passes rule_11 even when monitor is drifted.
+def test_rule_11_napoli_well_calibrated_passes_principled_gate():
+    """DOMINANT_LOSING_NAPOLI with well-calibrated predicted_p passes rule_11
+    WITHOUT any special-case exemption — the principled gate is sufficient.
 
-    This guards the forensic insight: napoli is graded on P/L (+96u/14 Day-3),
-    not win rate — so the win-rate-derived KS drift gate must not block it.
+    This is the Wave-3 enforced behavioral change: rule_11 now gates on
+    calibration reliability gap and P&L, not raw WR vs a fixed prior.
+    A long-shot archetype at predicted=0.20, realized~=0.20 has a gap
+    near 0 and positive P&L, so the gate passes naturally.
+
+    The old DOMINANT_LOSING_NAPOLI special-case is removed and SUPERSEDED
+    by this principled test.
     """
+    from bip.evaluation.live.engine_v3.drift_monitor import CalibrationDriftMonitor
     from bip.evaluation.live.engine_v3.no_bet_gate import rule_11_calibration_drift
 
     gsv = _stub_gsv()  # minute=60, bucket "60-75"
-    monitor = _make_drift_monitor_drifted(MarketFamily.GOALS, minute=60)
-    # Confirm monitor is actually drifted for this cell
-    status = monitor.status(MarketFamily.GOALS, gsv.time.minute)
-    assert status.is_warm and status.is_drifted, (
-        "Test precondition failed: drift monitor not drifted after 25 observations"
+
+    # Build a well-calibrated monitor for napoli: predicted 0.20, actual ~0.20.
+    # With odd=5.00 (decimal), a win returns +4.0 units and a loss returns -1.
+    # At 20% WR with odd=5.0: EV = 0.20*(5.0-1) + 0.80*(-1) = 0.80 - 0.80 = 0.0
+    # We skew slightly to +EV to keep P&L above the floor.
+    monitor = CalibrationDriftMonitor(min_observations=30)
+    wins = 8   # ~21% of 38
+    for i in range(38):
+        won = i < wins
+        profit = 4.0 if won else -1.0  # odd=5.0 → win net +4
+        monitor.observe(
+            family=MarketFamily.GOALS,
+            minute=60,
+            predicted_p=0.20,
+            outcome=1 if won else 0,
+            profit_units=profit,
+        )
+    status = monitor.status(MarketFamily.GOALS, 60)
+    assert status.is_warm, "Precondition: monitor must be warm"
+    # Gap should be small (predicted 0.20 vs actual ~0.21): no calibration drift
+    assert status.reliability_gap < 0.15, (
+        f"Precondition: napoli gap {status.reliability_gap:.3f} should be small"
     )
+    # P&L per obs: 8 wins × 4 + 30 losses × -1 = 32 - 30 = +2.0, per obs = +0.053
+    assert status.rolling_pnl > 0, f"Precondition: napoli P&L should be positive"
 
+    # Without any special-case, the principled gate should pass this candidate.
     cand = _make_goals_candidate(mes_score=0.7, archetype=ThesisArchetype.DOMINANT_LOSING_NAPOLI)
-
     verdict = rule_11_calibration_drift(cand, gsv, monitor)
     assert verdict.allowed, (
-        "DOMINANT_LOSING_NAPOLI must be exempt from rule_11 drift gate"
+        "Well-calibrated napoli must pass rule_11 via principled calibration/P&L gate "
+        "(no special-case needed — this is the Wave-3 enforced behavioral change)"
     )
 
 
@@ -676,3 +703,216 @@ def test_rule_11_non_napoli_still_denied_when_drifted():
     verdict = rule_11_calibration_drift(cand, gsv, monitor)
     assert not verdict.allowed
     assert verdict.rule_number == 11
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Wave-3 Task 3.1: principled gate tests (a), (b), (c) + settlement feed
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_rule_11_a_well_calibrated_long_shot_does_not_trip():
+    """(a) Well-calibrated long-shot (predicted 0.2, realized ~0.2, +EV)
+    does NOT trip rule_11 — napoli no longer needs a special-case exemption.
+
+    This is the definitive proof that the principled gate is correct for
+    DOMINANT_LOSING_NAPOLI without hardcoded bypass logic.
+    """
+    from bip.evaluation.live.engine_v3.drift_monitor import CalibrationDriftMonitor
+    from bip.evaluation.live.engine_v3.no_bet_gate import rule_11_calibration_drift
+
+    gsv = _stub_gsv()  # minute=60, bucket "60-75"
+    monitor = CalibrationDriftMonitor(min_observations=30)
+
+    # Long-shot: predicted 0.20. Feed 40 obs with actual ~22% WR (+EV at odd=5.5).
+    # Gap = |0.20 - 0.225| = 0.025 << threshold 0.15 → no calibration drift.
+    # P&L: 9 wins × (5.5-1) + 31 losses × (-1) = 40.5 - 31 = +9.5 > 0 → no P&L drift.
+    for i in range(40):
+        won = i < 9
+        profit = 4.5 if won else -1.0
+        monitor.observe(MarketFamily.GOALS, 60, 0.20, 1 if won else 0, profit)
+
+    status = monitor.status(MarketFamily.GOALS, 60)
+    assert status.is_warm and not status.is_drifted, (
+        f"Well-calibrated long-shot should NOT be drifted: "
+        f"gap={status.reliability_gap:.3f}, pnl={status.rolling_pnl:.2f}"
+    )
+
+    cand = _make_goals_candidate(mes_score=0.7, archetype=ThesisArchetype.DOMINANT_LOSING_NAPOLI)
+    verdict = rule_11_calibration_drift(cand, gsv, monitor)
+    assert verdict.allowed, (
+        "Well-calibrated long-shot (napoli) must pass rule_11 — principled gate, no bypass"
+    )
+
+
+def test_rule_11_b_miscalibrated_cell_trips():
+    """(b) Genuinely mis-calibrated cell DOES trip rule_11.
+
+    Predicted 0.80, actual 0.20 → reliability gap 0.60 >> threshold 0.15.
+    Also P&L is negative. Both conditions trigger.
+    """
+    from bip.evaluation.live.engine_v3.drift_monitor import CalibrationDriftMonitor
+    from bip.evaluation.live.engine_v3.no_bet_gate import rule_11_calibration_drift
+
+    gsv = _stub_gsv()  # minute=60, bucket "60-75"
+    monitor = CalibrationDriftMonitor(min_observations=30)
+
+    # Severely miscalibrated: predicted 0.80 but only 20% actual WR.
+    for i in range(40):
+        won = i < 8  # 20% WR
+        profit = 1.5 if won else -1.0  # odd=2.5
+        monitor.observe(MarketFamily.GOALS, 60, 0.80, 1 if won else 0, profit)
+
+    status = monitor.status(MarketFamily.GOALS, 60)
+    assert status.is_warm and status.is_drifted, (
+        f"Miscalibrated cell must be drifted: "
+        f"gap={status.reliability_gap:.3f} (threshold=0.15), "
+        f"pnl={status.rolling_pnl:.2f}"
+    )
+    assert "calibration" in status.drift_reason, (
+        f"drift_reason should include 'calibration', got: {status.drift_reason!r}"
+    )
+
+    cand = _make_goals_candidate(mes_score=0.7, archetype=ThesisArchetype.OPEN_GAME_FORMATIONS)
+    verdict = rule_11_calibration_drift(cand, gsv, monitor)
+    assert not verdict.allowed, "Miscalibrated cell must deny via rule_11"
+    assert verdict.rule_number == 11
+    assert "calibration/P&L drifted" in verdict.reason
+
+
+def test_rule_11_b_negative_pnl_trips_even_if_calibration_ok():
+    """(b-extra) Cell with acceptable calibration but very negative P&L DOES trip.
+
+    Predicted 0.40, actual 0.38 (gap 0.02, well within threshold), but
+    odds are 1.5 (under-priced), so every win barely covers the losses.
+    P&L per obs = 0.38 * 0.5 + 0.62 * (-1) ≈ -0.43 << floor -0.10.
+    """
+    from bip.evaluation.live.engine_v3.drift_monitor import CalibrationDriftMonitor
+    from bip.evaluation.live.engine_v3.no_bet_gate import rule_11_calibration_drift
+
+    gsv = _stub_gsv()  # minute=60
+    monitor = CalibrationDriftMonitor(min_observations=30)
+
+    for i in range(40):
+        won = i < 15  # 37.5% WR (close to predicted 0.40 → small gap)
+        profit = 0.5 if won else -1.0  # decimal odd=1.5
+        monitor.observe(MarketFamily.BTTS, 60, 0.40, 1 if won else 0, profit)
+
+    status = monitor.status(MarketFamily.BTTS, 60)
+    assert status.is_warm
+    # Calibration gap should be small
+    assert status.reliability_gap < 0.15, (
+        f"Gap {status.reliability_gap:.3f} should be within threshold (calibration OK)"
+    )
+    # But P&L must be negative enough to trip
+    assert status.rolling_pnl / 40 < -0.10, (
+        f"P&L per obs {status.rolling_pnl/40:.3f} must be below floor -0.10"
+    )
+    assert status.is_drifted, "P&L-drifted cell must be flagged drifted"
+    assert "pnl" in status.drift_reason
+
+    cand = _make_goals_candidate(mes_score=0.7, archetype=ThesisArchetype.OPEN_GAME_FORMATIONS)
+    # Use BTTS family to match the BTTS monitor cell
+    from bip.evaluation.live.engine_v3.thesis import (
+        CausalChain, CausalStep, ConditionalShift, GSVPredicate,
+        InvalidationTrigger, Thesis, ThesisSource,
+    )
+    btts_thesis = Thesis(
+        id="BTTS-PNL",
+        archetype=ThesisArchetype.OPEN_GAME_FORMATIONS,
+        premise=[GSVPredicate(path="time.minute", op="ge", value=0)],
+        mechanism=CausalChain(steps=[CausalStep(cause="x", effect="y", mechanism="z")]),
+        prediction=ConditionalShift(
+            family=MarketFamily.BTTS, direction="yes", magnitude_pp=0.05,
+            horizon=build_horizon("rest_of_match", 30),
+        ),
+        invalidation_triggers=[InvalidationTrigger(kind="any_goal", description="g")],
+        confidence_prior=0.6,
+        source=ThesisSource(layer="rule", identifier="BTTS-PNL"),
+        activated_at_minute=60,
+    )
+    btts_cand = MarketCandidate(
+        thesis=btts_thesis, market_id="btts_yes", family=MarketFamily.BTTS,
+        fair_prob=0.6,
+        mes=MESResult(
+            thesis_id="BTTS-PNL", market_id="btts_yes",
+            family=MarketFamily.BTTS, base_edge=0.05, signal_clarity=1.0,
+            book_slowness=1.0, liquidity_score=1.0, conditional_variance=0.5, score=0.7,
+        ),
+    )
+    verdict = rule_11_calibration_drift(btts_cand, gsv, monitor)
+    assert not verdict.allowed, "P&L-drifted cell must deny via rule_11"
+    assert verdict.rule_number == 11
+
+
+def test_rule_11_c_settlement_feed_updates_cell():
+    """(c) Settlement feed (feed_graded_picks_to_monitor) updates a cell
+    from a list of GradedPick-like records.
+
+    This is the missing live connection between canonical v3_grader
+    output and the drift monitor.
+    """
+    from bip.evaluation.live.engine_v3.drift_monitor import (
+        CalibrationDriftMonitor,
+        feed_graded_picks_to_monitor,
+    )
+
+    monitor = CalibrationDriftMonitor(min_observations=5)
+
+    # GradedPick-like dicts simulating output from v3_grader
+    graded_picks = [
+        {
+            "market_id": "match_goals_over_2.5",
+            "status": "won",
+            "profit_units": 1.8,
+            "predicted_p": 0.55,
+            "minute": 60,
+            "thesis_id": "T-001",
+        },
+        {
+            "market_id": "match_goals_under_2.5",
+            "status": "lost",
+            "profit_units": -1.0,
+            "predicted_p": 0.45,
+            "minute": 60,
+            "thesis_id": "T-002",
+        },
+        {
+            "market_id": "btts_yes",
+            "status": "won",
+            "profit_units": 0.85,
+            "predicted_p": 0.52,
+            "minute": 45,
+            "thesis_id": "T-003",
+        },
+        {
+            "market_id": "match_goals_over_2.5",
+            "status": "void",      # void → skipped
+            "profit_units": 0.0,
+            "predicted_p": 0.50,
+            "minute": 60,
+            "thesis_id": "T-004",
+        },
+        {
+            "market_id": "match_goals_under_2.5",
+            "status": "pending",   # pending → skipped
+            "profit_units": 0.0,
+            "predicted_p": 0.50,
+            "minute": 60,
+            "thesis_id": "T-005",
+        },
+    ]
+
+    n = feed_graded_picks_to_monitor(monitor, graded_picks)
+    # Should ingest only the 3 settled (won/lost) picks
+    assert n == 3, f"Expected 3 ingested, got {n}"
+
+    # GOALS 60-minute cell should have 2 observations
+    goals_status = monitor.status(MarketFamily.GOALS, 60)
+    assert goals_status.n == 2, f"Expected 2 obs in GOALS/60, got {goals_status.n}"
+
+    # BTTS 45-minute cell should have 1 observation
+    btts_status = monitor.status(MarketFamily.BTTS, 45)
+    assert btts_status.n == 1, f"Expected 1 obs in BTTS/45, got {btts_status.n}"
+
+    # Rolling P&L in GOALS/60: +1.8 + (-1.0) = +0.8
+    assert goals_status.rolling_pnl == pytest.approx(0.8, abs=0.01)

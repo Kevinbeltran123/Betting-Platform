@@ -304,33 +304,41 @@ def rule_11_calibration_drift(
     gsv: GameStateVector,
     monitor: "CalibrationDriftMonitor | None",
 ) -> NoBetVerdict:
-    """#11 — Calibration drift gate.
+    """#11 — Calibration/P&L drift gate.
 
     When the ``CalibrationDriftMonitor`` reports the candidate's
-    ``(market_family, minute_bucket)`` cell as drifted (KS-test p < α),
-    abort the candidate. The motivation comes from the Day-1 → Day-2
-    contrafactual analysis (Papers/V3_DAY3_DIAGNOSIS) where calibration
-    fitted on Day-1 catastrophically failed on Day-2's cards cohort
-    (predicted 0.70 vs actual 0.11). Better to skip drifted cells than
-    bet on a model the world is no longer agreeing with.
+    ``(market_family, minute_bucket)`` cell as drifted, abort the
+    candidate. Drift is defined as EITHER:
+
+    - Calibration drift: the reliability gap |predicted_avg - empirical_wr|
+      exceeds ``reliability_gap_threshold`` (default 0.15). This catches
+      systematic over- or under-confidence that KS-on-WR would also
+      catch, but is family- and archetype-agnostic (predicted 0.2 vs
+      actual 0.2 → gap = 0, no drift, regardless of WR vs a fixed prior).
+    - P&L drift: the rolling sum of ``profit_units`` per observation
+      drops below ``pnl_floor_per_obs`` (default -0.10 / obs). This
+      catches profitable-calibration / unprofitable-bookmaker scenarios.
+
+    Motivation: the Day-1→Day-2 contrafactual analysis showed cards
+    miscalibration of 59 percentage points. The principled reliability
+    gap catches that catastrophic failure without needing a hand-tuned
+    WR prior per archetype.
+
+    Why no napoli exemption:
+    - The old rule_11 compared WR against a 0.67 prior — wrong for
+      long-shot archetypes. DOMINANT_LOSING_NAPOLI with predicted=0.20,
+      realized~=0.20 → reliability gap ≈ 0, NOT drifted. If P&L is
+      positive the P&L gate also passes. No special-case needed.
+    - Historical napoli exemption (added 2026-05-xx, +96u/14 Day-3)
+      is SUPERSEDED by this principled gate. If napoli P&L turns
+      negative, it will now be caught by the P&L floor — that is the
+      correct response (pause and recalibrate), not a permanent bypass.
 
     Fail-safe:
-    - ``monitor=None`` → pass (Phase-1 deployments without the monitor
-      unchanged).
-    - monitor present but cell not warm (n < min_observations) → pass
-      with a structlog note. The cell needs more observations before
-      drift can be diagnosed; until then, defer to the other rules.
-    - cell warm and drifted → deny.
-
-    NAPOLI EXEMPTION: DOMINANT_LOSING_NAPOLI candidates are exempt from
-    rule_11 regardless of drift status.
-    REVOKE THIS FIRST if live napoli P/L turns negative — napoli is graded
-    on P/L not WR (+96u/14 Day-3); rule_11's WR-drift gate uses a 0.67
-    prior the long-shot archetype never claimed.
+    - ``monitor=None`` → pass (Phase-1 deployments without the monitor).
+    - cell not warm (n < min_observations) → pass.
+    - cell warm and either condition drifted → deny.
     """
-    # NAPOLI EXEMPTION — see docstring above.
-    if candidate.thesis.archetype == ThesisArchetype.DOMINANT_LOSING_NAPOLI:
-        return NoBetVerdict.ok()
     if monitor is None:
         return NoBetVerdict.ok()
     family = candidate.family
@@ -340,10 +348,12 @@ def rule_11_calibration_drift(
     if status.is_drifted:
         return NoBetVerdict.deny(
             11,
-            f"calibration drifted for {status.family}@{status.minute_bucket}: "
-            f"expected_wr={status.expected_win_rate:.2f} vs empirical_wr="
-            f"{status.empirical_win_rate:.2f} (ks_p={status.ks_p_value:.4f}, "
-            f"n={status.n})",
+            f"calibration/P&L drifted for {status.family}@{status.minute_bucket}: "
+            f"reliability_gap={status.reliability_gap:.3f} "
+            f"(expected_wr={status.expected_win_rate:.2f} vs "
+            f"empirical_wr={status.empirical_win_rate:.2f}), "
+            f"rolling_pnl={status.rolling_pnl:.2f} n={status.n} "
+            f"[{status.drift_reason}]",
         )
     return NoBetVerdict.ok()
 
