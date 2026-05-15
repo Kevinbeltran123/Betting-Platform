@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 status: phase_4_complete_pending_staging
 stopped_at: Phase 4 plans 04-00 through 04-08 all complete; staging smoke test (4-07-03) pending operator
-last_updated: "2026-05-04T22:00:00.000Z"
-last_activity: 2026-05-04 -- Phase 4 execution complete (9/9 plans, 350 tests passing)
+last_updated: "2026-05-15T00:00:00.000Z"
+last_activity: 2026-05-15 -- Quick task 260515-nxn Wave 3 complete (Rule-11 principled gate, MES calibrated-winprob, penaltyblog lambda store; 535 tests passing)
 progress:
   total_phases: 8
   completed_phases: 5
@@ -29,7 +29,7 @@ Phase: 4 (production-orchestration) — COMPLETE pending staging smoke test
 Plan: 9 of 9 (all SUMMARY.md files written)
 Next: Operator runs `deploy/SMOKE_TEST.md` on Hetzner VPS, then `/gsd-verify-work 4` (or proceed directly to Phase 5 if staging is queued for later)
 Status: Phase 4 ready for operator staging exercise
-Last activity: 2026-05-15 - Completed quick task 260515-ghb: v3 engine 5 vetted shadow-run fixes (suspended-line dedup, MES dead-zone gate, OOD trim, variance squash, napoli drift exempt)
+Last activity: 2026-05-15 - Completed quick task 260515-nxn Wave 3: Rule-11 principled calibration/P&L drift gate (napoli exemption removed), MES per-family calibrated win-prob gate, penaltyblog Dixon-Coles lambda store + ML-lambda dominant-team tier. 535 tests passing.
 
 Progress: [██████████] 100%
 
@@ -64,6 +64,7 @@ Progress: [██████████] 100%
 | Phase 02.1 P09 | 4min | 2 tasks | 2 files |
 | Phase 02.1 P10 | 6min | 2 tasks | 3 files |
 | Phase 02.1 P11 | 12min | 1 tasks | 2 files |
+| 260515-nxn Wave 3 | 11min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -100,6 +101,8 @@ Recent decisions affecting current work:
   - **Production caller of PickEngine** does NOT yet exist — only tests instantiate it. Production wiring is a Phase 4 deployment concern.
   - **Empirical PL smoke train** (~1,520 API credits) remains user-deferred — converts ML-02/ML-03 from `structural PASS` to `empirical PASS`.
 
+- 260515-nxn Wave 3 (2026-05-15) — Rule-11 redesign: drift detection now uses reliability gap + rolling P&L; napoli exemption removed (principled gate handles long-shot archetypes correctly); MES gets calibrated_winprob field for isotonic-calibrated gate; ML-lambda tier (Dixon-Coles) sits above market but below ELO in dominant-team selection. ML_LAMBDA_MIN_GAP=0.15.
+
 ### Roadmap Evolution
 
 - Phase 2.1 inserted after Phase 2 (2026-04-24): Close Phase 2 verification gaps — CLV end-to-end test + logloss improvement documentation (URGENT). Driver: Phase 2 verification (commit 43b4a7a) reported 2/4 PARTIAL items blocking clean handoff to Phase 3.
@@ -126,6 +129,7 @@ None yet.
 | 260503-q43 | Move bip/scheduler to bip/core/scheduler (G-CODE-04/10) | 2026-05-03 | 2e192d8 | | [260503-q43-mover-bip-scheduler-a-bip-core-scheduler](./quick/260503-q43-mover-bip-scheduler-a-bip-core-scheduler/) |
 | 260503-txj | Reconcile knobs configurable via Settings (G-MAINT-10) | 2026-05-03 | 6cc30ca | | [260503-txj-reschedule-cadence-max-retries-a-setting](./quick/260503-txj-reschedule-cadence-max-retries-a-setting/) |
 | 260515-ghb | v3 engine: 5 vetted shadow-run fixes (suspended-line dedup, MES dead-zone gate, OOD trim, variance squash, napoli drift exempt) | 2026-05-15 | 3ddfc09 | Verified | [260515-ghb-v3-engine-5-vetted-shadow-run-fixes-susp](./quick/260515-ghb-v3-engine-5-vetted-shadow-run-fixes-susp/) |
+| 260515-nxn Wave 3 | Rule-11 principled gate, MES calibrated-winprob, penaltyblog lambda store + ML-lambda dominant-team tier | 2026-05-15 | 77ede92 | Complete | [260515-nxn-v3-measurement-calibration-overhaul-clv-](./quick/260515-nxn-v3-measurement-calibration-overhaul-clv-/) |
 
 ## Deferred Items
 
@@ -137,8 +141,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: --stopped-at
-Stopped at: Phase 4 context gathered
-Resume file: --resume-file
+Last session: 2026-05-15T00:00:00Z
+Stopped at: Completed quick task 260515-nxn Wave 3 (3 tasks, commits a8daaf8/3381d6e/77ede92)
+Resume file: None
 
 **Planned Phase:** 04 (production-orchestration) — 9 plans — 2026-05-04T04:45:40.113Z
