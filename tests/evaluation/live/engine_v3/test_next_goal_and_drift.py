@@ -280,8 +280,12 @@ def test_drift_monitor_warm_status_aligned_with_observations():
 
 
 def test_drift_monitor_flags_drifted_when_predicted_far_from_actual():
-    """Predicted 0.9, actual 0.3 → KS test should reject at p<0.01 once
-    we have enough observations."""
+    """Predicted 0.9, actual ~0.3 → reliability gap 0.6 > threshold 0.15.
+
+    The monitor now uses reliability gap (|predicted_avg - empirical_wr|)
+    rather than a KS test. The gap of 0.6 far exceeds the default threshold
+    of 0.15, so the cell must be flagged as drifted.
+    """
     monitor = CalibrationDriftMonitor(window_size=200, min_observations=30)
     # 60 observations where predicted ≈ 0.9 (high confidence) but outcome
     # is mostly 0 (the model is wrong)
@@ -293,7 +297,11 @@ def test_drift_monitor_flags_drifted_when_predicted_far_from_actual():
     assert status.is_drifted is True, (
         f"expected drift flagged when predicted=0.9 actual≈0.3, got "
         f"empirical={status.empirical_win_rate:.2f}, expected={status.expected_win_rate:.2f}, "
-        f"ks_p={status.ks_p_value:.4f}"
+        f"reliability_gap={status.reliability_gap:.4f}"
+    )
+    # Reliability gap should be ~0.6 (0.9 - 0.3)
+    assert status.reliability_gap > 0.15, (
+        f"reliability_gap {status.reliability_gap:.3f} should exceed threshold 0.15"
     )
 
 

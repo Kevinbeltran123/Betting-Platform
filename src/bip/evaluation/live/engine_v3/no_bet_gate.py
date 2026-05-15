@@ -173,13 +173,37 @@ def rule_4_line_freshness(
     return NoBetVerdict.ok()
 
 
-def rule_5_thesis_market_mismatch(candidate: MarketCandidate,
-                                  threshold: float = 0.6) -> NoBetVerdict:
+def rule_5_thesis_market_mismatch(
+    candidate: MarketCandidate,
+    threshold: float = 0.6,
+    *,
+    calibrated_floor: float = 0.35,
+) -> NoBetVerdict:
     """#5 — If MES < threshold, abort. Means valid thesis + no market
-    expresses it well. Default to no-bet, NOT to the 3 safe markets."""
+    expresses it well. Default to no-bet, NOT to the 3 safe markets.
+
+    When ``mes.calibrated_winprob`` is present (a fitted MES→win-prob
+    calibrator was available at compute_mes time), an additional floor
+    check is applied: if the calibrated win probability is below
+    ``calibrated_floor``, the pick is denied even if the raw MES
+    passes. This catches cases where the raw score looks acceptable
+    but the calibrated evidence shows the underlying win probability
+    is too low to justify the pick.
+
+    When ``calibrated_winprob`` is None the behavior is byte-identical
+    to the pre-Wave-3 gate (only raw score checked).
+    """
     if candidate.mes.score < threshold:
         return NoBetVerdict.deny(
             5, f"MES {candidate.mes.score:.3f} < {threshold:.2f}"
+        )
+    # Calibrated win-prob floor (only when calibrator was provided)
+    cal = candidate.mes.calibrated_winprob
+    if cal is not None and cal < calibrated_floor:
+        return NoBetVerdict.deny(
+            5,
+            f"calibrated_winprob {cal:.3f} < floor {calibrated_floor:.2f} "
+            f"(raw MES {candidate.mes.score:.3f} passed threshold)",
         )
     return NoBetVerdict.ok()
 
@@ -304,33 +328,41 @@ def rule_11_calibration_drift(
     gsv: GameStateVector,
     monitor: "CalibrationDriftMonitor | None",
 ) -> NoBetVerdict:
-    """#11 — Calibration drift gate.
+    """#11 — Calibration/P&L drift gate.
 
     When the ``CalibrationDriftMonitor`` reports the candidate's
-    ``(market_family, minute_bucket)`` cell as drifted (KS-test p < α),
-    abort the candidate. The motivation comes from the Day-1 → Day-2
-    contrafactual analysis (Papers/V3_DAY3_DIAGNOSIS) where calibration
-    fitted on Day-1 catastrophically failed on Day-2's cards cohort
-    (predicted 0.70 vs actual 0.11). Better to skip drifted cells than
-    bet on a model the world is no longer agreeing with.
+    ``(market_family, minute_bucket)`` cell as drifted, abort the
+    candidate. Drift is defined as EITHER:
+
+    - Calibration drift: the reliability gap |predicted_avg - empirical_wr|
+      exceeds ``reliability_gap_threshold`` (default 0.15). This catches
+      systematic over- or under-confidence that KS-on-WR would also
+      catch, but is family- and archetype-agnostic (predicted 0.2 vs
+      actual 0.2 → gap = 0, no drift, regardless of WR vs a fixed prior).
+    - P&L drift: the rolling sum of ``profit_units`` per observation
+      drops below ``pnl_floor_per_obs`` (default -0.10 / obs). This
+      catches profitable-calibration / unprofitable-bookmaker scenarios.
+
+    Motivation: the Day-1→Day-2 contrafactual analysis showed cards
+    miscalibration of 59 percentage points. The principled reliability
+    gap catches that catastrophic failure without needing a hand-tuned
+    WR prior per archetype.
+
+    Why no napoli exemption:
+    - The old rule_11 compared WR against a 0.67 prior — wrong for
+      long-shot archetypes. DOMINANT_LOSING_NAPOLI with predicted=0.20,
+      realized~=0.20 → reliability gap ≈ 0, NOT drifted. If P&L is
+      positive the P&L gate also passes. No special-case needed.
+    - Historical napoli exemption (added 2026-05-xx, +96u/14 Day-3)
+      is SUPERSEDED by this principled gate. If napoli P&L turns
+      negative, it will now be caught by the P&L floor — that is the
+      correct response (pause and recalibrate), not a permanent bypass.
 
     Fail-safe:
-    - ``monitor=None`` → pass (Phase-1 deployments without the monitor
-      unchanged).
-    - monitor present but cell not warm (n < min_observations) → pass
-      with a structlog note. The cell needs more observations before
-      drift can be diagnosed; until then, defer to the other rules.
-    - cell warm and drifted → deny.
-
-    NAPOLI EXEMPTION: DOMINANT_LOSING_NAPOLI candidates are exempt from
-    rule_11 regardless of drift status.
-    REVOKE THIS FIRST if live napoli P/L turns negative — napoli is graded
-    on P/L not WR (+96u/14 Day-3); rule_11's WR-drift gate uses a 0.67
-    prior the long-shot archetype never claimed.
+    - ``monitor=None`` → pass (Phase-1 deployments without the monitor).
+    - cell not warm (n < min_observations) → pass.
+    - cell warm and either condition drifted → deny.
     """
-    # NAPOLI EXEMPTION — see docstring above.
-    if candidate.thesis.archetype == ThesisArchetype.DOMINANT_LOSING_NAPOLI:
-        return NoBetVerdict.ok()
     if monitor is None:
         return NoBetVerdict.ok()
     family = candidate.family
@@ -340,10 +372,12 @@ def rule_11_calibration_drift(
     if status.is_drifted:
         return NoBetVerdict.deny(
             11,
-            f"calibration drifted for {status.family}@{status.minute_bucket}: "
-            f"expected_wr={status.expected_win_rate:.2f} vs empirical_wr="
-            f"{status.empirical_win_rate:.2f} (ks_p={status.ks_p_value:.4f}, "
-            f"n={status.n})",
+            f"calibration/P&L drifted for {status.family}@{status.minute_bucket}: "
+            f"reliability_gap={status.reliability_gap:.3f} "
+            f"(expected_wr={status.expected_win_rate:.2f} vs "
+            f"empirical_wr={status.empirical_win_rate:.2f}), "
+            f"rolling_pnl={status.rolling_pnl:.2f} n={status.n} "
+            f"[{status.drift_reason}]",
         )
     return NoBetVerdict.ok()
 
@@ -393,8 +427,12 @@ def rule_9_ood_detector(
     return NoBetVerdict.ok()
 
 
-def rule_12_mes_dead_zone(candidate: MarketCandidate) -> NoBetVerdict:
-    """#12 — cruise_mode/GOALS MES dead-zone suppression (ENFORCED).
+def rule_12_mes_dead_zone(
+    candidate: MarketCandidate,
+    *,
+    calibrated_cruise_floor: float = 0.45,
+) -> NoBetVerdict:
+    """#12 — cruise_mode/GOALS dead-zone suppression (ENFORCED).
 
     Replicated-loss evidence (2026-05-14 forensic):
     - Day-3 (n=31 cruise_mode/GOALS picks in bin [3,4)): WR 38.7%, -13.78u
@@ -402,18 +440,42 @@ def rule_12_mes_dead_zone(candidate: MarketCandidate) -> NoBetVerdict:
 
     The [2.5, 4.0) MES band is a structural dead zone for cruise_mode/GOALS:
     the thesis fires but the market expression score is too uncertain to
-    justify a pick. Candidates at MES >= 4.0 (high conviction) or < 2.5
-    (below the gate's general threshold) are handled by rule_5 / allowed
-    normally.
+    justify a pick.
 
-    Scope: ONLY cruise_mode + GOALS in [2.5, 4.0). Other archetypes and
-    other market families are unaffected.
+    Calibrated-winprob mode (when ``mes.calibrated_winprob`` is present):
+    The raw-band `[2.5, 4.0)` check is re-expressed in calibrated win-prob
+    units: if calibrated_winprob < ``calibrated_cruise_floor`` (default
+    0.45), deny. This is the principled version — the bin-3 patch becomes
+    "calibrated probability below a family-specific floor" rather than a
+    hard-coded MES bin.
+
+    Fallback (``calibrated_winprob=None``): raw-band behavior is
+    byte-identical to pre-Wave-3 (``2.5 <= score < 4.0`` check).
+
+    Scope in raw-band mode: ONLY cruise_mode + GOALS in [2.5, 4.0).
+    Scope in calibrated mode: cruise_mode + GOALS with low calibrated prob.
+    Other archetypes and families are unaffected in both modes.
     """
     if (
-        candidate.thesis.archetype == ThesisArchetype.CRUISE_MODE
-        and candidate.family == MarketFamily.GOALS
-        and 2.5 <= candidate.mes.score < 4.0
+        candidate.thesis.archetype != ThesisArchetype.CRUISE_MODE
+        or candidate.family != MarketFamily.GOALS
     ):
+        return NoBetVerdict.ok()
+
+    cal = candidate.mes.calibrated_winprob
+    if cal is not None:
+        # Calibrated mode: re-express dead-zone in win-prob units
+        if cal < calibrated_cruise_floor:
+            return NoBetVerdict.deny(
+                12,
+                f"cruise_mode/goals calibrated_winprob {cal:.3f} "
+                f"< floor {calibrated_cruise_floor:.2f} "
+                f"(raw MES={candidate.mes.score:.3f})",
+            )
+        return NoBetVerdict.ok()
+
+    # Raw-band fallback (no calibrator): byte-identical pre-Wave-3 behavior
+    if 2.5 <= candidate.mes.score < 4.0:
         return NoBetVerdict.deny(
             12,
             f"cruise_mode/goals MES dead-zone [2.5,4.0): score={candidate.mes.score:.3f}",

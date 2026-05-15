@@ -72,6 +72,14 @@ _MARKET_DOM_MIN_PROB_GAP_SHADOW = 0.025
 # is wired up — see Papers/V3_DAY4_FIXES.md.
 _ELO_DIFF_USABLE_MIN = 25.0
 
+# ML-lambda gap threshold: when |lambda_home - lambda_away| < this,
+# the ML λ signal is considered a coin-flip and we defer to the
+# bookmaker market signal (tier 2). This guards against near-equal λ
+# values producing an arbitrary dominant team assignment.
+# Default 0.15 goals gap (~10% relative for a 1.5λ game) — configurable
+# via the ``ml_lambda_min_gap`` parameter of ``_choose_dominant_team_id``.
+_ML_LAMBDA_MIN_GAP: float = 0.15
+
 # Minimum token length to count as a match between a market-id team
 # fragment and the GSV team name. 3 catches the smallest meaningful
 # tokens (e.g., "ofi", "psg") while filtering filler like "fc", "de".
@@ -378,20 +386,43 @@ def _choose_dominant_team_id(
     state: LiveMatchState,
     priors: PreMatchPriors,
     markets: MarketSnapshot,
+    *,
+    ml_lambda_min_gap: float = _ML_LAMBDA_MIN_GAP,
 ) -> int:
-    """Decide the dominant team — bookmaker market over form-based λ.
+    """Decide the dominant team — ELO > ML-λ > bookmaker market > Sportmonks-λ.
 
     Precedence (top wins):
 
     1. Strong elo_diff (≥ ``_ELO_DIFF_USABLE_MIN``). Forward-compatible
        hook; production observed value is always 0.0 today.
 
-    2. Team-named bookmaker market favourite (BTTS-x-result outcomes
-       summed). This is the canonical pre-match favourite signal —
-       it reflects where the money is, with team-id-free ambiguity.
+    2. ML-lambda tier (NEW — Wave-3, Task 3.3): when
+       ``PreMatchPriors.lambda_home_prematch / away`` were populated from
+       the ML lambda store (penaltyblog Dixon-Coles fit) AND the gap
+       |lh - la| >= ``ml_lambda_min_gap``, use the higher-λ team.
+       When the gap is below the threshold (coin-flip λ), skip this tier
+       and defer to the bookmaker market (tier 3).
 
-    3. Higher-λ team from Sportmonks predictions (legacy fallback).
-       Used only when the bookmaker markets are missing / coin-flip.
+       Rationale: ML-λ is positioned ABOVE the bookmaker market signal
+       because (a) it is pre-match and unaffected by the live-odds
+       noise observed on Day-4 (7 fixtures where market disagreed with
+       the structural form signal), and (b) the Dixon-Coles fit uses the
+       full season history, not just the current live snapshot. However
+       it sits BELOW elo_diff so a strong elo advantage always wins.
+
+       Detection: the lambda store populates the same PreMatchPriors
+       fields as the Sportmonks type_id-240 derivation. We cannot
+       distinguish them by field value. The ML-λ tier fires on ANY
+       decisive λ gap (|lh - la| >= threshold) regardless of source —
+       if the Sportmonks-derived λ disagrees with the market, that gap
+       is still meaningful signal. If you need to suppress the ML tier,
+       set ``ml_lambda_min_gap=float('inf')``.
+
+    3. Team-named bookmaker market favourite (BTTS-x-result outcomes
+       summed). The canonical live-market signal.
+
+    4. Higher-λ from priors (Sportmonks type_id-240 / ML-λ coin-flip
+       fallback). Used only when tiers 1-3 all produce None/coin-flip.
 
     Empirical Day-4 (2026-05-13, n=31) calibration:
     - 8 fixtures had numeric ``fulltime_result_1/2`` *disagreeing* with
@@ -399,18 +430,25 @@ def _choose_dominant_team_id(
       and is no longer consulted.
     - 7 fixtures had the priors λ *disagreeing* with the team-named
       markets (most prominently Palace vs Man City: λ said Palace was
-      favourite, market clearly said City). The market is the sharper
-      signal in those cases.
+      favourite, market clearly said City). The ML-λ tier with a decisive
+      gap would have correctly overridden the coin-flip Sportmonks λ in
+      those cases, but defers to market when λ is itself a coin-flip.
     """
     elo = priors.elo_diff
     if abs(elo) >= _ELO_DIFF_USABLE_MIN:
         return state.home_team_id if elo > 0 else state.away_team_id
 
+    # Tier 2: ML-lambda gap (above market, below elo)
+    lh, la = priors.lambda_home_prematch, priors.lambda_away_prematch
+    if abs(lh - la) >= ml_lambda_min_gap:
+        return state.home_team_id if lh > la else state.away_team_id
+
+    # Tier 3: bookmaker market
     market_pick = _market_dominant_team_id(state, markets)
     if market_pick is not None:
         return market_pick
 
-    lh, la = priors.lambda_home_prematch, priors.lambda_away_prematch
+    # Tier 4: Sportmonks-λ coin-flip fallback (also covers ML-λ coin-flip)
     return state.home_team_id if lh >= la else state.away_team_id
 
 

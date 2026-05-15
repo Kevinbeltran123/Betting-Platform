@@ -235,3 +235,112 @@ def test_select_markets_rejects_cross_family_routing(
     assert MarketFamily.NEXT_GOAL not in families
     # CORNERS / NEXT_CORNER allowed.
     assert families.issubset({MarketFamily.CORNERS, MarketFamily.NEXT_CORNER})
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Wave-3 Task 3.2: MESResult.calibrated_winprob + calibrated gate tests
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_goals_gsv(minute: int = 60):
+    """Minimal GSV suitable for compute_mes tests."""
+    from bip.evaluation.live.engine_v3.gsv import (
+        CardsState, CornerState, FlowState, NumericalState,
+        RosterState, ScoreState, TacticalState, TimeState, XGState,
+    )
+    now = datetime.now(timezone.utc)
+    return GameStateVector(
+        fixture_id=42, state_version=1, timestamp_utc=now,
+        home_team_id=1, away_team_id=2,
+        score=ScoreState(home_goals=1, away_goals=0, goal_diff=1, dominant_team_id=1),
+        time=TimeState(minute=minute, period="2H", time_remaining_match=float(90 - minute)),
+        numerical=NumericalState(),
+        xg=XGState(),
+        flow=FlowState(),
+        corners=CornerState(),
+        cards=CardsState(),
+        roster=RosterState(),
+        tactical=TacticalState(),
+        priors=PreMatchPriors(lambda_home_prematch=1.35, lambda_away_prematch=1.15),
+        markets=MarketSnapshot(lines={
+            "match_goals_over_2.5": MarketLine(
+                market_id="match_goals_over_2.5", side_a_decimal=2.0,
+                max_stake_cap=1.0, last_update_utc=datetime.now(timezone.utc),
+            ),
+        }),
+    )
+
+
+def test_compute_mes_calibrated_winprob_none_without_calibrator():
+    """Without a calibrator, calibrated_winprob is None (backward-compat)."""
+    gsv = _make_goals_gsv()
+    thesis = _stub_thesis(archetype=ThesisArchetype.CRUISE_MODE, family=MarketFamily.GOALS)
+    line = gsv.markets.lines["match_goals_over_2.5"]
+    result = compute_mes(
+        thesis, "match_goals_over_2.5", MarketFamily.GOALS, line, gsv,
+        fair_prob=0.55,
+    )
+    assert result.calibrated_winprob is None, (
+        "calibrated_winprob must be None when no calibrator provided"
+    )
+
+
+def test_compute_mes_calibrated_winprob_populated_with_fitted_calibrator():
+    """With a fitted calibrator, calibrated_winprob is populated."""
+    from bip.evaluation.live.engine_v3.calibrator import (
+        CalibrationSample, IsotonicCalibrator,
+    )
+    gsv = _make_goals_gsv(minute=60)
+    thesis = _stub_thesis(archetype=ThesisArchetype.CRUISE_MODE, family=MarketFamily.GOALS)
+    line = gsv.markets.lines["match_goals_over_2.5"]
+
+    # Build a minimal fitted calibrator: GOALS family with 40 samples
+    cal = IsotonicCalibrator()
+    samples = [
+        CalibrationSample(MarketFamily.GOALS, 60, float(i % 2), i % 2)
+        for i in range(40)
+    ]
+    cal.fit(samples)
+    assert cal.is_fitted, "Calibrator must be fitted"
+
+    result = compute_mes(
+        thesis, "match_goals_over_2.5", MarketFamily.GOALS, line, gsv,
+        fair_prob=0.55,
+        mes_calibrator=cal,
+    )
+    # calibrated_winprob must be a float in [0, 1]
+    assert result.calibrated_winprob is not None, (
+        "calibrated_winprob must be populated when calibrator is fitted"
+    )
+    assert 0.0 <= result.calibrated_winprob <= 1.0
+
+    # Score must be byte-identical to no-calibrator run (calibrator doesn't affect score)
+    result_no_cal = compute_mes(
+        thesis, "match_goals_over_2.5", MarketFamily.GOALS, line, gsv,
+        fair_prob=0.55,
+    )
+    assert result.score == result_no_cal.score, (
+        "Adding a calibrator must not change MES score (regression test)"
+    )
+    assert result.conditional_variance == result_no_cal.conditional_variance, (
+        "conditional_variance must be unchanged by calibrator"
+    )
+
+
+def test_compute_mes_calibrated_winprob_not_fitted_returns_none():
+    """An unfitted calibrator yields calibrated_winprob=None."""
+    from bip.evaluation.live.engine_v3.calibrator import IsotonicCalibrator
+
+    gsv = _make_goals_gsv()
+    thesis = _stub_thesis(archetype=ThesisArchetype.CRUISE_MODE, family=MarketFamily.GOALS)
+    line = gsv.markets.lines["match_goals_over_2.5"]
+    cal = IsotonicCalibrator()  # not fitted
+    assert not cal.is_fitted
+
+    result = compute_mes(
+        thesis, "match_goals_over_2.5", MarketFamily.GOALS, line, gsv,
+        fair_prob=0.55, mes_calibrator=cal,
+    )
+    assert result.calibrated_winprob is None, (
+        "Unfitted calibrator must yield calibrated_winprob=None"
+    )
