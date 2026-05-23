@@ -111,7 +111,7 @@ class WeightedMLEFitter:
         self,
         min_appearances: int = 10,
         half_life_days: float = DEFAULT_HALF_LIFE_DAYS,
-        max_iter: int = 200,
+        max_iter: int = 1000,
         tol: float = 1e-6,
         ridge: float = 1e-4,
     ) -> None:
