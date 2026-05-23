@@ -65,15 +65,24 @@ import gzip
 import hashlib
 import json
 import sys
-import urllib.request
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+import httpx
 import polars as pl
 
 
 DCARIBOU_R2_BASE = "https://pub-e682421888d945d684bcae8890b0ec20.r2.dev/data"
+
+# Cloudflare in front of R2 rejects the default Python-urllib UA. A
+# realistic browser UA gets HTTP 200; this is documented dcaribou
+# behavior, not anti-scraping (the dataset is CC0).
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
 
 # Tables we actually need for the squad-value reconstruction. Downloading
 # only these (vs the full 12-table zip) keeps the footprint <200MB.
@@ -143,17 +152,23 @@ def download_tables(
 
     data_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, str] = {}
-    for table in tables:
-        local = data_dir / f"{table}.csv.gz"
-        url = f"{DCARIBOU_R2_BASE}/{table}.csv.gz"
-        if local.exists() and not force:
+    headers = {"User-Agent": _BROWSER_UA}
+    with httpx.Client(headers=headers, timeout=httpx.Timeout(300.0), follow_redirects=True) as client:
+        for table in tables:
+            local = data_dir / f"{table}.csv.gz"
+            url = f"{DCARIBOU_R2_BASE}/{table}.csv.gz"
+            if local.exists() and not force:
+                manifest[table] = _sha256_file(local)
+                print(f"  [skip] {table} → already at {local} (sha256 {manifest[table][:12]}...)")
+                continue
+            print(f"  [download] {table} ← {url}")
+            with client.stream("GET", url) as r:
+                r.raise_for_status()
+                with local.open("wb") as f:
+                    for chunk in r.iter_bytes(chunk_size=1 << 20):
+                        f.write(chunk)
             manifest[table] = _sha256_file(local)
-            print(f"  [skip] {table} → already at {local} (sha256 {manifest[table][:12]}...)")
-            continue
-        print(f"  [download] {table} ← {url}")
-        urllib.request.urlretrieve(url, local)
-        manifest[table] = _sha256_file(local)
-        print(f"     {local} ({local.stat().st_size:,} bytes, sha256 {manifest[table][:12]}...)")
+            print(f"     {local} ({local.stat().st_size:,} bytes, sha256 {manifest[table][:12]}...)")
 
     manifest_path = data_dir / "dcaribou_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
