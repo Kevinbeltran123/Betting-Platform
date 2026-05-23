@@ -9,6 +9,10 @@ table + BaseModel contract. The old PickEngine / production/ stack
 keeps running unchanged until v4 passes its gate.
 """
 
+from bip.pipeline.delivery_worker import (
+    DeliveryRunSummary,
+    DeliveryWorker,
+)
 from bip.pipeline.orchestrator import (
     Orchestrator,
     OrchestratorRunSummary,
@@ -21,6 +25,8 @@ from bip.pipeline.protocols import (
 
 __all__ = [
     "ClaudeValidatorProtocol",
+    "DeliveryRunSummary",
+    "DeliveryWorker",
     "Orchestrator",
     "OrchestratorRunSummary",
     "SupabaseClientProtocol",
