@@ -40,9 +40,15 @@ from typing import Any
 import structlog
 
 from bip.clv.recorder import calculate_clv_percentage, compute_rolling_clv_average
-from bip.evaluation.live.engine_v3.shadow_logger import DEFAULT_SHADOW_ROOT
 
 log = structlog.get_logger(__name__)
+
+# Shadow root where deliveries.parquet is written by the delivery layer
+# and where this sink appends clv.parquet siblings. Path is a layout
+# convention shared with engine_v3.shadow_logger (which defines an
+# identical constant); we redefine here to keep this module
+# self-contained — see plan Sprint 0 Ola A (CLV decouple from engine_v3).
+DEFAULT_SHADOW_ROOT = Path("data/cache/v3_shadow")
 
 # ──────────────────────────────────────────────────────────────────────
 # Supported CLV families — determined by OddsApiClient coverage
