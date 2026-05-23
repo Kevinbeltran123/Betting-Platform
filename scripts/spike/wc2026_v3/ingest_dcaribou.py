@@ -301,6 +301,48 @@ def build_squad_values(
     )
 
 
+def build_national_teams_snapshot(data_dir: Path) -> pl.DataFrame:
+    """Pivot path: use ``national_teams.total_market_value`` directly.
+
+    This is a CURRENT-SNAPSHOT loader — it does NOT reconstruct historical
+    per-tournament squad values. Use this when:
+    - The lineups+valuations join is unavailable for the target tournament
+      (dcaribou has FIWC+EURO games WITHOUT lineups; only COPA+AFCN have
+      lineups, so only those tournaments can be reconstructed rigorously).
+    - First-pass approximation is acceptable.
+
+    Bias note: nominal TM values grew ~50-100% from 2018 to 2026, but the
+    ``_market_data.compute_offsets`` uses a **median anchor** across the
+    snapshot. Under uniform inflation (all teams grow at the same rate),
+    the median scales identically and log-ratios stay invariant — so
+    most of the inflation bias cancels in the offset computation. The
+    residual bias is per-team RELATIVE growth differences, which are
+    bounded and tolerable for a first-pass v3.
+
+    Returns DataFrame columns: team_name, tournament ("current"), season,
+    market_value_eur, players_n (squad_size), snapshot_date (today),
+    club_id (national_team_id).
+    """
+    nt = _read_gz(
+        data_dir / "national_teams.csv.gz", infer_schema_length=10_000
+    ).filter(pl.col("total_market_value").is_not_null())
+
+    today_iso = date.today().isoformat()
+    return nt.select(
+        [
+            pl.col("name").alias("team_name"),
+            pl.lit("current").alias("tournament"),
+            pl.col("last_season").alias("season"),
+            pl.col("total_market_value")
+            .cast(pl.Float64)
+            .alias("market_value_eur"),
+            pl.col("squad_size").alias("players_n"),
+            pl.lit(today_iso).alias("snapshot_date"),
+            pl.col("national_team_id").alias("club_id"),
+        ]
+    ).sort("market_value_eur", descending=True)
+
+
 def build_all(
     data_dir: Path,
     output_dir: Path,
@@ -379,11 +421,33 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("data/cache/transfermarkt"),
         help="Output directory for --build-all mode.",
     )
+    parser.add_argument(
+        "--use-national-teams-snapshot",
+        action="store_true",
+        help=(
+            "Pivot mode: write a single squad-values parquet from the "
+            "national_teams CURRENT-SNAPSHOT table. Required because "
+            "dcaribou's game_lineups don't cover FIWC/EURO tournaments. "
+            "Median-anchored compute_offsets makes the snapshot-vs-historical "
+            "bias mostly cancel."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.download:
         print(f"Downloading dcaribou tables → {args.data_dir}")
         download_tables(args.data_dir, force=args.force)
+
+    if args.use_national_teams_snapshot:
+        df = build_national_teams_snapshot(args.data_dir)
+        out_path = args.output or (args.output_dir / "squad_values_current.parquet")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        df.write_parquet(out_path)
+        print(
+            f"Wrote {df.height} national-team squad values (current snapshot) "
+            f"to {out_path}"
+        )
+        return 0 if df.height > 0 else 1
 
     if args.build_all:
         print(f"Building squad values for {len(DEFAULT_TOURNAMENTS)} tournaments")
