@@ -73,11 +73,16 @@ class CalibratedDIBPPredictor:
         dibp_params: DIBPParams,
         calibrators: V2Calibrators | None = None,
         max_goals: int = 8,
+        market_offsets: dict[str, float] | None = None,
     ) -> None:
         self.strengths = strengths
         self.dibp_params = dibp_params
         self.calibrators = calibrators or V2Calibrators()
         self.max_goals = max_goals
+        # Wave 1.A (Peeters 2018): optional additive log-rate offsets
+        # injected at _resolve_lambdas time. ``None`` (default) preserves
+        # exact v2 behavior — the v2 test contract relies on this.
+        self.market_offsets = market_offsets
 
     # ─────────────────────────────────────────────────────────────
     # Raw rate lookup with cold-start fallback
@@ -86,7 +91,16 @@ class CalibratedDIBPPredictor:
     def _resolve_lambdas(
         self, home_team: str, away_team: str
     ) -> tuple[float, float, tuple[str, ...]]:
-        """Look up (μ_h, μ_a), substituting cohort priors for cold-start teams."""
+        """Look up (μ_h, μ_a), substituting cohort priors for cold-start teams.
+
+        When ``self.market_offsets`` is non-None, the offset for each team
+        is added to its attack term (Peeters 2018 mechanism). Teams missing
+        from the offsets dict get offset 0.0 — so partial coverage degrades
+        gracefully (richer-than-median teams without TM data are treated
+        as median; bias toward underestimating strength of teams without
+        market data is acknowledged but preferred to silently skipping the
+        fixture).
+        """
 
         cold: list[str] = []
         # The prior is mean-centred (mean(attack) = mean(defense) = 0), so
@@ -101,10 +115,20 @@ class CalibratedDIBPPredictor:
             cold.append(away_team)
             a = zero
 
+        if self.market_offsets is not None:
+            off_h = float(self.market_offsets.get(home_team, 0.0))
+            off_a = float(self.market_offsets.get(away_team, 0.0))
+        else:
+            off_h = 0.0
+            off_a = 0.0
+
         log_lambda_h = (
-            self.strengths.intercept + h.attack + a.defense + self.strengths.home_advantage
+            self.strengths.intercept
+            + (h.attack + off_h)
+            + a.defense
+            + self.strengths.home_advantage
         )
-        log_lambda_a = self.strengths.intercept + a.attack + h.defense
+        log_lambda_a = self.strengths.intercept + (a.attack + off_a) + h.defense
         return float(np.exp(log_lambda_h)), float(np.exp(log_lambda_a)), tuple(cold)
 
     # ─────────────────────────────────────────────────────────────

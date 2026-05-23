@@ -22,6 +22,7 @@ from datetime import date
 import numpy as np
 import polars as pl
 
+from ._market_data import DEFAULT_BETA_MV, compute_offsets, load_squad_values
 from .beta_calibrator import BetaCalibrator
 from .dibp import DIBPParams, compute_dibp_grid, markets_from_grid
 from .dibp_fitter import DIBPFitResult, fit_dibp
@@ -38,6 +39,11 @@ class V2PipelineResult:
     dibp_fit: DIBPFitResult
     n_calibration_matches: int
     calibration_skipped_cold_start: int
+    # Wave 1.A: populated when use_market_value=True so the ablation can log
+    # per-team offsets + summary stats. ``None`` when the toggle is off, so
+    # backward-compat with v2 callers that destructure V2PipelineResult is
+    # preserved as long as they don't access this field positionally.
+    market_offsets: dict[str, float] | None = None
 
 
 def fit_v2_pipeline(
@@ -52,6 +58,9 @@ def fit_v2_pipeline(
     use_dibp: bool = True,
     use_beta_calibration: bool = True,
     use_match_importance: bool = True,
+    use_market_value: bool = False,
+    market_values_path: str | None = None,
+    market_value_beta: float = DEFAULT_BETA_MV,
 ) -> V2PipelineResult:
     """Fit the full v2 pipeline.
 
@@ -62,7 +71,20 @@ def fit_v2_pipeline(
       (set all tournament K-weights to 1.0 via half_life-only weighting). This
       is achieved here by routing through the standard fitter but with a
       pre-flattened tournament column.
+    - ``use_market_value=True`` → load Transfermarkt squad values from
+      ``market_values_path`` (parquet/CSV), compute log-rate offsets with
+      coefficient ``market_value_beta``, inject into the predictor via
+      ``CalibratedDIBPPredictor(market_offsets=...)``. Requires
+      ``market_values_path`` to be set; raises ValueError otherwise.
+      Default ``use_market_value=False`` preserves exact v2 behavior.
     """
+
+    # Wave 1.A: validate market-value config BEFORE running any fit, so a
+    # missing-path misconfiguration fails fast (not after a 30s MLE).
+    if use_market_value and not market_values_path:
+        raise ValueError(
+            "use_market_value=True requires market_values_path to be set"
+        )
 
     # Stage 1 — strength prior
     if use_match_importance:
@@ -138,11 +160,19 @@ def fit_v2_pipeline(
         cal_ou = BetaCalibrator().fit(np.array(raw_ou), np.array(outcomes_ou))
         calibrators = V2Calibrators(one_x_two=cal_1x2, btts=cal_btts, ou_2_5=cal_ou)
 
+    # Wave 1.A: load + compute market-value offsets once, post-MLE, pre-predictor.
+    market_offsets: dict[str, float] | None = None
+    if use_market_value:
+        assert market_values_path is not None  # guarded above
+        squad_values = load_squad_values(market_values_path)
+        market_offsets = compute_offsets(squad_values, beta_mv=market_value_beta)
+
     predictor = CalibratedDIBPPredictor(
         strengths=strengths,
         dibp_params=dibp_fit.params,
         calibrators=calibrators,
         max_goals=max_goals,
+        market_offsets=market_offsets,
     )
     return V2PipelineResult(
         predictor=predictor,
@@ -150,4 +180,5 @@ def fit_v2_pipeline(
         dibp_fit=dibp_fit,
         n_calibration_matches=n_cal,
         calibration_skipped_cold_start=n_skip,
+        market_offsets=market_offsets,
     )
