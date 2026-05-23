@@ -153,6 +153,7 @@ def run_ablation(
     use_dibp: bool = True,
     use_beta_calibration: bool = True,
     use_match_importance: bool = True,
+    market_offset_mode: str = "attack",
 ) -> AblationReport:
     """Run the paired-ΔBrier ablation and return a structured report."""
 
@@ -164,7 +165,8 @@ def run_ablation(
     print(f"Corpus: train={n_train} | cal={n_calibration} | heldout={n_heldout}")
     print(
         f"Configs: use_dibp={use_dibp} use_beta_cal={use_beta_calibration} "
-        f"use_match_importance={use_match_importance} β_mv={beta_mv}"
+        f"use_match_importance={use_match_importance} β_mv={beta_mv} "
+        f"mode={market_offset_mode}"
     )
 
     print("\n[1/2] baseline (no market-value)...")
@@ -178,6 +180,7 @@ def run_ablation(
         use_beta_calibration=use_beta_calibration,
         use_match_importance=use_match_importance,
         use_market_value=False,
+        market_offset_mode=market_offset_mode,
     )
     print(f"  Brier 1X2: {baseline.overall_brier_1x2}")
     print(f"  ECE  1X2: {baseline.overall_ece_1x2:.4f}")
@@ -195,6 +198,7 @@ def run_ablation(
         use_market_value=True,
         market_values_path=market_values_path,
         market_value_beta=beta_mv,
+        market_offset_mode=market_offset_mode,
     )
     print(f"  Brier 1X2: {with_mv.overall_brier_1x2}")
     print(f"  ECE  1X2: {with_mv.overall_ece_1x2:.4f}")
@@ -354,6 +358,15 @@ def main(argv: list[str] | None = None) -> int:
         "--no-match-importance", action="store_true", help="Disable K-weighting."
     )
     parser.add_argument(
+        "--symmetric",
+        action="store_true",
+        help=(
+            "Use symmetric attack+defense MV offset (richer team scores more "
+            "AND defends better). Default is attack-only. Effectively doubles "
+            "the offset magnitude per β unit, so β grid should be ~halved."
+        ),
+    )
+    parser.add_argument(
         "--output-json",
         type=Path,
         default=Path("data/cache/wc2026_v3/a_ablation_report.json"),
@@ -368,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     use_dibp = not args.no_dibp
     use_beta_calibration = not args.no_beta_cal
     use_match_importance = not args.no_match_importance
+    market_offset_mode = "symmetric" if args.symmetric else "attack"
 
     betas = args.beta_sweep if args.beta_sweep else [args.beta_mv]
     last_report: AblationReport | None = None
@@ -381,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             use_dibp=use_dibp,
             use_beta_calibration=use_beta_calibration,
             use_match_importance=use_match_importance,
+            market_offset_mode=market_offset_mode,
         )
         # Per-beta filenames when sweeping
         if len(betas) > 1:

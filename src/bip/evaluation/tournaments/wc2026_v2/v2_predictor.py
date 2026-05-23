@@ -74,6 +74,7 @@ class CalibratedDIBPPredictor:
         calibrators: V2Calibrators | None = None,
         max_goals: int = 8,
         market_offsets: dict[str, float] | None = None,
+        market_offset_mode: str = "attack",
     ) -> None:
         self.strengths = strengths
         self.dibp_params = dibp_params
@@ -83,6 +84,15 @@ class CalibratedDIBPPredictor:
         # injected at _resolve_lambdas time. ``None`` (default) preserves
         # exact v2 behavior — the v2 test contract relies on this.
         self.market_offsets = market_offsets
+        if market_offset_mode not in {"attack", "symmetric"}:
+            raise ValueError(
+                f"market_offset_mode must be 'attack' or 'symmetric', got {market_offset_mode!r}"
+            )
+        # 'attack': richer team scores more (offset added to attack only).
+        # 'symmetric': richer team also defends better (offset subtracted
+        # from opponent's defense term). Doubles the effect magnitude per
+        # offset unit; β needs to be ~halved to compare with 'attack' mode.
+        self.market_offset_mode = market_offset_mode
 
     # ─────────────────────────────────────────────────────────────
     # Raw rate lookup with cold-start fallback
@@ -122,13 +132,29 @@ class CalibratedDIBPPredictor:
             off_h = 0.0
             off_a = 0.0
 
-        log_lambda_h = (
-            self.strengths.intercept
-            + (h.attack + off_h)
-            + a.defense
-            + self.strengths.home_advantage
-        )
-        log_lambda_a = self.strengths.intercept + (a.attack + off_a) + h.defense
+        if self.market_offset_mode == "symmetric":
+            # Richer team attacks more AND defends better. Subtracting the
+            # OPPONENT's offset from one's own defense raises one's own
+            # log_lambda for the opponent's rate (i.e., opponent scores less
+            # when they face a high-value defense).
+            log_lambda_h = (
+                self.strengths.intercept
+                + (h.attack + off_h)
+                + (a.defense - off_a)
+                + self.strengths.home_advantage
+            )
+            log_lambda_a = (
+                self.strengths.intercept + (a.attack + off_a) + (h.defense - off_h)
+            )
+        else:
+            # 'attack' (default). Backward-compatible with Wave 1.A.2.
+            log_lambda_h = (
+                self.strengths.intercept
+                + (h.attack + off_h)
+                + a.defense
+                + self.strengths.home_advantage
+            )
+            log_lambda_a = self.strengths.intercept + (a.attack + off_a) + h.defense
         return float(np.exp(log_lambda_h)), float(np.exp(log_lambda_a)), tuple(cold)
 
     # ─────────────────────────────────────────────────────────────

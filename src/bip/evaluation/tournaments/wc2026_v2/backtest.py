@@ -195,6 +195,7 @@ def run_walk_forward_backtest(
     use_market_value: bool = False,
     market_values_path: str | None = None,
     market_value_beta: float | None = None,
+    market_offset_mode: str = "attack",
 ) -> V2BacktestResult:
     """Walk-forward across the four held-out tournaments.
 
@@ -242,6 +243,7 @@ def run_walk_forward_backtest(
             "use_match_importance": use_match_importance,
             "use_market_value": use_market_value,
             "market_values_path": market_values_path,
+            "market_offset_mode": market_offset_mode,
         }
         if market_value_beta is not None:
             pipeline_kwargs["market_value_beta"] = market_value_beta

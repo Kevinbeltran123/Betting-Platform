@@ -61,6 +61,7 @@ def fit_v2_pipeline(
     use_market_value: bool = False,
     market_values_path: str | None = None,
     market_value_beta: float = DEFAULT_BETA_MV,
+    market_offset_mode: str = "attack",
 ) -> V2PipelineResult:
     """Fit the full v2 pipeline.
 
@@ -173,6 +174,7 @@ def fit_v2_pipeline(
         calibrators=calibrators,
         max_goals=max_goals,
         market_offsets=market_offsets,
+        market_offset_mode=market_offset_mode,
     )
     return V2PipelineResult(
         predictor=predictor,
