@@ -1,6 +1,8 @@
 # WC2026 v3 Sprint — Implementation Plan
 
-**Status:** ready_to_start
+**Status:** CLOSED FAIL (2026-05-23)
+**Outcome:** Both A (Transfermarkt) and C (hierarchical Bayes) ruled out. Lock_v3.json shipped as audit artifact (NOT registered). Lock_v1 ships through tournament. Pinnacle CLV infrastructure ships independently.
+**Sole positive deliverable:** Pinnacle CLV (Ola 2.D, infrastructure only). All predictor improvement attempts (Olas 1.C + 2.A in both attack-only and symmetric modes) FAILED quality gates. See `Papers/WC2026_V3_RESULTS.md` for full evidence + per-β breakdowns. Memory: `[[wc2026-v3-final]]`.
 **Started:** 2026-05-23
 **Deadline:** lock_v3.json emittable by 2026-06-08 — **WC2026 kickoff 2026-06-11**
 **Days available:** 16 engineering days (with 3-day buffer to kickoff)
