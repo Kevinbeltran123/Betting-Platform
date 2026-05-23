@@ -14,11 +14,21 @@ in the new `predictions_raw` table.
 """
 
 from bip.models.base import BaseModel, ModelMetrics, PredictionRecord
+from bip.models.mundial import (
+    DEFAULT_LOCK_PATH,
+    MatchdayValidator,
+    MundialModel,
+    P_MAX_THRESHOLD,
+)
 from bip.models.registry import ModelRegistry
 
 __all__ = [
     "BaseModel",
+    "DEFAULT_LOCK_PATH",
+    "MatchdayValidator",
     "ModelMetrics",
     "ModelRegistry",
+    "MundialModel",
+    "P_MAX_THRESHOLD",
     "PredictionRecord",
 ]
