@@ -31,11 +31,27 @@ LEAGUE_ID_MAP: dict[str, int] = {
 
 # LigasModel imported after constants so model.py can `from bip.models.ligas
 # import SUPPORTED_LEAGUES, MARKETS` without circular issues.
+from bip.models.ligas.gate import (  # noqa: E402
+    DEFAULT_POLICY,
+    GateDecision,
+    GatePolicy,
+    GateVerdict,
+    bootstrap_brier_ci,
+    bootstrap_roi_ci,
+    evaluate_gate,
+)
 from bip.models.ligas.model import LigasModel  # noqa: E402
 
 __all__ = [
+    "DEFAULT_POLICY",
+    "GateDecision",
+    "GatePolicy",
+    "GateVerdict",
     "LEAGUE_ID_MAP",
     "LigasModel",
     "MARKETS",
     "SUPPORTED_LEAGUES",
+    "bootstrap_brier_ci",
+    "bootstrap_roi_ci",
+    "evaluate_gate",
 ]
