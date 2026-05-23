@@ -192,6 +192,9 @@ def run_walk_forward_backtest(
     use_dibp: bool = True,
     use_beta_calibration: bool = True,
     use_match_importance: bool = True,
+    use_market_value: bool = False,
+    market_values_path: str | None = None,
+    market_value_beta: float | None = None,
 ) -> V2BacktestResult:
     """Walk-forward across the four held-out tournaments.
 
@@ -230,14 +233,19 @@ def run_walk_forward_backtest(
         # leakage-safe. Still gate it defensively.
         cal_window = calibration.filter(pl.col("match_date") < pl.lit(cutoff))
 
-        fit = fit_v2_pipeline(
-            train=train_window,
-            calibration=cal_window,
-            reference_date=cutoff,
-            use_dibp=use_dibp,
-            use_beta_calibration=use_beta_calibration,
-            use_match_importance=use_match_importance,
-        )
+        pipeline_kwargs: dict = {
+            "train": train_window,
+            "calibration": cal_window,
+            "reference_date": cutoff,
+            "use_dibp": use_dibp,
+            "use_beta_calibration": use_beta_calibration,
+            "use_match_importance": use_match_importance,
+            "use_market_value": use_market_value,
+            "market_values_path": market_values_path,
+        }
+        if market_value_beta is not None:
+            pipeline_kwargs["market_value_beta"] = market_value_beta
+        fit = fit_v2_pipeline(**pipeline_kwargs)
         tournament_matches = heldout.filter(pl.col("tournament_slug") == slug).sort("match_date")
         metrics = _evaluate_predictor_on_tournament(
             fit, tournament_matches, n_bootstrap=n_bootstrap, seed=seed
