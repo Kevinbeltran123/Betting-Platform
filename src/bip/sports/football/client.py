@@ -410,3 +410,135 @@ class ApiFootballClient:
         response = await self._client.get("/odds", params=params)
         response.raise_for_status()
         return response.json()
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    async def get_fixtures_by_team_season(
+        self,
+        team_id: int,
+        season: int,
+    ) -> dict:
+        """GET /fixtures?team={tid}&season={yr}.
+
+        Returns ALL fixtures for a team in the given season year, across
+        all leagues/competitions. For national teams "season" is the
+        calendar year (Jan-Dec).
+
+        API-Football REQUIRES `season` when querying by team; from/to
+        alone returns an error. Caller must loop over seasons to cover
+        a multi-year window.
+
+        Used by Team Style Profiler to pull every match of a national
+        team with its current coach.
+
+        Args:
+            team_id: API-Football team ID.
+            season: Calendar year (e.g. 2024 for matches Jan-Dec 2024).
+
+        Returns:
+            Parsed JSON response dict with fixtures for that team/season.
+        """
+        params: dict[str, int | str] = {"team": team_id, "season": season}
+        logger.info(
+            "api_football_request",
+            endpoint="/fixtures",
+            params=params,
+        )
+        response = await self._client.get("/fixtures", params=params)
+        response.raise_for_status()
+        return response.json()
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    async def get_fixture_events(self, fixture_id: int) -> dict:
+        """GET /fixtures/events?fixture={fixture_id}.
+
+        Returns timestamped events (goals, cards, substitutions, VAR) for
+        a single fixture. Each event has ``time.elapsed`` (minute), team,
+        player, and detail (e.g. 'Yellow Card', 'Normal Goal').
+
+        Used by Team Style Profiler to compute goal-distribution-per-15min
+        and time-to-first-card type metrics.
+
+        Args:
+            fixture_id: API-Football fixture ID.
+
+        Returns:
+            Parsed JSON response dict with events list.
+        """
+        params = {"fixture": fixture_id}
+        logger.info(
+            "api_football_request",
+            endpoint="/fixtures/events",
+            params=params,
+        )
+        response = await self._client.get("/fixtures/events", params=params)
+        response.raise_for_status()
+        return response.json()
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    async def get_fixture_by_id(self, fixture_id: int) -> dict:
+        """GET /fixtures?id={fixture_id}.
+
+        Used by TSP's live state tracker. Returns the single fixture
+        with current LIVE state (status.short='1H'/'HT'/'2H'/'ET' and
+        status.elapsed=current minute).
+
+        Args:
+            fixture_id: API-Football fixture ID.
+
+        Returns:
+            Parsed JSON response dict.
+        """
+        params = {"id": fixture_id}
+        logger.info(
+            "api_football_request",
+            endpoint="/fixtures",
+            params=params,
+        )
+        response = await self._client.get("/fixtures", params=params)
+        response.raise_for_status()
+        return response.json()
+
+    @retry(
+        retry=retry_if_exception(is_retryable_http_error),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    async def get_team_coaches(self, team_id: int) -> dict:
+        """GET /coachs?team={team_id}.
+
+        Returns the historical list of coaches for a team with career
+        start/end dates per spell. Used by coach_history module to
+        identify the current head coach and the start date of the
+        current spell — the cutoff for TSP's "current-coach-only" filter.
+
+        Args:
+            team_id: API-Football team ID.
+
+        Returns:
+            Parsed JSON response dict with coaches list.
+        """
+        params = {"team": team_id}
+        logger.info(
+            "api_football_request",
+            endpoint="/coachs",
+            params=params,
+        )
+        response = await self._client.get("/coachs", params=params)
+        response.raise_for_status()
+        return response.json()
