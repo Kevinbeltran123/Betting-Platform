@@ -36,3 +36,6 @@ Papers/
 reports/sportmonks_live/
 reports/sportmonks_backtest/
 reports/v3/
+
+# Runtime watch artifacts (watch.pid, .log, regenerable parquets)
+logs/
