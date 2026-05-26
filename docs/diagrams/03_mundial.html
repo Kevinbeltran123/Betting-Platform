@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sistema 2 — Mundial / Torneos</title>
+<style>
+  :root {
+    --bg: #07071a;
+    --surface: #0d0d28;
+    --surface-2: #111135;
+    --text: #e2e8f0;
+    --dim: #64748b;
+    --border: rgba(255,255,255,0.06);
+    --src: #3b82f6; --src-bg: #0c1533;
+    --feat: #06b6d4; --feat-bg: #04202e;
+    --model: #22c55e; --model-bg: #021508;
+    --gate: #ef4444; --gate-bg: #2c0505;
+    --ai: #a78bfa; --ai-bg: #1a0535;
+    --deliv: #f97316; --deliv-bg: #2c1000;
+    --kpi: #fbbf24; --kpi-bg: #2a1a00;
+    --db: #6b7280; --db-bg: #151b25;
+    --lock: #fb923c; --lock-bg: #2a0e00;
+    --maxp: #84cc16; --maxp-bg: #0f2000;
+    --terminal: #374151; --terminal-bg: #111827;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    padding: 48px 24px 80px;
+  }
+
+  /* ─── HEADER ─── */
+  header { text-align: center; margin-bottom: 48px; }
+  h1 { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; color: #f8fafc; margin-bottom: 6px; }
+  .badge-system {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    letter-spacing: 1.2px; text-transform: uppercase;
+    padding: 3px 10px; border-radius: 20px;
+    background: rgba(59,130,246,0.12); color: #60a5fa;
+    border: 1px solid #2563eb; margin-bottom: 10px;
+  }
+  .subtitle { color: var(--dim); font-size: 13px; }
+
+  /* ─── MAIN LAYOUT ─── */
+  .diagram {
+    max-width: 1000px; margin: 0 auto;
+    display: flex; flex-direction: column; align-items: center; gap: 0;
+  }
+
+  /* ─── SECTION LABELS ─── */
+  .section-label {
+    width: 100%; display: flex; align-items: center; gap: 12px;
+    margin: 24px 0 16px; font-size: 10px; font-weight: 700;
+    letter-spacing: 1.5px; text-transform: uppercase;
+  }
+  .section-label::before, .section-label::after {
+    content: ''; flex: 1; height: 1px;
+  }
+  .sl-pretour { color: #60a5fa; }
+  .sl-pretour::before, .sl-pretour::after { background: rgba(59,130,246,0.2); }
+  .sl-matchday { color: #4ade80; }
+  .sl-matchday::before, .sl-matchday::after { background: rgba(34,197,94,0.2); }
+  .sl-post { color: var(--kpi); }
+  .sl-post::before, .sl-post::after { background: rgba(251,191,36,0.2); }
+
+  /* ─── NODES ─── */
+  .node {
+    width: 100%; max-width: 600px;
+    border-radius: 8px; padding: 14px 18px; border-left: 4px solid;
+    cursor: default; transition: transform 0.15s;
+  }
+  .node:hover { transform: translateX(3px); }
+  .node.src    { background: var(--src-bg);    border-color: var(--src);   }
+  .node.feat   { background: var(--feat-bg);   border-color: var(--feat);  }
+  .node.model  { background: var(--model-bg);  border-color: var(--model); }
+  .node.ai     { background: var(--ai-bg);     border-color: var(--ai);    }
+  .node.deliv  { background: var(--deliv-bg);  border-color: var(--deliv); }
+  .node.kpi    { background: var(--kpi-bg);    border-color: var(--kpi);   }
+  .node.db     { background: var(--db-bg);     border-color: var(--db);    }
+  .node.lock   { background: var(--lock-bg);   border-color: var(--lock);  }
+  .node.terminal { background: var(--terminal-bg); border-color: var(--terminal); opacity: 0.6; }
+  .ntitle { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+  .ndesc  { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  .nbullets { font-size: 11px; color: var(--dim); margin-top: 6px; list-style: none; padding: 0; }
+  .nbullets li::before { content: '·  '; color: var(--feat); }
+
+  /* ─── MAX-P SPECIAL NODE ─── */
+  .maxp-node {
+    width: 100%; max-width: 600px;
+    border-radius: 10px; padding: 20px 22px;
+    background: var(--maxp-bg);
+    border: 2px solid var(--maxp);
+    box-shadow: 0 0 30px rgba(132,204,22,0.12), 0 0 60px rgba(132,204,22,0.04);
+    cursor: default; position: relative;
+    transition: box-shadow 0.2s;
+  }
+  .maxp-node:hover {
+    box-shadow: 0 0 40px rgba(132,204,22,0.2), 0 0 80px rgba(132,204,22,0.08);
+  }
+  .maxp-node .corner-badge {
+    position: absolute; top: -10px; left: 50%; transform: translateX(-50%);
+    background: var(--maxp); color: #052800; font-size: 9px; font-weight: 800;
+    letter-spacing: 1.2px; text-transform: uppercase;
+    padding: 3px 12px; border-radius: 10px;
+    white-space: nowrap;
+  }
+  .maxp-node .ntitle { color: #d9f99d; font-size: 14px; margin-top: 8px; }
+  .maxp-node .ndesc  { color: #86efac; }
+  .scan-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 12px;
+  }
+  .scan-item {
+    background: rgba(132,204,22,0.07); border: 1px solid rgba(132,204,22,0.2);
+    border-radius: 5px; padding: 7px 10px; font-size: 11px; color: #a3e635;
+  }
+  .scan-item .si-market { font-weight: 700; margin-bottom: 2px; }
+  .scan-item .si-values { font-size: 10px; color: #65a30d; }
+  .result-row {
+    display: flex; align-items: center; gap: 8px; margin-top: 12px;
+    padding: 10px 14px; background: rgba(132,204,22,0.12);
+    border: 1px solid rgba(132,204,22,0.3); border-radius: 6px;
+  }
+  .result-row .arrow-right { color: var(--maxp); font-size: 16px; }
+  .result-row .result-text { font-size: 12px; color: #d9f99d; }
+  .result-row .result-example { font-size: 10px; color: #65a30d; }
+
+  /* ─── ARROW ─── */
+  .arrow { display: flex; justify-content: center; padding: 2px 0; }
+  .arrow-line {
+    width: 2px; height: 26px; background: #1e1e40; position: relative;
+  }
+  .arrow-line::after {
+    content: ''; position: absolute; bottom: -7px; left: -5px;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid #1e1e40;
+  }
+
+  /* ─── PILLS ─── */
+  .pill {
+    padding: 8px 28px; border-radius: 40px; font-size: 12px;
+    font-weight: 700; letter-spacing: 0.5px; border: 1px solid; cursor: default;
+  }
+  .pill.start-blue { background: rgba(59,130,246,0.08); border-color: #2563eb; color: #60a5fa; }
+  .pill.start-green { background: rgba(34,197,94,0.08); border-color: #16a34a; color: #4ade80; }
+  .pill.start-amber { background: rgba(251,191,36,0.08); border-color: #d97706; color: #fcd34d; }
+  .pill.end-ok { background: rgba(34,197,94,0.08); border-color: #16a34a; color: #4ade80; }
+
+  /* ─── PARALLEL DATA SOURCES ─── */
+  .parallel-src {
+    width: 100%; max-width: 700px;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  .src-row { display: flex; gap: 8px; width: 100%; }
+  .src-mini {
+    flex: 1; background: var(--src-bg); border: 1px solid rgba(59,130,246,0.3);
+    border-top: 3px solid var(--src); border-radius: 7px;
+    padding: 12px 10px; cursor: default; transition: transform 0.15s;
+  }
+  .src-mini:hover { transform: translateY(-2px); }
+  .src-mini .sname { font-size: 12px; font-weight: 700; margin-bottom: 3px; }
+  .src-mini .sdesc { font-size: 10px; color: var(--dim); }
+
+  /* ─── DECISION ROW ─── */
+  .decision-row {
+    width: 100%; max-width: 900px;
+    display: flex; align-items: flex-start; gap: 20px;
+  }
+  .decision-main { display: flex; flex-direction: column; align-items: center; flex: 0 0 600px; }
+  .decision-node {
+    width: 100%; background: var(--gate-bg); border: 2px solid var(--gate);
+    clip-path: polygon(14px 0%, calc(100% - 14px) 0%, 100% 50%, calc(100% - 14px) 100%, 14px 100%, 0% 50%);
+    padding: 12px 44px; color: #fca5a5; font-size: 12px; font-weight: 700;
+    text-align: center; cursor: default;
+  }
+  .decision-yes { font-size: 10px; color: #22c55e; font-weight: 700; padding: 4px 0 0; }
+  .reject-side {
+    display: flex; flex-direction: column; align-items: flex-start;
+    gap: 4px; margin-top: 12px; flex-shrink: 0;
+  }
+  .reject-label {
+    font-size: 10px; font-weight: 700; color: #ef4444;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .reject-label::before { content: '←'; font-size: 12px; }
+  .reject-node {
+    background: var(--terminal-bg); border: 1px dashed #374151;
+    border-radius: 6px; padding: 8px 14px; font-size: 11px;
+    color: var(--dim); white-space: nowrap;
+  }
+
+  /* ─── TAGS ─── */
+  .tag {
+    display: inline-block; font-size: 9px; font-weight: 700;
+    letter-spacing: 0.8px; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 3px; margin-right: 4px;
+    vertical-align: middle;
+  }
+  .tag-ai   { background: rgba(167,139,250,0.15); color: #c4b5fd; border: 1px solid #7c3aed; }
+  .tag-warn { background: rgba(251,191,36,0.15); color: #fcd34d; border: 1px solid #d97706; }
+  .tag-lock { background: rgba(251,146,60,0.15); color: #fdba74; border: 1px solid #ea580c; }
+
+  /* ─── TIME DIVIDER ─── */
+  .time-divider {
+    width: 100%; max-width: 600px;
+    display: flex; align-items: center; gap: 12px; margin: 8px 0;
+  }
+  .time-divider span {
+    white-space: nowrap; font-size: 11px; font-weight: 700;
+    padding: 4px 12px; border-radius: 20px;
+  }
+  .time-divider.matchday span {
+    color: #4ade80; background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.3);
+  }
+  .time-divider.post span {
+    color: var(--kpi); background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3);
+  }
+  .time-divider.matchday::before,
+  .time-divider.matchday::after { content: ''; flex: 1; height: 1px; background: rgba(34,197,94,0.15); }
+  .time-divider.post::before,
+  .time-divider.post::after { content: ''; flex: 1; height: 1px; background: rgba(251,191,36,0.15); }
+
+  /* ─── DUAL KPI ─── */
+  .dual-kpi {
+    width: 100%; max-width: 600px; display: flex; gap: 8px;
+  }
+  .kpi-card {
+    flex: 1; border-radius: 8px; padding: 14px 16px; border: 1px solid;
+  }
+  .kpi-card.primary {
+    background: rgba(132,204,22,0.06); border-color: rgba(132,204,22,0.3);
+  }
+  .kpi-card.secondary {
+    background: rgba(251,191,36,0.05); border-color: rgba(251,191,36,0.2);
+  }
+  .kpi-card .kc-label {
+    font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .kpi-card.primary .kc-label { color: var(--maxp); }
+  .kpi-card.secondary .kc-label { color: var(--kpi); }
+  .kpi-card .kc-metric { font-size: 13px; font-weight: 700; margin-bottom: 3px; }
+  .kpi-card.primary .kc-metric { color: #d9f99d; }
+  .kpi-card.secondary .kc-metric { color: var(--kpi); }
+  .kpi-card .kc-desc { font-size: 10px; color: var(--dim); }
+
+  /* ─── EVAL BOX ─── */
+  .eval-box {
+    width: 100%; max-width: 600px;
+    background: rgba(59,130,246,0.05); border: 1px solid rgba(59,130,246,0.2);
+    border-radius: 8px; padding: 16px 18px;
+  }
+  .eval-box .eb-title { font-size: 11px; font-weight: 700; color: #60a5fa; margin-bottom: 10px; }
+  .eval-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .eval-item { font-size: 11px; }
+  .eval-item .ev-val { font-size: 16px; font-weight: 800; display: block; margin-bottom: 2px; }
+  .eval-item .ev-label { font-size: 10px; color: var(--dim); }
+  .eval-item.blue .ev-val { color: #60a5fa; }
+  .eval-item.green .ev-val { color: #4ade80; }
+  .eval-item.amber .ev-val { color: #fcd34d; }
+
+  /* ─── LEGEND ─── */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 14px;
+    justify-content: center; max-width: 900px; margin: 40px auto 0;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
+  .ldot { width: 8px; height: 8px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="badge-system">Sistema 2</div>
+  <h1>Mundial / Torneos — Pipeline de Predicción</h1>
+  <p class="subtitle">Enfoque: encontrar el outcome con mayor P_modelo, sin importar mercado. KPI: Brier score + hit rate.</p>
+</header>
+
+<div class="diagram">
+
+  <!-- PRE-TOURNAMENT SECTION -->
+  <div class="section-label sl-pretour">Pre-torneo — 3 semanas antes del primer partido</div>
+
+  <div class="pill start-blue">Inicio del ciclo de predicción pre-torneo</div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- 3 DATA SOURCES PARALLEL -->
+  <div class="parallel-src">
+    <div class="src-row">
+      <div class="src-mini">
+        <div class="sname">StatsBomb Open Data</div>
+        <div class="sdesc">WC2018/2022 · Euro2020/2024<br>Copa2024 · AFCON2023<br>Eventos, presiones, xG por jugador</div>
+      </div>
+      <div class="src-mini">
+        <div class="sname">martj42 / international_results</div>
+        <div class="sdesc">49k partidos de selecciones<br>1872–2026 · CC0 (libre uso)<br>Base para ELO y forma histórica</div>
+      </div>
+      <div class="src-mini">
+        <div class="sname">API-Football</div>
+        <div class="sdesc">Fixtures del torneo · lesiones<br>Lineups disponibles · calendario<br>Estadios · árbitros</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- ELO + XG -->
+  <div class="node feat">
+    <div class="ntitle">ELO Ratings + xG Priors</div>
+    <div class="ndesc" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px;">
+      <div>
+        <div style="font-size:10px;color:var(--feat);font-weight:700;margin-bottom:3px;">ELO (de martj42)</div>
+        <div style="font-size:11px;">Rating por selección con decay temporal · premia partidos recientes sobre los de hace 4+ años</div>
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--feat);font-weight:700;margin-bottom:3px;">xG Priors (de StatsBomb)</div>
+        <div style="font-size:11px;">xG expected goals histórico por selección en torneos similares · corregido por rival y presión</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- BIVARIATE POISSON -->
+  <div class="node model">
+    <div class="ntitle">Bivariate Poisson + Dixon-Coles</div>
+    <div class="ndesc">
+      Modela P(goals_home = g₁, goals_away = g₂) para toda combinación posible de marcadores.<br>
+      Calibrado específicamente en WC / Euro / Copa América históricos (no en ligas domésticas).
+      <br><br>
+      Output: distribución completa de goles → derivar probabilidades para cualquier mercado.
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- MAX-P SCAN — SPECIAL NODE -->
+  <div class="maxp-node">
+    <div class="corner-badge">Enfoque clave del Mundial</div>
+    <div class="ntitle">Scan completo de mercados — Selección del pick más probable</div>
+    <div class="ndesc" style="margin-bottom: 14px;">
+      Se calculan probabilidades para TODOS los outcomes posibles. No se busca edge vs el libro — se elige
+      el outcome donde el modelo tiene mayor convicción.
+    </div>
+    <div class="scan-grid">
+      <div class="scan-item">
+        <div class="si-market">1X2</div>
+        <div class="si-values">P(home) · P(draw) · P(away)</div>
+      </div>
+      <div class="scan-item">
+        <div class="si-market">Over/Under 1.5</div>
+        <div class="si-values">P(over) · P(under)</div>
+      </div>
+      <div class="scan-item">
+        <div class="si-market">Over/Under 2.5</div>
+        <div class="si-values">P(over) · P(under)</div>
+      </div>
+      <div class="scan-item">
+        <div class="si-market">Over/Under 3.5</div>
+        <div class="si-values">P(over) · P(under)</div>
+      </div>
+      <div class="scan-item">
+        <div class="si-market">BTTS</div>
+        <div class="si-values">P(yes) · P(no)</div>
+      </div>
+      <div class="scan-item">
+        <div class="si-market">Córners O/U</div>
+        <div class="si-values">P(over) · P(under)</div>
+      </div>
+    </div>
+    <div class="result-row">
+      <div class="arrow-right">→</div>
+      <div>
+        <div class="result-text">Pick elegido = max(P_modelo) independientemente del mercado</div>
+        <div class="result-example">Ej: O/U 1.5 YES = 84% · home win = 71% · BTTS no = 63% → se elige O/U 1.5 YES</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- DECISION: P_MAX THRESHOLD -->
+  <div class="decision-row">
+    <div class="decision-main">
+      <div class="decision-node">¿P_max > umbral de confianza? (ej. 65%)</div>
+      <div class="decision-yes">Sí — modelo confía ↓</div>
+    </div>
+    <div class="reject-side">
+      <div class="reject-label">No</div>
+      <div class="reject-node">Sin pick — modelo no confía en ningún outcome</div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- CLAUDE VALIDATION -->
+  <div class="node ai">
+    <div class="ntitle"><span class="tag tag-ai">Claude sonnet-4-6</span> Validación de Escenario</div>
+    <div class="ndesc" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
+      <div>
+        <div style="font-size:10px;color:var(--ai);font-weight:700;margin-bottom:4px;">ROL — No busca edge vs libro</div>
+        <div style="font-size:11px;">Pregunta: ¿tiene sentido narrativo que este outcome ocurra dado el contexto del partido?</div>
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--ai);font-weight:700;margin-bottom:4px;">CONTEXTO QUE EVALÚA</div>
+        <div style="font-size:11px;">Psicología del equipo · lesiones clave · motivación (ya clasificados?) · viaje · clima · historial en torneos</div>
+      </div>
+    </div>
+    <div style="margin-top:10px;padding:8px 10px;background:rgba(167,139,250,0.07);border-radius:5px;">
+      <span style="font-size:10px;color:#c4b5fd;font-weight:700;">OUTPUT → </span>
+      <span style="font-size:11px;color:var(--dim);">scenario_valid: bool · confidence_modifier: float · red_flags: list · narrative: str</span>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- DECISION: SCENARIO VALID -->
+  <div class="decision-row">
+    <div class="decision-main">
+      <div class="decision-node">¿Escenario válido sin red flags?</div>
+      <div class="decision-yes">Sí ↓</div>
+    </div>
+    <div class="reject-side">
+      <div class="reject-label">No</div>
+      <div class="reject-node">Kill pick — razón guardada en Supabase</div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- LOCKED PICK -->
+  <div class="node lock">
+    <div class="ntitle"><span class="tag tag-lock">LOCKED</span> Pick guardado con hash de integridad</div>
+    <div class="ndesc" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;">
+      <div>· partido + mercado + outcome</div>
+      <div>· P_modelo + timestamp_locked</div>
+      <div>· SHA-256 content_hash</div>
+      <div>· narrative de Claude</div>
+    </div>
+    <div style="margin-top:8px;font-size:10px;color:var(--lock);">Hash garantiza que el pick no fue modificado después de conocer el resultado</div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <div class="node db">
+    <div class="ntitle">Guardar en Supabase: tabla tournaments_picks</div>
+    <div class="ndesc">status = 'locked' · inmutable hasta que se juegue el partido</div>
+  </div>
+
+  <!-- MATCH DAY SECTION -->
+  <div class="arrow"><div class="arrow-line" style="height:16px;background:rgba(34,197,94,0.3);"></div></div>
+  <div class="time-divider matchday">
+    <span>Match Day — T-2h antes del partido</span>
+  </div>
+  <div class="arrow"><div class="arrow-line" style="height:16px;background:rgba(34,197,94,0.3);"></div></div>
+
+  <div class="section-label sl-matchday">Validación y delivery</div>
+
+  <div class="pill start-green">Recuperar locked pick de Supabase</div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- LINEUP VALIDATION -->
+  <div class="decision-row">
+    <div class="decision-main">
+      <div class="decision-node">¿Lineup confirmada sin cambio crítico?</div>
+      <div class="decision-yes">OK ↓</div>
+    </div>
+    <div class="reject-side">
+      <div class="reject-label">Cambio</div>
+      <div class="reject-node">Invalidar pick · status = 'invalidated' · razón</div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- KELLY -->
+  <div class="node deliv">
+    <div class="ntitle">Kelly Sizing</div>
+    <div class="ndesc">Stake = ¼ Kelly × bankroll · basado en P_modelo del pick locked</div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- TELEGRAM -->
+  <div class="node deliv">
+    <div class="ntitle">Telegram Alert</div>
+    <div class="ndesc">TORNEO: [partido] · Pick: [outcome más probable] · P_modelo: X% · Stake sugerido · Narrativa de Claude</div>
+  </div>
+
+  <!-- POST-MATCH SECTION -->
+  <div class="arrow"><div class="arrow-line" style="height:16px;background:rgba(251,191,36,0.3);"></div></div>
+  <div class="time-divider post">
+    <span>T+2h post-partido</span>
+  </div>
+  <div class="arrow"><div class="arrow-line" style="height:16px;background:rgba(251,191,36,0.3);"></div></div>
+
+  <div class="section-label sl-post">Medición y evaluación</div>
+
+  <!-- DUAL KPI MEASUREMENT -->
+  <div class="dual-kpi">
+    <div class="kpi-card primary">
+      <div class="kc-label">KPI Primario</div>
+      <div class="kc-metric">Model Accuracy</div>
+      <div class="kc-desc">¿El outcome elegido (P_max) ocurrió? Hit rate en picks con P > 65%. Brier score del modelo.</div>
+    </div>
+    <div class="kpi-card secondary">
+      <div class="kc-label">KPI Secundario</div>
+      <div class="kc-metric">CLV Measurement</div>
+      <div class="kc-desc">vs Pinnacle/Betfair closing line. Métrica complementaria, no principal en torneos.</div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <div class="node db">
+    <div class="ntitle">Guardar resultado en Supabase: tournaments_picks</div>
+    <div class="ndesc">resultado (win/lose) · CLV real · accuracy · P/L acumulado del torneo</div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- POST-TOURNAMENT EVAL -->
+  <div class="eval-box">
+    <div class="eb-title">Evaluación post-torneo</div>
+    <div class="eval-grid">
+      <div class="eval-item blue">
+        <span class="ev-val">Brier Score</span>
+        <span class="ev-label">Calibración del modelo: cuando dice 80%, ¿ocurre ~80%?</span>
+      </div>
+      <div class="eval-item green">
+        <span class="ev-val">Hit Rate P > 65%</span>
+        <span class="ev-label">Tasa de acierto en picks de alta confianza</span>
+      </div>
+      <div class="eval-item amber">
+        <span class="ev-val">ROI Realizado</span>
+        <span class="ev-label">Retorno sobre las picks enviadas en el torneo</span>
+      </div>
+      <div class="eval-item blue">
+        <span class="ev-val">CLV Promedio</span>
+        <span class="ev-label">vs benchmark pre-lock (métrica secundaria)</span>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <div class="pill end-ok">Torneo completado — learnings guardados para siguiente torneo</div>
+
+</div>
+
+<!-- LEGEND -->
+<div class="legend">
+  <div class="legend-item"><div class="ldot" style="background:var(--src)"></div>Fuente de datos</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--feat)"></div>Feature / Cómputo</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--model)"></div>Modelo estadístico</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--maxp)"></div>Max-P selection (enfoque clave)</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--gate)"></div>Gate / Decisión</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--ai)"></div>Claude AI</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--lock)"></div>Locked Pick</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--deliv)"></div>Delivery</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--kpi)"></div>Medición</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--db)"></div>Base de datos</div>
+</div>
+
+</body>
+</html>

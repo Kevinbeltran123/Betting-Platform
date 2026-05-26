@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sistema General — Betting Intelligence Platform</title>
+<style>
+  :root {
+    --bg: #07071a;
+    --surface: #0d0d28;
+    --surface-2: #111135;
+    --text: #e2e8f0;
+    --dim: #64748b;
+    --border: rgba(255,255,255,0.06);
+    --src: #3b82f6; --src-bg: #0c1533;
+    --feat: #06b6d4; --feat-bg: #04202e;
+    --model: #22c55e; --model-bg: #021508;
+    --gate: #ef4444; --gate-bg: #2c0505;
+    --ai: #a78bfa; --ai-bg: #1a0535;
+    --deliv: #f97316; --deliv-bg: #2c1000;
+    --kpi: #fbbf24; --kpi-bg: #2a1a00;
+    --db: #6b7280; --db-bg: #151b25;
+    --maxp: #84cc16; --maxp-bg: #101f00;
+    --lock: #fb923c; --lock-bg: #2a0e00;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+    padding: 48px 24px 64px;
+  }
+  header { text-align: center; margin-bottom: 52px; }
+  h1 {
+    font-size: 26px; font-weight: 800; letter-spacing: -0.5px;
+    color: #f8fafc; margin-bottom: 8px;
+  }
+  .tagline { color: var(--dim); font-size: 14px; }
+  .tag {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    letter-spacing: 1.2px; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 4px; margin-right: 6px;
+    vertical-align: middle;
+  }
+  .tag-ev  { background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid #16a34a; }
+  .tag-max { background: rgba(132,204,22,0.15); color: #a3e635; border: 1px solid #65a30d; }
+
+  /* ─── GRID ─── */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    max-width: 1160px;
+    margin: 0 auto 28px;
+  }
+
+  /* ─── SYSTEM CARDS ─── */
+  .sys-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px 24px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+  .sys-header {
+    font-size: 11px; font-weight: 700; letter-spacing: 1.5px;
+    text-transform: uppercase; padding-bottom: 16px;
+    margin-bottom: 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .sys-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+  .sys-ligas  .sys-dot { background: #22c55e; }
+  .sys-ligas  .sys-header { color: #4ade80; }
+  .sys-ligas  { border-top: 2px solid #22c55e; }
+  .sys-mundial .sys-dot { background: #3b82f6; }
+  .sys-mundial .sys-header { color: #60a5fa; }
+  .sys-mundial { border-top: 2px solid #3b82f6; }
+
+  /* ─── FLOW NODES ─── */
+  .node {
+    border-radius: 7px; padding: 11px 14px;
+    border-left: 3px solid; margin-bottom: 4px;
+    transition: transform 0.15s, box-shadow 0.15s;
+    cursor: default;
+  }
+  .node:hover { transform: translateX(3px); box-shadow: -4px 0 12px rgba(0,0,0,0.3); }
+  .node.src    { background: var(--src-bg);   border-color: var(--src);   }
+  .node.feat   { background: var(--feat-bg);  border-color: var(--feat);  }
+  .node.model  { background: var(--model-bg); border-color: var(--model); }
+  .node.gate   { background: var(--gate-bg);  border-color: var(--gate);  }
+  .node.ai     { background: var(--ai-bg);    border-color: var(--ai);    }
+  .node.maxp   { background: var(--maxp-bg);  border-color: var(--maxp);  }
+  .node.lock   { background: var(--lock-bg);  border-color: var(--lock);  }
+  .ntitle { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+  .ndesc  { font-size: 11px; color: var(--dim); line-height: 1.45; }
+  .arr { text-align: center; font-size: 13px; color: #2e2e5a; padding: 1px 0; }
+
+  /* ─── DELIVERY SECTION ─── */
+  .delivery-connectors {
+    display: flex; justify-content: center;
+    gap: 380px; margin-bottom: 6px;
+  }
+  .conn-arr {
+    display: flex; flex-direction: column; align-items: center; gap: 0;
+  }
+  .conn-line {
+    width: 2px; height: 20px; background: #2e2e5a;
+  }
+  .conn-head {
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid #2e2e5a;
+  }
+
+  .shared-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--deliv);
+    border-radius: 14px;
+    padding: 24px 28px;
+    max-width: 1160px;
+    margin: 0 auto 40px;
+  }
+  .shared-header {
+    font-size: 11px; font-weight: 700; letter-spacing: 1.5px;
+    text-transform: uppercase; color: #fb923c;
+    margin-bottom: 20px; display: flex; align-items: center; gap: 8px;
+  }
+  .shared-header .sys-dot { background: #fb923c; }
+  .shared-row {
+    display: flex; align-items: stretch; justify-content: center;
+    gap: 0; flex-wrap: nowrap;
+  }
+  .shared-node {
+    border-radius: 8px; padding: 16px 20px;
+    border-left: 3px solid; text-align: center;
+    flex: 1; max-width: 240px;
+  }
+  .shared-node.deliv { background: var(--deliv-bg); border-color: var(--deliv); }
+  .shared-node.kpi   { background: var(--kpi-bg);   border-color: var(--kpi);   }
+  .shared-node.db    { background: var(--db-bg);     border-color: var(--db);    }
+  .shared-arrow {
+    display: flex; align-items: center; padding: 0 12px;
+    color: #2e2e5a; font-size: 24px;
+  }
+
+  /* ─── DIFFERENCE CALLOUT ─── */
+  .callout {
+    max-width: 1160px; margin: 0 auto 40px;
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .callout-box {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px;
+  }
+  .callout-box h3 {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 1px; margin-bottom: 10px;
+  }
+  .callout-box.ligas h3  { color: #4ade80; }
+  .callout-box.mundial h3 { color: #60a5fa; }
+  .callout-box p { font-size: 12px; color: var(--dim); line-height: 1.6; }
+  .highlight { color: var(--text); font-weight: 600; }
+
+  /* ─── LEGEND ─── */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 14px;
+    justify-content: center; max-width: 1160px; margin: 0 auto;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
+  .ldot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Betting Intelligence Platform</h1>
+  <p class="tagline">Dos pipelines independientes · Una capa de delivery compartida</p>
+</header>
+
+<div class="grid">
+
+  <!-- ── SISTEMA 1: LIGAS ── -->
+  <div class="sys-card sys-ligas">
+    <div class="sys-header">
+      <div class="sys-dot"></div>
+      Sistema 1 — Ligas Nacionales
+    </div>
+
+    <div class="node src">
+      <div class="ntitle">API-Football + The Odds API</div>
+      <div class="ndesc">Fixtures · odds Pinnacle · lesiones · lineups</div>
+    </div>
+    <div class="arr">↓</div>
+    <div class="node feat">
+      <div class="ntitle">Feature Engineering</div>
+      <div class="ndesc">Forma · H2H · xG rolling · suspensiones · racha</div>
+    </div>
+    <div class="arr">↓</div>
+    <div class="node model">
+      <div class="ntitle">ML Ensemble · 4 mercados</div>
+      <div class="ndesc">XGBoost · CatBoost · LightGBM<br>→ 1X2 · O/U · BTTS · Córners</div>
+    </div>
+    <div class="arr">↓</div>
+    <div class="node gate">
+      <div class="ntitle"><span class="tag tag-ev">EV GATE</span> ¿EV > 5% vs Pinnacle?</div>
+      <div class="ndesc">Probabilidad modelo vs cuotas actuales</div>
+    </div>
+    <div class="arr">↓</div>
+    <div class="node ai">
+      <div class="ntitle">Claude — Enriquecimiento Central</div>
+      <div class="ndesc">Contexto · Red flags · Confidence modifier · Narrativa</div>
+    </div>
+  </div>
+
+  <!-- ── SISTEMA 2: MUNDIAL ── -->
+  <div class="sys-card sys-mundial">
+    <div class="sys-header">
+      <div class="sys-dot"></div>
+      Sistema 2 — Mundial / Torneos
+    </div>
+
+    <div class="node src">
+      <div class="ntitle">StatsBomb · martj42 · API-Football</div>
+      <div class="ndesc">WC/Euro/Copa histórico · 49k partidos selecciones</div>
+    </div>
+    <div class="arr">↓</div>
+    <div class="node feat">
+      <div class="ntitle">ELO Ratings + xG Priors</div>
+      <div class="ndesc">Decay temporal · calibrado en torneos históricos</div>
+    </div>
+    <div class="arr">↓</div>
+    <div class="node model">
+      <div class="ntitle">Bivariate Poisson + Dixon-Coles</div>
+      <div class="ndesc">P(goals_home, goals_away) por partido del torneo</div>
+    </div>
+    <div class="arr">↓</div>
+    <div class="node maxp">
+      <div class="ntitle"><span class="tag tag-max">MAX-P</span> Pick más probable</div>
+      <div class="ndesc">Scan todos los mercados · elige outcome con P_modelo máxima · sin importar tipo</div>
+    </div>
+    <div class="arr">↓</div>
+    <div class="node gate">
+      <div class="ntitle">¿P_max > umbral de confianza?</div>
+      <div class="ndesc">Modelo no confía → sin pick para este partido</div>
+    </div>
+    <div class="arr">↓</div>
+    <div class="node ai">
+      <div class="ntitle">Claude — Validación de Escenario</div>
+      <div class="ndesc">¿El escenario más probable tiene sentido en contexto?</div>
+    </div>
+    <div class="arr">↓</div>
+    <div class="node lock">
+      <div class="ntitle">Locked Pick + SHA-256</div>
+      <div class="ndesc">Hash de integridad · inmutable antes del partido</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── CONNECTING ARROWS ── -->
+<div class="delivery-connectors">
+  <div class="conn-arr"><div class="conn-line"></div><div class="conn-head"></div></div>
+  <div class="conn-arr"><div class="conn-line"></div><div class="conn-head"></div></div>
+</div>
+
+<!-- ── SHARED DELIVERY ── -->
+<div class="shared-card">
+  <div class="shared-header">
+    <div class="sys-dot"></div>
+    Capa Compartida — Delivery + Medición
+  </div>
+  <div class="shared-row">
+    <div class="shared-node deliv">
+      <div class="ntitle">Kelly Sizing</div>
+      <div class="ndesc">¼ Kelly máx<br>Account Safety</div>
+    </div>
+    <div class="shared-arrow">→</div>
+    <div class="shared-node deliv">
+      <div class="ntitle">Telegram Alert</div>
+      <div class="ndesc">Pick · odds<br>stake · narrativa</div>
+    </div>
+    <div class="shared-arrow">→</div>
+    <div class="shared-node kpi">
+      <div class="ntitle">CLV Measurement</div>
+      <div class="ndesc">vs Pinnacle closing<br>T+2h post-partido</div>
+    </div>
+    <div class="shared-arrow">→</div>
+    <div class="shared-node db">
+      <div class="ntitle">Supabase</div>
+      <div class="ndesc">picks · resultado<br>CLV · KPIs</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── APPROACH DIFFERENCES ── -->
+<div class="callout">
+  <div class="callout-box ligas">
+    <h3>Enfoque Ligas</h3>
+    <p>Busca <span class="highlight">+EV vs el libro (Pinnacle)</span>. El modelo compite contra el mercado. Si el modelo dice 60% y Pinnacle implica 52%, hay edge real. El KPI principal es <span class="highlight">CLV rolling > +3%</span> a 90 días.</p>
+  </div>
+  <div class="callout-box mundial">
+    <h3>Enfoque Mundial</h3>
+    <p>Busca <span class="highlight">el outcome más probable</span> según el modelo, independientemente del mercado. No pelea contra el libro — ambos tienen incertidumbre similar. El KPI principal es <span class="highlight">calibración del modelo</span> (Brier score + hit rate).</p>
+  </div>
+</div>
+
+<!-- ── LEGEND ── -->
+<div class="legend">
+  <div class="legend-item"><div class="ldot" style="background:var(--src)"></div>Fuente de datos</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--feat)"></div>Feature engineering</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--model)"></div>Modelo ML / estadístico</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--maxp)"></div>Max-P selection (Mundial)</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--gate)"></div>Gate / Decisión</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--ai)"></div>Claude AI</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--deliv)"></div>Delivery</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--kpi)"></div>Medición / KPI</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--db)"></div>Base de datos</div>
+</div>
+
+</body>
+</html>

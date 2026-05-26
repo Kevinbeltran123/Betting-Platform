@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sistema 1 — Ligas Nacionales</title>
+<style>
+  :root {
+    --bg: #07071a;
+    --surface: #0d0d28;
+    --surface-2: #111135;
+    --text: #e2e8f0;
+    --dim: #64748b;
+    --muted: #374151;
+    --border: rgba(255,255,255,0.06);
+    --src: #3b82f6; --src-bg: #0c1533;
+    --feat: #06b6d4; --feat-bg: #04202e;
+    --model: #22c55e; --model-bg: #021508;
+    --gate: #ef4444; --gate-bg: #2c0505;
+    --ai: #a78bfa; --ai-bg: #1a0535;
+    --deliv: #f97316; --deliv-bg: #2c1000;
+    --kpi: #fbbf24; --kpi-bg: #2a1a00;
+    --db: #6b7280; --db-bg: #151b25;
+    --terminal: #374151; --terminal-bg: #111827;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    padding: 48px 24px 80px;
+  }
+
+  /* ─── HEADER ─── */
+  header { text-align: center; margin-bottom: 48px; }
+  h1 { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; color: #f8fafc; margin-bottom: 6px; }
+  .badge-system {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    letter-spacing: 1.2px; text-transform: uppercase;
+    padding: 3px 10px; border-radius: 20px;
+    background: rgba(34,197,94,0.12); color: #4ade80;
+    border: 1px solid #16a34a; margin-bottom: 10px;
+  }
+  .subtitle { color: var(--dim); font-size: 13px; }
+
+  /* ─── MAIN LAYOUT ─── */
+  .diagram {
+    max-width: 1000px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+
+  /* ─── SECTION LABELS ─── */
+  .section-label {
+    width: 100%; display: flex; align-items: center; gap: 12px;
+    margin: 28px 0 16px; font-size: 10px; font-weight: 700;
+    letter-spacing: 1.5px; text-transform: uppercase; color: var(--dim);
+  }
+  .section-label::before, .section-label::after {
+    content: ''; flex: 1; height: 1px; background: var(--border);
+  }
+  .section-label.post-match { color: var(--kpi); }
+  .section-label.post-match::before,
+  .section-label.post-match::after { background: rgba(251,191,36,0.2); }
+
+  /* ─── NODES ─── */
+  .node {
+    width: 100%; max-width: 600px; border-radius: 8px;
+    padding: 14px 18px; border-left: 4px solid;
+    cursor: default; transition: transform 0.15s;
+  }
+  .node:hover { transform: translateX(3px); }
+  .node.src    { background: var(--src-bg);    border-color: var(--src);   }
+  .node.feat   { background: var(--feat-bg);   border-color: var(--feat);  }
+  .node.model  { background: var(--model-bg);  border-color: var(--model); }
+  .node.ai     { background: var(--ai-bg);     border-color: var(--ai);    }
+  .node.deliv  { background: var(--deliv-bg);  border-color: var(--deliv); }
+  .node.kpi    { background: var(--kpi-bg);    border-color: var(--kpi);   }
+  .node.db     { background: var(--db-bg);     border-color: var(--db);    }
+  .node.terminal { background: var(--terminal-bg); border-color: var(--terminal); opacity: 0.6; }
+  .ntitle { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+  .ndesc  { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  .nbullets { font-size: 11px; color: var(--dim); margin-top: 6px; padding-left: 0; list-style: none; }
+  .nbullets li::before { content: '·  '; color: var(--feat); }
+
+  /* ─── ARROW ─── */
+  .arrow { display: flex; justify-content: center; padding: 2px 0; }
+  .arrow-line {
+    width: 2px; height: 26px; background: #1e1e40; position: relative;
+  }
+  .arrow-line::after {
+    content: ''; position: absolute; bottom: -7px; left: -5px;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid #1e1e40;
+  }
+
+  /* ─── START/END PILLS ─── */
+  .pill {
+    padding: 8px 28px; border-radius: 40px; font-size: 12px;
+    font-weight: 700; letter-spacing: 0.5px;
+    border: 1px solid; cursor: default;
+  }
+  .pill.start { background: rgba(34,197,94,0.08); border-color: #16a34a; color: #4ade80; }
+  .pill.end-ok { background: rgba(34,197,94,0.08); border-color: #16a34a; color: #4ade80; }
+  .pill.end-pause { background: rgba(239,68,68,0.08); border-color: #dc2626; color: #f87171; }
+
+  /* ─── PARALLEL MODELS ─── */
+  .parallel-wrap {
+    width: 100%; max-width: 700px;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  .parallel-label {
+    font-size: 10px; color: var(--dim); letter-spacing: 1px;
+    text-transform: uppercase; margin-bottom: 8px;
+  }
+  .parallel-row { display: flex; gap: 8px; width: 100%; }
+  .model-mini {
+    flex: 1; background: var(--model-bg); border: 1px solid rgba(34,197,94,0.3);
+    border-top: 3px solid var(--model); border-radius: 7px;
+    padding: 12px 10px; text-align: center;
+    cursor: default; transition: transform 0.15s;
+  }
+  .model-mini:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
+  .model-mini .mname { font-size: 12px; font-weight: 700; margin-bottom: 3px; }
+  .model-mini .mmarkets { font-size: 10px; color: var(--dim); }
+
+  /* ─── CONVERGE ARROW ─── */
+  .converge {
+    width: 100%; max-width: 700px;
+    display: flex; justify-content: center; padding: 4px 0;
+  }
+  .converge-inner {
+    display: flex; flex-direction: column; align-items: center;
+    color: var(--dim); font-size: 10px; gap: 2px;
+  }
+
+  /* ─── DECISION ROW ─── */
+  .decision-row {
+    width: 100%; max-width: 900px;
+    display: flex; align-items: flex-start; gap: 20px;
+  }
+  .decision-main {
+    display: flex; flex-direction: column; align-items: center;
+    flex: 0 0 600px;
+  }
+  .decision-node {
+    width: 100%; max-width: 600px;
+    background: var(--gate-bg); border: 2px solid var(--gate);
+    clip-path: polygon(14px 0%, calc(100% - 14px) 0%, 100% 50%, calc(100% - 14px) 100%, 14px 100%, 0% 50%);
+    padding: 12px 44px; color: #fca5a5; font-size: 12px; font-weight: 700;
+    text-align: center; cursor: default;
+  }
+  .decision-yes { font-size: 10px; color: #22c55e; font-weight: 700; padding: 4px 0 0; }
+
+  .reject-side {
+    display: flex; flex-direction: column; align-items: flex-start;
+    gap: 4px; margin-top: 12px; flex-shrink: 0;
+  }
+  .reject-label {
+    font-size: 10px; font-weight: 700; color: #ef4444;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .reject-label::before { content: '←'; font-size: 12px; }
+  .reject-node {
+    background: var(--terminal-bg); border: 1px dashed #374151;
+    border-radius: 6px; padding: 8px 14px; font-size: 11px;
+    color: var(--dim); white-space: nowrap;
+  }
+
+  /* ─── TAGS ─── */
+  .tag {
+    display: inline-block; font-size: 9px; font-weight: 700;
+    letter-spacing: 0.8px; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 3px; margin-right: 4px;
+    vertical-align: middle;
+  }
+  .tag-ev   { background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid #16a34a; }
+  .tag-ai   { background: rgba(167,139,250,0.15); color: #c4b5fd; border: 1px solid #7c3aed; }
+  .tag-warn { background: rgba(251,191,36,0.15); color: #fcd34d; border: 1px solid #d97706; }
+
+  /* ─── POST-MATCH DIVIDER ─── */
+  .time-divider {
+    width: 100%; max-width: 600px;
+    display: flex; align-items: center; gap: 12px;
+    margin: 8px 0;
+  }
+  .time-divider span {
+    white-space: nowrap; font-size: 11px; font-weight: 700;
+    color: var(--kpi); padding: 4px 12px;
+    background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.3);
+    border-radius: 20px;
+  }
+  .time-divider::before, .time-divider::after {
+    content: ''; flex: 1; height: 1px; background: rgba(251,191,36,0.15);
+  }
+
+  /* ─── KPI CALLOUT ─── */
+  .kpi-box {
+    width: 100%; max-width: 600px;
+    background: rgba(251,191,36,0.05); border: 1px solid rgba(251,191,36,0.2);
+    border-radius: 8px; padding: 14px 18px; margin-top: 4px;
+  }
+  .kpi-box .kpi-title { font-size: 11px; font-weight: 700; color: var(--kpi); margin-bottom: 6px; }
+  .kpi-box .kpi-items { display: flex; gap: 20px; flex-wrap: wrap; }
+  .kpi-item { font-size: 11px; }
+  .kpi-item .kval { font-size: 18px; font-weight: 800; display: block; }
+  .kpi-item .kdesc { font-size: 10px; color: var(--dim); }
+  .kpi-item.green .kval { color: #4ade80; }
+  .kpi-item.red .kval { color: #f87171; }
+  .kpi-item.amber .kval { color: #fcd34d; }
+
+  /* ─── LEGEND ─── */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 14px;
+    justify-content: center; max-width: 900px;
+    margin: 40px auto 0;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
+  .ldot { width: 8px; height: 8px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="badge-system">Sistema 1</div>
+  <h1>Ligas Nacionales — Pipeline Pre-Partido</h1>
+  <p class="subtitle">Enfoque: encontrar EV positivo vs Pinnacle. KPI: CLV rolling > +3% a 90 días.</p>
+</header>
+
+<div class="diagram">
+
+  <!-- START -->
+  <div class="pill start">Cron 06:00 UTC — cada día de partidos</div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- FETCH -->
+  <div class="node src">
+    <div class="ntitle">Fetch fixtures del día</div>
+    <div class="ndesc">API-Football v3 — partidos disponibles con odds publicadas</div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+  <div class="node src">
+    <div class="ntitle">Fetch odds actuales</div>
+    <div class="ndesc">Pinnacle via The Odds API — cuotas de referencia para calcular EV</div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- FEATURE ENGINEERING -->
+  <div class="node feat">
+    <div class="ntitle">Feature Engineering — por partido</div>
+    <ul class="nbullets">
+      <li>Últimos 5 partidos home / away (forma reciente)</li>
+      <li>H2H histórico últimos 3 años</li>
+      <li>xG rolling 10 partidos via Understat</li>
+      <li>Lesiones y suspensiones confirmadas</li>
+      <li>Posición en liga + racha actual</li>
+    </ul>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- 4 PARALLEL MODELS -->
+  <div class="parallel-wrap">
+    <div class="parallel-label">Ensemble por mercado</div>
+    <div class="parallel-row">
+      <div class="model-mini">
+        <div class="mname">1X2</div>
+        <div class="mmarkets">P home · draw · away</div>
+      </div>
+      <div class="model-mini">
+        <div class="mname">O/U Goles</div>
+        <div class="mmarkets">P over · under</div>
+      </div>
+      <div class="model-mini">
+        <div class="mname">BTTS</div>
+        <div class="mmarkets">P yes · no</div>
+      </div>
+      <div class="model-mini">
+        <div class="mname">Córners</div>
+        <div class="mmarkets">P over · under</div>
+      </div>
+    </div>
+    <div style="font-size:10px;color:var(--dim);margin-top:4px;">XGBoost + CatBoost + LightGBM — ensemble stacking por mercado</div>
+  </div>
+  <div class="converge">
+    <div class="converge-inner">
+      <div style="font-size:10px;color:var(--dim);">converge</div>
+      <div class="arrow-line" style="height:18px;"></div>
+    </div>
+  </div>
+
+  <!-- EV CALC -->
+  <div class="node feat">
+    <div class="ntitle">Calcular EV por mercado</div>
+    <div class="ndesc">EV = P_modelo × (odds − 1) − (1 − P_modelo) &nbsp;·&nbsp; calculado para cada outcome</div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- DECISION: EV -->
+  <div class="decision-row">
+    <div class="decision-main">
+      <div class="decision-node">¿EV > 5% en algún mercado?</div>
+      <div class="decision-yes">Sí ↓</div>
+    </div>
+    <div class="reject-side">
+      <div class="reject-label">No</div>
+      <div class="reject-node">Descartar partido</div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- CLAUDE -->
+  <div class="node ai">
+    <div class="ntitle"><span class="tag tag-ai">Claude sonnet-4-6</span> Enriquecimiento Central</div>
+    <div class="ndesc" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">
+      <div>
+        <div style="font-size:10px;color:var(--ai);font-weight:700;margin-bottom:4px;">INPUT</div>
+        <div style="font-size:11px;">stats del modelo · cuotas actuales · contexto del partido</div>
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--ai);font-weight:700;margin-bottom:4px;">OUTPUT</div>
+        <div style="font-size:11px;">confidence_modifier: float<br>red_flags: list[str]<br>narrative: str</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- DECISION: RED FLAGS -->
+  <div class="decision-row">
+    <div class="decision-main">
+      <div class="decision-node">¿Red flags críticos?</div>
+      <div class="decision-yes">No (continúa) ↓</div>
+    </div>
+    <div class="reject-side">
+      <div class="reject-label">Sí</div>
+      <div class="reject-node">Kill pick — razón guardada en Supabase</div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- APPLY MODIFIER -->
+  <div class="node feat">
+    <div class="ntitle">Aplicar confidence_modifier · Recalcular EV ajustado</div>
+    <div class="ndesc">EV_adj = EV × (1 + modifier) &nbsp;·&nbsp; modifier puede ser positivo o negativo</div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- DECISION: EV ADJ -->
+  <div class="decision-row">
+    <div class="decision-main">
+      <div class="decision-node">¿EV ajustado > 5%?</div>
+      <div class="decision-yes">Sí ↓</div>
+    </div>
+    <div class="reject-side">
+      <div class="reject-label">No</div>
+      <div class="reject-node">Descartar — modifier bajó el EV</div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- KELLY -->
+  <div class="node deliv">
+    <div class="ntitle">Kelly Sizing</div>
+    <div class="ndesc">Kelly_f = EV ÷ odds &nbsp;·&nbsp; Stake = ¼ Kelly × bankroll (cap de seguridad)</div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- DECISION: ACCOUNT SAFETY -->
+  <div class="decision-row">
+    <div class="decision-main">
+      <div class="decision-node">¿Account Safety OK?</div>
+      <div class="decision-yes">OK ↓</div>
+    </div>
+    <div class="reject-side">
+      <div class="reject-label">Fallo</div>
+      <div class="reject-node">Reducir stake o skip</div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- TELEGRAM -->
+  <div class="node deliv">
+    <div class="ntitle">Telegram Alert</div>
+    <div class="ndesc">Pick · mercado · odds · stake sugerido · narrativa de Claude</div>
+  </div>
+
+  <!-- POST-MATCH DIVIDER -->
+  <div class="arrow"><div class="arrow-line" style="height:16px;background:rgba(251,191,36,0.3);"></div></div>
+  <div class="time-divider">
+    <span>T + 2h post-partido</span>
+  </div>
+  <div class="arrow"><div class="arrow-line" style="height:16px;background:rgba(251,191,36,0.3);"></div></div>
+
+  <!-- CLV -->
+  <div class="node kpi">
+    <div class="ntitle"><span class="tag tag-warn">CLV</span> Fetch Pinnacle closing line</div>
+    <div class="ndesc">CLV = implied_probability_entry − implied_probability_close<br>CLV > 0 significa que capturamos edge real antes del cierre del mercado</div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- STORE -->
+  <div class="node db">
+    <div class="ntitle">Guardar en Supabase</div>
+    <div class="ndesc">picks · resultado (win/lose) · CLV · P/L · timestamp</div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- DECISION: CLV TREND -->
+  <div class="decision-row">
+    <div class="decision-main">
+      <div class="decision-node">¿CLV rolling 90d &lt; +1%?</div>
+      <div class="decision-yes">No — sistema OK ↓</div>
+    </div>
+    <div class="reject-side">
+      <div class="reject-label">Sí</div>
+      <div class="reject-node">PAUSA + Auditoría del modelo</div>
+    </div>
+  </div>
+  <div class="arrow"><div class="arrow-line"></div></div>
+
+  <!-- END -->
+  <div class="pill end-ok">Sistema OK — ciclo completado</div>
+
+  <!-- KPI SUMMARY -->
+  <div class="kpi-box">
+    <div class="kpi-title">KPIs principales del sistema</div>
+    <div class="kpi-items">
+      <div class="kpi-item green">
+        <span class="kval">> +3%</span>
+        <span class="kdesc">CLV target rolling 90d</span>
+      </div>
+      <div class="kpi-item amber">
+        <span class="kval">> 5%</span>
+        <span class="kdesc">EV mínimo para enviar pick</span>
+      </div>
+      <div class="kpi-item green">
+        <span class="kval">¼ Kelly</span>
+        <span class="kdesc">Stake máximo por pick</span>
+      </div>
+      <div class="kpi-item red">
+        <span class="kval">< +1%</span>
+        <span class="kdesc">CLV que activa pausa del sistema</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- LEGEND -->
+<div class="legend">
+  <div class="legend-item"><div class="ldot" style="background:var(--src)"></div>Fuente de datos</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--feat)"></div>Feature / Cómputo</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--model)"></div>Modelo ML</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--gate)"></div>Gate / Decisión</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--ai)"></div>Claude AI</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--deliv)"></div>Delivery</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--kpi)"></div>Medición CLV</div>
+  <div class="legend-item"><div class="ldot" style="background:var(--db)"></div>Base de datos</div>
+</div>
+
+</body>
+</html>
