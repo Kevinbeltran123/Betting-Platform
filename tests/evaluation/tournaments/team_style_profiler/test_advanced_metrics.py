@@ -73,6 +73,27 @@ def test_aggregate_shares_sum_to_one_and_tilt():
     assert math.isclose(prof.field_tilt.mean, 0.75, rel_tol=1e-6)
 
 
+def test_line_height_and_directness():
+    events = [
+        # A defends high (x 70, 80 via interception + tackle), B deep (x 20, 30)
+        {"type": {"name": "Interception"}, "team": {"name": "A"}, "location": [70, 40]},
+        {"type": {"name": "Duel"}, "team": {"name": "A"}, "location": [80, 40],
+         "duel": {"type": {"name": "Tackle"}}},
+        {"type": {"name": "Interception"}, "team": {"name": "B"}, "location": [20, 40]},
+        {"type": {"name": "Clearance"}, "team": {"name": "B"}, "location": [30, 40]},
+        # A short pass (Δ5), B long pass (Δ30)
+        {"type": {"name": "Pass"}, "team": {"name": "A"}, "location": [50, 40],
+         "pass": {"end_location": [55, 40]}},
+        {"type": {"name": "Pass"}, "team": {"name": "B"}, "location": [50, 40],
+         "pass": {"end_location": [80, 40]}},
+    ]
+    a, b = sorted(extract_match(events, "A", "B"), key=lambda m: m.team)
+    assert a.line_height == 75.0       # mean(70, 80) — high line
+    assert b.line_height == 25.0       # mean(20, 30) — deep block
+    assert a.directness == 0.0         # 0/1 passes long
+    assert b.directness == 1.0         # 1/1 passes long
+
+
 def test_build_profiles_groups_both_teams():
     profs = build_profiles([extract_match(_match_events(), "A", "B")])
     assert set(profs) == {"A", "B"}

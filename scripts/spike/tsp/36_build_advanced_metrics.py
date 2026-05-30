@@ -45,6 +45,8 @@ def main() -> int:
             "team": p.team, "n_matches": p.n_matches,
             "field_tilt": round(p.field_tilt.mean, 3),
             "gk_goals_prevented_per_match": round(p.gk_goals_prevented_per_match.mean, 3),
+            "line_height": round(p.line_height.mean, 1),
+            "directness": round(p.directness.mean, 3),
             "xg_share_leading": round(p.xg_share_leading, 3),
             "xg_share_level": round(p.xg_share_level, 3),
             "xg_share_trailing": round(p.xg_share_trailing, 3),
@@ -64,6 +66,10 @@ def main() -> int:
     print("\n-- Front-runners (highest xG share while LEADING) --")
     for p in sorted(rel, key=lambda x: -x.xg_share_leading)[:5]:
         print(f"  {p.team:16} leading {p.xg_share_leading:.0%} | level {p.xg_share_level:.0%} | trailing {p.xg_share_trailing:.0%}")
+    print("\n-- Highest defensive line (press high) vs deepest block --")
+    byline = sorted(rel, key=lambda x: -x.line_height.mean)
+    for p in byline[:3] + byline[-3:]:
+        print(f"  {p.team:16} line x={p.line_height.mean:.1f}  directness {p.directness.mean:.0%} long")
     return 0
 
 
