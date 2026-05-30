@@ -45,7 +45,7 @@ class TestSendPickSafe:
         sender = _make_sender(bot, min_edge_pct_for_alert=5.0)
         pick = _make_pick(edge_pct=10.0)
         result = await sender.send_pick_safe(pick)
-        assert result is True
+        assert result
         assert sender.n_sent == 1
         assert sender.n_skipped == 0
         bot.send_html.assert_awaited_once()
@@ -56,7 +56,7 @@ class TestSendPickSafe:
         sender = _make_sender(bot, min_edge_pct_for_alert=10.0)
         pick = _make_pick(edge_pct=5.0)
         result = await sender.send_pick_safe(pick)
-        assert result is False
+        assert not result
         assert sender.n_skipped == 1
         bot.send_html.assert_not_called()
 
@@ -66,7 +66,7 @@ class TestSendPickSafe:
         sender = _make_sender(bot, skip_flagged=True)
         pick = _make_pick(edge_pct=10.0, flagged="extreme_edge_no_sm_confirmation")
         result = await sender.send_pick_safe(pick)
-        assert result is False
+        assert not result
         assert sender.n_skipped == 1
 
     @pytest.mark.asyncio
@@ -75,7 +75,7 @@ class TestSendPickSafe:
         sender = _make_sender(bot, skip_flagged=False)
         pick = _make_pick(edge_pct=10.0, flagged="some_flag")
         result = await sender.send_pick_safe(pick)
-        assert result is True
+        assert result
         bot.send_html.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -85,7 +85,7 @@ class TestSendPickSafe:
         sender = _make_sender(bot)
         pick = _make_pick(edge_pct=10.0)
         result = await sender.send_pick_safe(pick)
-        assert result is False
+        assert not result
         assert sender.n_failed == 1
         # NB: no exception propagated
 
@@ -111,7 +111,7 @@ class TestBriefAndSummary:
         ok = await sender.send_brief_safe(
             jornada_date="2026-05-13", n_fixtures=10,
         )
-        assert ok is True
+        assert ok
         bot.send_html.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -122,7 +122,7 @@ class TestBriefAndSummary:
         ok = await sender.send_brief_safe(
             jornada_date="2026-05-13", n_fixtures=10,
         )
-        assert ok is False
+        assert not ok
 
     @pytest.mark.asyncio
     async def test_send_summary_safe_success(self):
@@ -133,7 +133,7 @@ class TestBriefAndSummary:
             n_emit_total=100, n_emit_settled=80, n_won=50,
             profit_units=10.0, stake_pct_total=50.0,
         )
-        assert ok is True
+        assert ok
 
     @pytest.mark.asyncio
     async def test_send_summary_safe_failure(self):
@@ -145,7 +145,7 @@ class TestBriefAndSummary:
             n_emit_total=100, n_emit_settled=80, n_won=50,
             profit_units=10.0, stake_pct_total=50.0,
         )
-        assert ok is False
+        assert not ok
 
 
 class TestFromEnv:
@@ -254,7 +254,7 @@ class TestStateAware:
         ok = await sender.send_pick_safe(
             _make_tier1_pick(), pick_id=42,
         )
-        assert ok is True
+        assert ok
         ref = state.find_message(pick_id=42, role=Role.PICK)
         assert ref is not None
         assert ref.message_id == 12345
@@ -370,7 +370,7 @@ class TestMuteRespect:
             confidence_half_width=0.05, model_probability_raw=0.7,
         )
         ok = await sender.send_pick_safe(pick, pick_id=100)
-        assert ok is False
+        assert not ok
         assert sender.n_muted == 1
         bot.send_html.assert_not_called()
 
@@ -387,7 +387,7 @@ class TestMuteRespect:
         )
         # Tier 1: L=0.90, edge=15 → bypasses mute
         ok = await sender.send_pick_safe(_make_tier1_pick(), pick_id=200)
-        assert ok is True
+        assert ok
         assert sender.n_muted == 0
         bot.send_html.assert_awaited_once()
 
@@ -444,8 +444,8 @@ class TestBandwidthGovernor:
         ok1 = await sender.send_pick_safe(t2(), pick_id=1)
         # Second send finds bucket empty → enqueued
         ok2 = await sender.send_pick_safe(t2(), pick_id=2)
-        assert ok1 is True
-        assert ok2 is False
+        assert ok1
+        assert not ok2
         assert sender.n_queued == 1
         # Queue contains pick_id 2 (not 1)
         assert state.drain_burst_queue() == [2]
@@ -463,7 +463,7 @@ class TestBandwidthGovernor:
         )
         # Tier 1: L=0.90, edge=15 → bypasses bucket
         ok = await sender.send_pick_safe(_make_tier1_pick(), pick_id=10)
-        assert ok is True
+        assert ok
         assert sender.n_queued == 0
         bot.send_html.assert_awaited_once()
 
@@ -612,7 +612,7 @@ class TestMarketMute:
         )
         # _make_tier1_pick has market='ou_3_5'
         ok = await sender.send_pick_safe(_make_tier1_pick(), pick_id=1)
-        assert ok is False
+        assert not ok
         bot.send_html.assert_not_called()
 
     @pytest.mark.asyncio
@@ -629,7 +629,7 @@ class TestMarketMute:
         )
         # Pick is ou_3_5, not btts → not muted
         ok = await sender.send_pick_safe(_make_tier1_pick(), pick_id=1)
-        assert ok is True
+        assert ok
 
 
 class TestBuildKeyboard:
