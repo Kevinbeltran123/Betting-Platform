@@ -131,6 +131,28 @@ CURRENT_COACHES: dict[str, CoachRecord] = {
 
     # === OFC ===
     "New Zealand": CoachRecord("New Zealand", 1109, "Darren Bazeley", date(2023, 12, 7), "OFC"),
+
+    # === WC2026 PLAYOFF QUALIFIERS (added 2026-05-28) ===
+    # UEFA
+    "Bosnia and Herzegovina": CoachRecord("Bosnia and Herzegovina", 1113, "Sergej Barbarez", date(2024, 4, 1), "UEFA",
+        notes="Appointed 2024 — yellow until n=10."),
+    "Czech Republic": CoachRecord("Czech Republic", 770, "Ivan Hašek", date(2024, 3, 1), "UEFA",
+        notes="Second spell as Czech NT head coach."),
+    "Sweden": CoachRecord("Sweden", 5, "Jon Dahl Tomasson", date(2024, 2, 1), "UEFA",
+        notes="Former Blackburn Rovers manager."),
+    # CAF
+    "DR Congo": CoachRecord("DR Congo", 1508, "Sébastien Desabre", date(2023, 3, 1), "CAF",
+        notes="AFCON 2023 semifinalist — solid sample for TSV."),
+    # AFC
+    "Iraq": CoachRecord("Iraq", 1567, "Graham Arnold", date(2025, 5, 1), "AFC",
+        notes="NEW — ex-Australia coach. RED FLAG until n=10."),
+    "Qatar": CoachRecord("Qatar", 1569, "Julen Lopetegui", date(2025, 5, 1), "AFC",
+        notes="VERY NEW. RED FLAG. Spain/Wolves/AC Milan background."),
+    # CONCACAF
+    "Curaçao": CoachRecord("Curaçao", 5530, "Dick Advocaat", date(2024, 1, 1), "CONCACAF",
+        notes="Veteran Dutch coach. Curaçao has limited international fixture history."),
+    "Haiti": CoachRecord("Haiti", 2386, "Sébastien Migné", date(2024, 3, 1), "CONCACAF",
+        notes="Appointed early 2024."),
 }
 
 
