@@ -44,10 +44,11 @@ class TestGetCurrentCoach:
         assert r.coach_start_date == date(2018, 8, 23)
         assert r.confederation == "CONMEBOL"
 
-    def test_morocco_regragui(self) -> None:
+    def test_morocco_ouahbi(self) -> None:
+        # Regragui resigned after AFCON25 final; Ouahbi appointed 2026-03-05.
         r = get_current_coach("Morocco")
         assert r is not None
-        assert r.coach_name == "Walid Regragui"
+        assert r.coach_name == "Mohamed Ouahbi"
         assert r.confederation == "CAF"
 
     def test_unknown_team_returns_none(self) -> None:

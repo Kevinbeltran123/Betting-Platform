@@ -81,8 +81,9 @@ CURRENT_COACHES: dict[str, CoachRecord] = {
         notes="Took over from Pintado. yellow/red until n=10."),
 
     # === CAF ===
-    "Morocco": CoachRecord("Morocco", 31, "Walid Regragui", date(2022, 8, 31), "CAF",
-        notes="WC22 semifinalist. Strong stable spell — high transfer signal."),
+    "Morocco": CoachRecord("Morocco", 31, "Mohamed Ouahbi", date(2026, 3, 5), "CAF",
+        notes="Replaced Regragui 2026-03-05 (after AFCON25 final loss). U20 WC25 winner, "
+              "no prior senior spell. RED FLAG <3mo pre-WC — WC22/AFCON legacy NOT predictive."),
     "Senegal": CoachRecord("Senegal", 1525, "Pape Thiaw", date(2025, 2, 5), "CAF",
         notes="Replaced Aliou Cisse. NEW COACH — yellow/red flag."),
     "Egypt": CoachRecord("Egypt", 1528, "Hossam Hassan", date(2024, 4, 26), "CAF"),

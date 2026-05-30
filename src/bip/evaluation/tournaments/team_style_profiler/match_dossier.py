@@ -579,6 +579,75 @@ def _rule_team_transfer(ctx: DossierContext) -> list[Pick]:
     return out
 
 
+# ─── Tactical cross-confirmation (game-plan ↔ picks) ─────────────────────
+
+
+def _axis_side(market: str) -> tuple[str | None, str | None]:
+    """Map a pick/lean market string to a (betting axis, side) for alignment."""
+    m = market.lower()
+    if "under 2.5" in m:
+        return ("goals", "low")
+    if "over 2.5" in m:
+        return ("goals", "high")
+    if "btts no" in m:
+        return ("btts", "no")
+    if "btts" in m and ("yes" in m or "sí" in m or " si" in m):
+        return ("btts", "yes")
+    if "corner" in m or "córner" in m:
+        if "under" in m:
+            return ("corners", "under")
+        if "over" in m:
+            return ("corners", "over")
+    return (None, None)
+
+
+def _apply_tactical_confirmation(
+    picks: list[Pick], read: "MatchupRead | None"
+) -> list[Pick]:
+    """Cross-confirm TSV picks against the game-plan leans.
+
+    A BACK lean on the same axis+side boosts the pick (+rationale, +score); an
+    opposite-side BACK lean or a same-side CAUTION lean adds a risk flag. Does
+    NOT create new picks — the tactical-only leans stay in the §1b read.
+    """
+    if read is None or not picks:
+        return picks
+    out: list[Pick] = []
+    for p in picks:
+        axis_p, side_p = _axis_side(p.market)
+        if axis_p is None or p.direction not in ("BACK",):
+            out.append(p)
+            continue
+        new_rationale = list(p.rationale)
+        new_flags = list(p.risk_flags)
+        bump = 0.0
+        for lean in read.market_leans:
+            axis_l, side_l = _axis_side(lean.market)
+            if axis_l != axis_p:
+                continue
+            if lean.direction == "CAUTION" and side_l == side_p:
+                new_flags.append(f"Planteamiento — {lean.rationale}")
+            elif lean.direction == "BACK" and side_l == side_p:
+                new_rationale.append(f"✓ Planteamiento confirma: {lean.rationale}")
+                bump += 0.10
+            elif lean.direction == "BACK" and side_l != side_p:
+                new_flags.append(
+                    f"Planteamiento sugiere lo contrario ({lean.market}): {lean.rationale}"
+                )
+        if bump == 0.0 and new_flags == list(p.risk_flags):
+            out.append(p)
+            continue
+        new_score = min(1.0, p.score + bump)
+        category: PickCategory = (
+            "STRONG" if new_score >= 0.65 else "MODERATE" if new_score >= 0.40 else "EXPLORATORY"
+        )
+        out.append(Pick(
+            market=p.market, direction=p.direction, category=category,
+            score=new_score, rationale=new_rationale, risk_flags=new_flags,
+        ))
+    return out
+
+
 # ─── Main entry point ──────────────────────────────────────────────────
 
 
@@ -639,6 +708,9 @@ def generate_dossier(ctx: DossierContext) -> MatchDossier:
         if pick:
             picks.append(pick)
     picks.extend(_rule_team_transfer(ctx))
+
+    # Cross-confirm picks against the game-plan read (boost aligned, flag conflicts)
+    picks = _apply_tactical_confirmation(picks, matchup_read)
 
     # Sort: STRONG → MODERATE → EXPLORATORY, score desc within category
     cat_order = {"STRONG": 0, "MODERATE": 1, "EXPLORATORY": 2, "SKIP": 3}

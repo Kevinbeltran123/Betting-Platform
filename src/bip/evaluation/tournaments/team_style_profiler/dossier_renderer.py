@@ -83,12 +83,22 @@ def _render_tsv_block(tsv: TeamStyleVector | None, name: str) -> list[str]:
 
 def _render_identity_block(tid: Any, name: str) -> list[str]:
     if tid is None:
-        return [f"- **{name}:** *sin identidad táctica (sin cobertura StatsBomb)*"]
+        return [f"- **{name}:** *sin identidad táctica (sin cobertura StatsBomb ni scouting)*"]
+    if tid.confidence == "scouting":
+        dims = (
+            f"  - presión: `{tid.press_intensity}` · balón parado: `{tid.set_piece_reliance}` · "
+            f"definición: `{tid.finishing_profile}` *(scouting, sin métricas)*"
+        )
+    else:
+        dims = (
+            f"  - presión: `{tid.press_intensity}` (PPDA {tid.ppda:.1f}) · "
+            f"balón parado: `{tid.set_piece_reliance}` ({tid.set_piece_xg_share:.0%} xG) · "
+            f"definición: `{tid.finishing_profile}` (conv {tid.conversion_rate:.2f})"
+        )
     out = [
-        f"- **{name}: {tid.archetype}** (`{tid.confidence}`, n={tid.n_matches})",
-        f"  - presión: `{tid.press_intensity}` (PPDA {tid.ppda:.1f}) · "
-        f"balón parado: `{tid.set_piece_reliance}` ({tid.set_piece_xg_share:.0%} xG) · "
-        f"definición: `{tid.finishing_profile}` (conv {tid.conversion_rate:.2f})",
+        f"- **{name}: {tid.archetype}** (`{tid.confidence}`"
+        + (f", n={tid.n_matches}" if tid.confidence != "scouting" else "") + ")",
+        dims,
     ]
     if tid.anchor is not None:
         out.append(f"  - gatillo de presión: {tid.anchor.press_trigger}")
@@ -119,7 +129,7 @@ def _render_matchup_read(dossier: MatchDossier) -> list[str]:
     ])
     if r.market_leans:
         for lean in r.market_leans:
-            out.append(f"- {lean}")
+            out.append(f"- {lean.text}")
     else:
         out.append("- *(sin lean táctico claro — planteamientos flexibles)*")
     if r.caveats:
@@ -271,9 +281,9 @@ def render_json(dossier: MatchDossier) -> str:
             "press_intensity": tid.press_intensity,
             "set_piece_reliance": tid.set_piece_reliance,
             "finishing_profile": tid.finishing_profile,
-            "ppda": round(tid.ppda, 2),
-            "set_piece_xg_share": round(tid.set_piece_xg_share, 3),
-            "conversion_rate": round(tid.conversion_rate, 3),
+            "ppda": round(tid.ppda, 2) if tid.ppda is not None else None,
+            "set_piece_xg_share": round(tid.set_piece_xg_share, 3) if tid.set_piece_xg_share is not None else None,
+            "conversion_rate": round(tid.conversion_rate, 3) if tid.conversion_rate is not None else None,
         }
 
     ctx = dossier.context
@@ -292,7 +302,10 @@ def render_json(dossier: MatchDossier) -> str:
             "away_identity": tid_to_dict(r.away),
             "tempo": r.tempo,
             "game_shape": r.game_shape,
-            "market_leans": r.market_leans,
+            "market_leans": [
+                {"market": l.market, "direction": l.direction, "rationale": l.rationale}
+                for l in r.market_leans
+            ],
             "caveats": r.caveats,
         },
         "patterns": {

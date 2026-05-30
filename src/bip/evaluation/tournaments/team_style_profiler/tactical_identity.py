@@ -54,7 +54,10 @@ N_YELLOW_MIN = 5
 PressIntensity = Literal["high_press", "balanced_press", "low_block"]
 SetPieceReliance = Literal["set_piece_reliant", "mixed", "open_play"]
 FinishingProfile = Literal["clinical", "neutral", "wasteful"]
-Confidence = Literal["green", "yellow", "red"]
+# "scouting" = labels are hand-curated from scouting (no StatsBomb data); the
+# numeric fields are None. Used for the 8 WC2026 teams absent from StatsBomb.
+Confidence = Literal["green", "yellow", "red", "scouting"]
+LeanDirection = Literal["BACK", "FADE", "CAUTION"]
 
 
 @dataclass(frozen=True)
@@ -85,14 +88,19 @@ class TacticalIdentity:
     set_piece_reliance: SetPieceReliance
     finishing_profile: FinishingProfile
 
-    # Raw values kept for the dossier to quote
-    ppda: float
-    set_piece_xg_share: float
-    conversion_rate: float
+    # Raw values kept for the dossier to quote. None for scouting-only identities.
+    ppda: float | None
+    set_piece_xg_share: float | None
+    conversion_rate: float | None
 
     # Synthesis (operator-defined) + curated qualitative layer
     archetype: str
     anchor: PhilosophyAnchor | None
+
+    @property
+    def is_measured(self) -> bool:
+        """True if dimensions come from StatsBomb data (not scouting)."""
+        return self.confidence != "scouting"
 
 
 def _confidence_for(n: int) -> Confidence:
@@ -264,19 +272,37 @@ def synthesize_archetype(
 
 
 @dataclass(frozen=True)
+class MarketLean:
+    """A structured market lean from the game-plan read.
+
+    direction: BACK (take it), FADE (lay/avoid it), CAUTION (don't trust the
+    obvious side). The dossier cross-confirms BACK/FADE leans against its
+    TSV-derived picks.
+    """
+
+    market: str        # canonical-ish, e.g. "Under 2.5", "BTTS No", "Córners Spain Over"
+    direction: LeanDirection
+    rationale: str
+
+    @property
+    def text(self) -> str:
+        return f"{self.market} ({self.direction}) — {self.rationale}"
+
+
+@dataclass(frozen=True)
 class MatchupRead:
     """Game-plan read of a fixture from two tactical identities.
 
     This is the bridge from 'how each team plays' to 'which event is most
-    likely' — the analyst output, NOT a probability. The dossier turns these
-    leans into picks once odds are attached.
+    likely' — the analyst output, NOT a probability. The dossier cross-confirms
+    these leans against its picks; the operator prices them with real odds.
     """
 
     home: TacticalIdentity
     away: TacticalIdentity
-    tempo: str               # who dictates territory
-    game_shape: str          # open / cagey / territorial
-    market_leans: list[str]  # "MARKET — DIRECTION: rationale"
+    tempo: str                       # who dictates territory
+    game_shape: str                  # open / cagey / territorial
+    market_leans: list[MarketLean]
     caveats: list[str]
 
 
@@ -285,39 +311,48 @@ def _proactivity(press: PressIntensity) -> int:
 
 
 def read_matchup(home: TacticalIdentity, away: TacticalIdentity) -> MatchupRead:
-    """Cross two planteamientos into a game-plan read with market leans."""
+    """Cross two planteamientos into a game-plan read with structured leans."""
     ph, pa = _proactivity(home.press_intensity), _proactivity(away.press_intensity)
     both_high = home.press_intensity == "high_press" and away.press_intensity == "high_press"
     both_low = home.press_intensity == "low_block" and away.press_intensity == "low_block"
-    leans: list[str] = []
+    leans: list[MarketLean] = []
 
     # --- Tempo + game shape ---
     if both_high:
         tempo = "ambos presionan: partido de ida y vuelta, nadie cede territorio"
         shape = "abierto"
-        leans.append("Over 2.5 — dos presiones altas chocando abren espacios")
+        leans.append(MarketLean("Over 2.5", "BACK", "dos presiones altas chocando abren espacios"))
         if home.finishing_profile == "clinical" and away.finishing_profile == "clinical":
-            leans.append("BTTS Sí — ambos clínicos en juego abierto")
+            leans.append(MarketLean("BTTS Sí", "BACK", "ambos clínicos en juego abierto"))
     elif both_low:
         tempo = "ambos esperan: nadie quiere el balón, partido trabado"
         shape = "cerrado"
-        leans.append("Under 2.5 — dos bloques bajos, pocas ocasiones claras")
-        leans.append("Córners Under — poca presión sostenida")
-        leans.append("BTTS No — ambos priorizan no encajar")
+        leans.append(MarketLean("Under 2.5", "BACK", "dos bloques bajos, pocas ocasiones claras"))
+        leans.append(MarketLean("Córners totales Under", "BACK", "poca presión sostenida"))
+        leans.append(MarketLean("BTTS No", "BACK", "ambos priorizan no encajar"))
     elif ph != pa:
         presser, blocker = (home, away) if ph > pa else (away, home)
         side = "local" if ph > pa else "visitante"
         tempo = f"{presser.team_name} ({side}) dicta el tempo; {blocker.team_name} cede balón y espera la transición"
         shape = "territorial"
-        # Sustained pressure forces corners for the presser.
-        leans.append(f"Córners {presser.team_name} Over — presión sostenida vs bloque que cede campo")
+        leans.append(MarketLean(
+            f"Córners {presser.team_name} Over", "BACK",
+            "presión sostenida vs bloque que cede campo"))
         if presser.finishing_profile == "wasteful":
-            leans.append(f"Under 2.5 — {presser.team_name} domina pero no concreta (dominador estéril)")
-            leans.append(f"Cuidado con el AH -1.5 de {presser.team_name}: genera, no mata partidos")
+            leans.append(MarketLean(
+                "Under 2.5", "BACK",
+                f"{presser.team_name} domina pero no concreta (dominador estéril)"))
+            leans.append(MarketLean(
+                f"AH -1.5 {presser.team_name}", "FADE",
+                f"{presser.team_name} genera, no mata partidos"))
         elif presser.finishing_profile == "clinical":
-            leans.append(f"AH -0.5/-1 {presser.team_name} — dominio + pegada vs bloque pasivo")
+            leans.append(MarketLean(
+                f"AH -0.5/-1 {presser.team_name}", "BACK",
+                "dominio + pegada vs bloque pasivo"))
         if blocker.finishing_profile == "clinical":
-            leans.append(f"{blocker.team_name} vivo al contragolpe — no fiar BTTS No a ciegas")
+            leans.append(MarketLean(
+                "BTTS No", "CAUTION",
+                f"{blocker.team_name} vivo al contragolpe — no fiar BTTS No a ciegas"))
     else:
         tempo = "dos planteamientos flexibles: el contexto (resultado, expulsiones) mandará"
         shape = "equilibrado"
@@ -325,13 +360,18 @@ def read_matchup(home: TacticalIdentity, away: TacticalIdentity) -> MatchupRead:
     # --- Set-piece danger source (independent of tempo) ---
     for t, opp in ((home, away), (away, home)):
         if t.set_piece_reliance == "set_piece_reliant":
-            extra = " — y será su vía principal si el rival cierra el juego abierto" if opp.press_intensity == "low_block" else ""
-            leans.append(f"Balón parado {t.team_name}: amenaza real ({t.set_piece_xg_share:.0%} de su xG){extra}")
+            share = f" ({t.set_piece_xg_share:.0%} de su xG)" if t.set_piece_xg_share is not None else ""
+            extra = " — vía principal si el rival cierra el juego abierto" if opp.press_intensity == "low_block" else ""
+            leans.append(MarketLean(
+                f"Gol de balón parado {t.team_name}", "BACK",
+                f"amenaza real{share}{extra}"))
 
     # --- Caveats from confidence + qualitative anchors ---
     caveats: list[str] = []
     for t in (home, away):
-        if t.confidence == "red":
+        if t.confidence == "scouting":
+            caveats.append(f"{t.team_name}: identidad de SCOUTING (sin datos StatsBomb) — read cualitativo")
+        elif t.confidence == "red":
             caveats.append(f"{t.team_name}: muestra muy pequeña (n={t.n_matches}) — identidad poco fiable")
         elif t.confidence == "yellow":
             caveats.append(f"{t.team_name}: muestra limitada (n={t.n_matches})")
@@ -362,3 +402,103 @@ def derive_tactical_identity(profile: TeamStatsBombProfile) -> TacticalIdentity:
         archetype=synthesize_archetype(press, set_piece, finishing),
         anchor=PHILOSOPHY_ANCHORS.get(profile.team_name),
     )
+
+
+def _scouting(
+    name: str,
+    press: PressIntensity,
+    set_piece: SetPieceReliance,
+    finishing: FinishingProfile,
+    anchor: PhilosophyAnchor,
+) -> TacticalIdentity:
+    """Hand-curated identity for a team with no StatsBomb coverage.
+
+    Labels are scouting judgment, NOT measured data — numeric fields are None
+    and confidence is "scouting" so the dossier flags the read accordingly.
+    """
+    return TacticalIdentity(
+        team_name=name,
+        n_matches=0,
+        confidence="scouting",
+        press_intensity=press,
+        set_piece_reliance=set_piece,
+        finishing_profile=finishing,
+        ppda=None,
+        set_piece_xg_share=None,
+        conversion_rate=None,
+        archetype=synthesize_archetype(press, set_piece, finishing),
+        anchor=anchor,
+    )
+
+
+# The 8 WC2026 teams absent from the StatsBomb open-data cache. Scouting-based
+# (qualitative) reads — the only honest option, since FBref squad stats lack the
+# event granularity (PPDA, pressures, set-piece xG) the data dimensions need.
+SCOUTING_IDENTITIES: dict[str, TacticalIdentity] = {
+    "Norway": _scouting(
+        "Norway", "balanced_press", "open_play", "clinical",
+        PhilosophyAnchor(
+            press_trigger="mid-block, not a sustained high press; lets the game come then breaks",
+            build_up="vertical/direct to Haaland + Ødegaard creation — among the most lethal attacks",
+            weak_link="defensive structure and midfield balance behind the two stars",
+        )),
+    "New Zealand": _scouting(
+        "New Zealand", "low_block", "set_piece_reliant", "neutral",
+        PhilosophyAnchor(
+            press_trigger="deep, compact block; OFC-dominant, sits vs better sides",
+            build_up="direct, crosses and set pieces to a tall target (Chris Wood)",
+            weak_link="technical quality vs organized opponents; heavily reliant on Wood + dead balls",
+        )),
+    "Uzbekistan": _scouting(
+        "Uzbekistan", "low_block", "mixed", "neutral",
+        PhilosophyAnchor(
+            press_trigger="organized, disciplined AFC block; first-ever WC, conservative",
+            build_up="patient, structured; decent set-piece routines",
+            weak_link="elite-level experience; struggles to break down deep blocks themselves",
+        )),
+    "Jordan": _scouting(
+        "Jordan", "low_block", "mixed", "clinical",
+        PhilosophyAnchor(
+            press_trigger="reactive block; Asian Cup 2024 finalists built on solidity + transition",
+            build_up="counter through pace (Al-Naimat); efficient on the break",
+            weak_link="limited sustained possession game; depends on transition moments",
+        )),
+    "Iraq": _scouting(
+        "Iraq", "low_block", "mixed", "neutral",
+        PhilosophyAnchor(
+            press_trigger="organized, physical AFC block",
+            build_up="reactive; set pieces and transition the main routes to goal",
+            weak_link="creating in open play vs compact opponents",
+        )),
+    "Bosnia and Herzegovina": _scouting(
+        "Bosnia and Herzegovina", "balanced_press", "set_piece_reliant", "neutral",
+        PhilosophyAnchor(
+            press_trigger="mid-block, physical, not a high press",
+            build_up="direct to a target + crosses and set pieces; Džeko aerial focal (aging)",
+            weak_link="aging spine and pace in behind; over-reliant on Džeko's aerial threat",
+        )),
+    "Haiti": _scouting(
+        "Haiti", "balanced_press", "open_play", "neutral",
+        PhilosophyAnchor(
+            press_trigger="energetic but unstructured press; athletic CONCACAF profile",
+            build_up="transition-based, technical forwards in space",
+            weak_link="defensive organization — concedes under sustained pressure",
+        )),
+    "Curaçao": _scouting(
+        "Curaçao", "low_block", "mixed", "neutral",
+        PhilosophyAnchor(
+            press_trigger="compact, reactive block (Advocaat pragmatism); smallest-ever WC nation",
+            build_up="counter through Dutch-system diaspora players' pace",
+            weak_link="squad depth and physical mismatch vs top sides over 90'",
+        )),
+}
+
+
+def tactical_identity_for(
+    team_name: str, profile: TeamStatsBombProfile | None = None
+) -> TacticalIdentity | None:
+    """Resolve a team's identity: measured (from StatsBomb) if a profile is
+    given, else the curated scouting identity, else None."""
+    if profile is not None:
+        return derive_tactical_identity(profile)
+    return SCOUTING_IDENTITIES.get(team_name)

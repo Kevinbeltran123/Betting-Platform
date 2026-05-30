@@ -22,7 +22,7 @@ from bip.evaluation.tournaments.team_style_profiler.statsbomb_advanced import (
 )
 from bip.evaluation.tournaments.team_style_profiler.tactical_identity import (
     TacticalIdentity,
-    derive_tactical_identity,
+    tactical_identity_for,
 )
 from bip.evaluation.tournaments.team_style_profiler.tsv_schema import TeamStyleVector
 
@@ -35,6 +35,7 @@ MATCHUPS = [
     ("Spain", "Morocco", date(2026, 7, 1)),
     ("Argentina", "Mexico", date(2026, 6, 14)),
     ("France", "Croatia", date(2026, 6, 25)),
+    ("Brazil", "Norway", date(2026, 6, 20)),  # measured vs scouting-only
 ]
 
 
@@ -49,9 +50,10 @@ def _load_tsv(name: str) -> TeamStyleVector | None:
 
 def _load_tid(name: str) -> TacticalIdentity | None:
     p = SB_DIR / f"{_slug(name)}_sb.json"
-    if not p.exists():
-        return None
-    return derive_tactical_identity(TeamStatsBombProfile.model_validate_json(p.read_text()))
+    profile = (
+        TeamStatsBombProfile.model_validate_json(p.read_text()) if p.exists() else None
+    )
+    return tactical_identity_for(name, profile)
 
 
 def main() -> int:
