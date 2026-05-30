@@ -164,12 +164,11 @@ def apply_referee_to_board(
         tag = f"⚠ árbitro permisivo ({ref.referee_name}, {ref.cards_per_match.mean:.1f} tarj/p) — atenúa"
     else:
         tag = f"árbitro promedio ({ref.referee_name}, {ref.cards_per_match.mean:.1f} tarj/p)"
+    import dataclasses
     out: list[PropCandidate] = []
     for c in board:
         if c.softness == 1:
-            out.append(PropCandidate(
-                market=c.market, player_name=c.player_name, position=c.position,
-                stat=f"{c.stat} · {tag}", softness=c.softness, confidence=c.confidence))
+            out.append(dataclasses.replace(c, stat=f"{c.stat} · {tag}"))
         else:
             out.append(c)
     return out

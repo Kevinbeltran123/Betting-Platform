@@ -268,6 +268,8 @@ class PropCandidate:
     stat: str              # human-readable driving number
     softness: int          # 1=softest (fouls/cards) ... 3=hardest (scorer)
     confidence: PropConfidence
+    team: str = ""         # owning team (for cross-source injury/referee linking)
+    flag: str = ""         # non-destructive annotation (e.g. "⛔ LESIONADO", availability)
 
 
 def prop_board(
