@@ -35,6 +35,7 @@ N_YELLOW_MIN = 4
 MIN_MINUTES_FOR_RATE = 20.0
 
 PropConfidence = Literal["green", "yellow", "red"]
+PropSource = Literal["statsbomb", "espn"]
 
 _RED_CARDS = {"Red Card", "Second Yellow"}
 _YELLOW_CARDS = {"Yellow Card", "Second Yellow"}
@@ -64,10 +65,17 @@ class PlayerPropProfile:
 
     penalties_taken: int  # count across sample (set-piece duty signal)
 
+    # "statsbomb": real minutes + xG. "espn": minutes unknown (each appearance
+    # treated as 90' → per-90 with full-match assumption, conservative for subs)
+    # and NO xG (anytime-scorer falls back to the goals rate).
+    source: PropSource = "statsbomb"
+
     @property
     def p_anytime_scorer(self) -> float:
-        """P(>=1 goal | plays 90') from xG rate: 1 - exp(-xg_per90)."""
-        return float(1.0 - np.exp(-self.xg_per90.mean))
+        """P(>=1 goal | plays 90'): 1 - exp(-rate). Uses xG when available
+        (StatsBomb), else the goals rate (ESPN has no xG)."""
+        rate = self.xg_per90.mean if self.xg_per90.mean > 0 else self.goals_per90.mean
+        return float(1.0 - np.exp(-rate))
 
 
 def _confidence_for(n: int) -> PropConfidence:
@@ -193,6 +201,7 @@ _METRICS = ("shots", "sot", "xg", "goals", "fouls", "yellows", "key_passes", "as
 
 def build_player_profiles(
     per_match: list[tuple[dict[int, dict[str, float]], dict[int, tuple[str, str, str]], dict[int, float]]],
+    source: PropSource = "statsbomb",
 ) -> list[PlayerPropProfile]:
     """Aggregate parsed per-match (counts, meta, minutes) into player profiles."""
     # player_id -> metric -> list[(count, minutes)]
@@ -244,6 +253,7 @@ def build_player_profiles(
             key_passes_per90=_bootstrap_rate(metric_samples["key_passes"]),
             assists_per90=_bootstrap_rate(metric_samples["assists"]),
             penalties_taken=pens_total[pid],
+            source=source,
         ))
     return profiles
 
@@ -299,13 +309,17 @@ def prop_board(
             "Disparos al arco (over)", p.player_name, p.position,
             f"{p.shots_on_target_per90.mean:.1f} SoT/90, {p.shots_per90.mean:.1f} disparos/90",
             softness=2, confidence=p.confidence))
-    # 3 — HARDEST: anytime scorer (xG-driven). Penalty duty boosts.
-    for p in top(lambda x: x.xg_per90.mean):
-        if p.xg_per90.mean <= 0:
+    # 3 — HARDEST: anytime scorer (xG-driven; goals rate when xG absent/ESPN).
+    def scorer_rate(x):
+        return x.xg_per90.mean if x.xg_per90.mean > 0 else x.goals_per90.mean
+    for p in top(scorer_rate):
+        if scorer_rate(p) <= 0:
             continue
         pen = " · penaltis" if p.penalties_taken > 0 else ""
+        driver = (f"xG {p.xg_per90.mean:.2f}/90" if p.xg_per90.mean > 0
+                  else f"{p.goals_per90.mean:.2f} goles/90")
         board.append(PropCandidate(
             "Anytime scorer", p.player_name, p.position,
-            f"P(gol|90')≈{p.p_anytime_scorer:.0%}, xG {p.xg_per90.mean:.2f}/90{pen}",
+            f"P(gol|90')≈{p.p_anytime_scorer:.0%}, {driver}{pen}",
             softness=3, confidence=p.confidence))
     return board
