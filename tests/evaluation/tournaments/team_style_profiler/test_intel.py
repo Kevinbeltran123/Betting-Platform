@@ -140,6 +140,32 @@ def render_intel_markdown_safe(dossier):
     return render_intel_markdown(assemble_intel(dossier))
 
 
+def test_confirmed_lineup_marks_starters_and_bench():
+    props = [_prof(1, "Leandro Daniel Paredes"), _prof(2, "Banco Suplente", fouls=2.0)]
+    intel = assemble_intel(_dossier(), home_props=props,
+                           home_lineup=["Leandro Paredes", "Otro Titular"])
+    board = intel.home_prop_board
+    paredes = [c for c in board if "Paredes" in c.player_name]
+    assert paredes and all("titular" in c.flag for c in paredes)
+    bench = [c for c in board if "Suplente" in c.player_name]
+    assert bench and all("banquillo" in c.flag for c in bench)
+
+
+def test_both_lineups_resolve_the_lineup_blind_spot():
+    intel = assemble_intel(_dossier(), home_lineup=["A"], away_lineup=["B"])
+    assert any("XI CONFIRMADO" in s for s in intel.blind_spots)
+    assert not any("CONFIRMAR XI a" in s for s in intel.blind_spots)
+
+
+def test_injury_beats_starter_flag():
+    props = [_prof(1, "Leandro Daniel Paredes")]
+    intel = assemble_intel(_dossier(), home_props=props,
+                           home_lineup=["Leandro Paredes"],
+                           home_injuries=[Injury("Leandro Paredes", "Knock", None, True)])
+    paredes = [c for c in intel.home_prop_board if "Paredes" in c.player_name]
+    assert paredes and all("LESIONADO" in c.flag for c in paredes)  # injury priority
+
+
 def test_recent_form_board_built_and_labeled():
     recent = [_prof(1, "Erling Haaland", team="Norway", source="espn")]
     intel = assemble_intel(_dossier(home="Spain", away="Norway"), away_props_recent=recent)

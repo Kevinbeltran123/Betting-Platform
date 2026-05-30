@@ -6,7 +6,9 @@ one-command flow (scripts/spike/tsp/39_analyze.py).
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import time
 from datetime import date
 from pathlib import Path
@@ -25,7 +27,16 @@ from bip.evaluation.tournaments.team_style_profiler.statsbomb_advanced import Te
 from bip.evaluation.tournaments.team_style_profiler.tactical_identity import tactical_identity_for
 from bip.evaluation.tournaments.team_style_profiler.tsv_schema import DistributionStat, TeamStyleVector
 
-CACHE = Path(__file__).resolve().parents[5] / "data" / "cache" / "tsp"
+PROJECT = Path(__file__).resolve().parents[5]
+CACHE = PROJECT / "data" / "cache" / "tsp"
+
+
+def _api_football_key() -> str | None:
+    env = PROJECT / ".env"
+    if not env.exists():
+        return None
+    m = re.search(r"(?im)^\s*API_FOOTBALL_KEY\s*=\s*(.+)$", env.read_text())
+    return m.group(1).strip().strip('"').strip("'") if m else None
 
 
 def _slug(n: str) -> str:
@@ -168,6 +179,46 @@ def fetch_live_injuries(team: str, today: date) -> tuple[list[Injury] | None, st
         return None, f"{team}: fallo Transfermarkt ({type(e).__name__}) — usando caché"
 
 
+async def _confirmed_lineup_async(home: str, away: str, season: int):
+    from bip.sports.football.client import ApiFootballClient
+    key = _api_football_key()
+    if not key:
+        return None
+    async with ApiFootballClient(api_key=key) as c:
+        async def team_id(name: str):
+            j = (await c._client.get("/teams", params={"name": name})).json().get("response", [])
+            nat = [t for t in j if t.get("team", {}).get("national")]
+            pick = nat[0] if nat else (j[0] if j else None)
+            return pick["team"]["id"] if pick else None
+
+        hid, aid = await team_id(home), await team_id(away)
+        if not hid or not aid:
+            return None
+        fx = (await c._client.get("/fixtures", params={"team": hid, "season": season})).json().get("response", [])
+        fid = next((f["fixture"]["id"] for f in fx
+                    if {f["teams"]["home"]["id"], f["teams"]["away"]["id"]} == {hid, aid}), None)
+        if fid is None:
+            return None
+        ln = (await c._client.get("/fixtures/lineups", params={"fixture": fid})).json().get("response", [])
+        home_xi, away_xi = [], []
+        for t in ln:
+            names = [p["player"]["name"] for p in (t.get("startXI") or []) if p.get("player")]
+            if t["team"]["id"] == hid:
+                home_xi = names
+            elif t["team"]["id"] == aid:
+                away_xi = names
+        return (home_xi, away_xi) if (home_xi or away_xi) else None
+
+
+def fetch_confirmed_lineup(home: str, away: str, season: int) -> tuple[list[str], list[str]] | None:
+    """Confirmed XI from API-Football (lights up ~40' pre-KO / for played fixtures).
+    Returns (home_starters, away_starters) or None (pre-scheduled / no data / error)."""
+    try:
+        return asyncio.run(_confirmed_lineup_async(home, away, season))
+    except Exception:
+        return None
+
+
 def build_match_intel(
     home: str, away: str, *,
     referee_name: str | None = None,
@@ -197,6 +248,9 @@ def build_match_intel(
     else:
         hi, ai = load_cached_injuries(hs), load_cached_injuries(as_)
 
+    lineup = fetch_confirmed_lineup(home, away, fixture_date.year)
+    home_xi, away_xi = lineup if lineup else (None, None)
+
     intel = assemble_intel(
         dossier,
         home_props=load_props(hs), away_props=load_props(as_),
@@ -204,6 +258,7 @@ def build_match_intel(
         home_advanced=load_advanced(hs), away_advanced=load_advanced(as_),
         home_team_adv=load_team_advanced(hs, home), away_team_adv=load_team_advanced(as_, away),
         home_injuries=hi, away_injuries=ai,
-        referee=referee_by_name(referee_name))
+        referee=referee_by_name(referee_name),
+        home_lineup=home_xi, away_lineup=away_xi)
     intel.provenance_notes.extend(n for n in extra_notes if n)
     return intel

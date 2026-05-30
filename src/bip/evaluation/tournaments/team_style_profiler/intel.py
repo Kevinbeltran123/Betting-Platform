@@ -131,6 +131,8 @@ class MatchIntel:
     away_set_piece: SetPieceIntel | None = None
     home_recent_board: list[PropCandidate] = field(default_factory=list)  # ESPN current form
     away_recent_board: list[PropCandidate] = field(default_factory=list)
+    home_lineup: list[str] = field(default_factory=list)  # confirmed XI (API-Football)
+    away_lineup: list[str] = field(default_factory=list)
 
 
 def _game_state_label(p: AdvancedTeamProfile) -> str:
@@ -159,8 +161,10 @@ def _shape(p: AdvancedTeamProfile | None) -> AdvancedShape | None:
 def _annotated_board(
     props: list[PlayerPropProfile], team: str,
     referee: RefereeTendency | None, injuries: list[Injury],
+    lineup: list[str] | None = None,
 ) -> tuple[list[PropCandidate], list[str]]:
-    """Build a team's prop board; annotate (never drop) referee + injuries."""
+    """Build a team's prop board; annotate (never drop) referee + injuries +
+    confirmed-XI status. Injury flag takes priority over starter status."""
     board = [dataclasses.replace(c, team=team) for c in prop_board(props)]
     board = apply_referee_to_board(board, referee)   # preserves team/flag via replace
     inj_names = [i.name for i in injuries]
@@ -174,6 +178,10 @@ def _annotated_board(
             out.append(dataclasses.replace(
                 c, flag=f"⛔ LESIONADO: {inj.injury} ({until}) — NO apostar"))
             matched.add(m)
+        elif lineup:
+            in_xi = match_name(c.player_name, lineup) is not None
+            out.append(dataclasses.replace(
+                c, flag="✓ titular (XI confirmado)" if in_xi else "⚠ NO en el XI confirmado — ¿banquillo?"))
         else:
             out.append(c)
     notes = [f"{team}: lesionado {i.name} ({i.injury}) no está en el prop board "
@@ -185,6 +193,7 @@ def _annotated_board(
 def _blind_spots(
     ctx, home_props, away_props, wl: list[WeakLinkNote],
     home_sp: SetPieceIntel | None, away_sp: SetPieceIntel | None,
+    home_lineup: list[str] | None = None, away_lineup: list[str] | None = None,
 ) -> list[str]:
     """What the AUTOMATION cannot capture — the human dig-list per fixture.
 
@@ -193,9 +202,15 @@ def _blind_spots(
     spots rather than present a clean (false-confidence) answer.
     """
     spots: list[str] = []
-    # 1 — lineups are the single biggest unknown until ~60' pre-kick.
-    spots.append("CONFIRMAR XI a ~60' del inicio — toda proyección asume alineación; "
-                 "una baja de última hora cambia el partido.")
+    # 1 — lineups: the biggest unknown. If API-Football has the confirmed XI, the
+    # blind spot is RESOLVED by data; otherwise it stays a human task.
+    if home_lineup and away_lineup:
+        spots.append("✓ XI CONFIRMADO (API-Football) para ambos — proyecciones sobre "
+                     "titulares reales; verificar solo cambios de último minuto.")
+    else:
+        missing = [t for t, lu in ((ctx.home_team, home_lineup), (ctx.away_team, away_lineup)) if not lu]
+        spots.append(f"CONFIRMAR XI a ~60' del inicio ({', '.join(missing)} sin XI confirmado aún) "
+                     "— toda proyección asume alineación; una baja de última hora cambia el partido.")
     # 2 — new coach / regime: legacy data not predictive.
     for tid in (ctx.home_tid, ctx.away_tid):
         if tid is None:
@@ -236,6 +251,8 @@ def assemble_intel(
     referee: RefereeTendency | None = None,
     home_props_recent: list[PlayerPropProfile] | None = None,
     away_props_recent: list[PlayerPropProfile] | None = None,
+    home_lineup: list[str] | None = None,
+    away_lineup: list[str] | None = None,
 ) -> MatchIntel:
     ctx = dossier.context
     home_props = home_props or []
@@ -244,12 +261,12 @@ def assemble_intel(
     away_injuries = away_injuries or []
     notes: list[str] = []
 
-    hb, hn = _annotated_board(home_props, ctx.home_team, referee, home_injuries)
-    ab, an = _annotated_board(away_props, ctx.away_team, referee, away_injuries)
+    hb, hn = _annotated_board(home_props, ctx.home_team, referee, home_injuries, home_lineup)
+    ab, an = _annotated_board(away_props, ctx.away_team, referee, away_injuries, away_lineup)
     notes.extend(hn)
     notes.extend(an)
-    hrb, _ = _annotated_board(home_props_recent or [], ctx.home_team, referee, home_injuries)
-    arb, _ = _annotated_board(away_props_recent or [], ctx.away_team, referee, away_injuries)
+    hrb, _ = _annotated_board(home_props_recent or [], ctx.home_team, referee, home_injuries, home_lineup)
+    arb, _ = _annotated_board(away_props_recent or [], ctx.away_team, referee, away_injuries, away_lineup)
 
     wl: list[WeakLinkNote] = []
     creators: list[Creator] = []
@@ -271,7 +288,8 @@ def assemble_intel(
 
     home_sp = set_piece_for(ctx.home_team)
     away_sp = set_piece_for(ctx.away_team)
-    blind = _blind_spots(ctx, home_props, away_props, wl, home_sp, away_sp)
+    blind = _blind_spots(ctx, home_props, away_props, wl, home_sp, away_sp,
+                         home_lineup, away_lineup)
 
     return MatchIntel(
         dossier=dossier, home_injuries=home_injuries, away_injuries=away_injuries,
@@ -280,6 +298,7 @@ def assemble_intel(
         provenance_notes=notes, blind_spots=blind,
         home_set_piece=home_sp, away_set_piece=away_sp,
         home_recent_board=hrb, away_recent_board=arb,
+        home_lineup=home_lineup or [], away_lineup=away_lineup or [],
     )
 
 
@@ -324,6 +343,10 @@ def render_intel_markdown(intel: MatchIntel) -> str:
         else:
             out.append(f"**{name}:** sin bajas reportadas / no recolectado")
         out.append("")
+    for name, xi in ((ctx.home_team, intel.home_lineup), (ctx.away_team, intel.away_lineup)):
+        if xi:
+            out.append(f"**XI confirmado {name} (API-Football):** {', '.join(xi)}")
+            out.append("")
 
     out += ["---", "", "## §5. Forma avanzada de equipo (StatsBomb)", ""]
     out += _shape_lines(intel.home_shape, ctx.home_team)
