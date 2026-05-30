@@ -150,24 +150,19 @@ def _format_transfer_line(team: str, transfer_dict: dict) -> str:
 
 
 def _render_pick(pick: Pick, idx: int) -> list[str]:
-    cat_glyph = {
-        "STRONG": "🟢 **STRONG**",
-        "MODERATE": "🟡 **MODERATE**",
-        "EXPLORATORY": "🔵 EXPLORATORY",
-        "SKIP": "⚪ SKIP",
-    }.get(pick.category, pick.category)
+    # Evidence, not verdict: no STRONG/MODERATE category, no numeric score
+    # (operator decides — per the analyst reframe). Ordering is preserved by the
+    # caller's internal sort; we just don't surface a false-precision number.
     out = [
-        f"### {idx}. {cat_glyph} — {pick.market}",
+        f"### {idx}. `{pick.direction}` {pick.market}",
         "",
-        f"- **Direction:** `{pick.direction}` | **Score:** {pick.score:.2f}",
-        "",
-        "**Why:**",
+        "**Por qué (evidencia):**",
     ]
     for r in pick.rationale:
         out.append(f"- {r}")
     if pick.risk_flags:
         out.append("")
-        out.append("**Risk flags:**")
+        out.append("**Banderas de riesgo:**")
         for f in pick.risk_flags:
             out.append(f"- ⚠ {f}")
     out.append("")
@@ -233,7 +228,7 @@ def render_markdown(dossier: MatchDossier) -> str:
     out.extend([
         "---",
         "",
-        "## §3. Ranked Picks",
+        "## §3. Señales de mercado (evidencia — el operador decide, sin veredicto)",
         "",
     ])
 
