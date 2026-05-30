@@ -138,3 +138,12 @@ def test_render_demotes_picks_to_evidence():
 def render_intel_markdown_safe(dossier):
     from bip.evaluation.tournaments.team_style_profiler.intel import render_intel_markdown
     return render_intel_markdown(assemble_intel(dossier))
+
+
+def test_recent_form_board_built_and_labeled():
+    recent = [_prof(1, "Erling Haaland", team="Norway", source="espn")]
+    intel = assemble_intel(_dossier(home="Spain", away="Norway"), away_props_recent=recent)
+    assert intel.away_recent_board, "ESPN current-form board should be built"
+    from bip.evaluation.tournaments.team_style_profiler.intel import render_intel_markdown
+    out = render_intel_markdown(intel)
+    assert "Forma actual (ESPN" in out          # labeled separately, provenance kept

@@ -119,7 +119,7 @@ class MatchIntel:
     dossier: MatchDossier                       # existing picks + planteamiento + patterns
     home_injuries: list[Injury]
     away_injuries: list[Injury]
-    home_prop_board: list[PropCandidate]        # referee + injury annotated
+    home_prop_board: list[PropCandidate]        # referee + injury annotated (depth)
     away_prop_board: list[PropCandidate]
     weak_links: list[WeakLinkNote]
     creators: list[Creator]
@@ -129,6 +129,8 @@ class MatchIntel:
     blind_spots: list[str] = field(default_factory=list)       # §0 "investigate yourself"
     home_set_piece: SetPieceIntel | None = None
     away_set_piece: SetPieceIntel | None = None
+    home_recent_board: list[PropCandidate] = field(default_factory=list)  # ESPN current form
+    away_recent_board: list[PropCandidate] = field(default_factory=list)
 
 
 def _game_state_label(p: AdvancedTeamProfile) -> str:
@@ -232,6 +234,8 @@ def assemble_intel(
     home_injuries: list[Injury] | None = None,
     away_injuries: list[Injury] | None = None,
     referee: RefereeTendency | None = None,
+    home_props_recent: list[PlayerPropProfile] | None = None,
+    away_props_recent: list[PlayerPropProfile] | None = None,
 ) -> MatchIntel:
     ctx = dossier.context
     home_props = home_props or []
@@ -244,6 +248,8 @@ def assemble_intel(
     ab, an = _annotated_board(away_props, ctx.away_team, referee, away_injuries)
     notes.extend(hn)
     notes.extend(an)
+    hrb, _ = _annotated_board(home_props_recent or [], ctx.home_team, referee, home_injuries)
+    arb, _ = _annotated_board(away_props_recent or [], ctx.away_team, referee, away_injuries)
 
     wl: list[WeakLinkNote] = []
     creators: list[Creator] = []
@@ -273,6 +279,7 @@ def assemble_intel(
         home_shape=_shape(home_team_adv), away_shape=_shape(away_team_adv),
         provenance_notes=notes, blind_spots=blind,
         home_set_piece=home_sp, away_set_piece=away_sp,
+        home_recent_board=hrb, away_recent_board=arb,
     )
 
 
@@ -331,6 +338,18 @@ def render_intel_markdown(intel: MatchIntel) -> str:
             soft = {1: "SOFT", 2: "med", 3: "hard"}.get(c.softness, "?")
             flag = f"  {c.flag}" if c.flag else ""
             out.append(f"- [{soft}] {c.market} — {c.player_name}: {c.stat}{flag}")
+
+    if intel.home_recent_board or intel.away_recent_board:
+        out += ["", "### Forma actual (ESPN, últimos partidos — recencia, sin xG)"]
+        for name, board in ((ctx.home_team, intel.home_recent_board),
+                            (ctx.away_team, intel.away_recent_board)):
+            if not board:
+                continue
+            out.append(f"\n**{name}:**")
+            for c in board[:6]:
+                soft = {1: "SOFT", 2: "med", 3: "hard"}.get(c.softness, "?")
+                flag = f"  {c.flag}" if c.flag else ""
+                out.append(f"- [{soft}] {c.market} — {c.player_name}: {c.stat}{flag}")
 
     if intel.weak_links:
         out += ["", "### Eslabones débiles (a atacar)"]
