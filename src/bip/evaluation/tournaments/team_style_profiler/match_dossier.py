@@ -26,6 +26,11 @@ from bip.evaluation.tournaments.patterns_v2 import (
     regime_warning_for_fixture,
     team_transfer_verdict,
 )
+from bip.evaluation.tournaments.team_style_profiler.tactical_identity import (
+    MatchupRead,
+    TacticalIdentity,
+    read_matchup,
+)
 from bip.evaluation.tournaments.team_style_profiler.tsv_schema import (
     TeamStyleVector,
 )
@@ -64,6 +69,10 @@ class DossierContext:
     away_tsv: TeamStyleVector | None
     tournament_slug: str
     fixture_date: date
+    home_tid: TacticalIdentity | None = None
+    away_tid: TacticalIdentity | None = None
+    """Tactical identities (planteamiento). When both present, the dossier
+    carries a game-plan read of the matchup."""
 
 
 @dataclass(frozen=True)
@@ -95,6 +104,10 @@ class MatchDossier:
 
     # Generation metadata
     generated_at: datetime
+
+    # Section 3b: game-plan read (planteamiento) — present when both tactical
+    # identities are supplied in the context.
+    matchup_read: MatchupRead | None = None
 
 
 # ─── Rule helpers ───────────────────────────────────────────────────────
@@ -608,6 +621,13 @@ def generate_dossier(ctx: DossierContext) -> MatchDossier:
     # Regime: pre-match without HT score → not active but reportable
     regime_v = regime_warning_for_fixture(ctx.fixture_date, ht_score=None)
 
+    # Game-plan read (planteamiento) when both tactical identities are present
+    matchup_read = (
+        read_matchup(ctx.home_tid, ctx.away_tid)
+        if ctx.home_tid is not None and ctx.away_tid is not None
+        else None
+    )
+
     # Evaluate rules
     picks: list[Pick] = []
     for rule in [
@@ -669,4 +689,5 @@ def generate_dossier(ctx: DossierContext) -> MatchDossier:
         } if regime_v.is_modern_era else None,
         picks=picks,
         generated_at=datetime.now(),
+        matchup_read=matchup_read,
     )

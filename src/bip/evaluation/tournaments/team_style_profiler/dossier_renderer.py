@@ -81,6 +81,56 @@ def _render_tsv_block(tsv: TeamStyleVector | None, name: str) -> list[str]:
     return out
 
 
+def _render_identity_block(tid: Any, name: str) -> list[str]:
+    if tid is None:
+        return [f"- **{name}:** *sin identidad táctica (sin cobertura StatsBomb)*"]
+    out = [
+        f"- **{name}: {tid.archetype}** (`{tid.confidence}`, n={tid.n_matches})",
+        f"  - presión: `{tid.press_intensity}` (PPDA {tid.ppda:.1f}) · "
+        f"balón parado: `{tid.set_piece_reliance}` ({tid.set_piece_xg_share:.0%} xG) · "
+        f"definición: `{tid.finishing_profile}` (conv {tid.conversion_rate:.2f})",
+    ]
+    if tid.anchor is not None:
+        out.append(f"  - gatillo de presión: {tid.anchor.press_trigger}")
+        out.append(f"  - construcción: {tid.anchor.build_up}")
+        out.append(f"  - eslabón débil: {tid.anchor.weak_link}")
+    return out
+
+
+def _render_matchup_read(dossier: MatchDossier) -> list[str]:
+    r = dossier.matchup_read
+    if r is None:
+        return []
+    ctx = dossier.context
+    out = [
+        "---",
+        "",
+        "## §1b. Lectura de planteamiento (game-plan)",
+        "",
+    ]
+    out.extend(_render_identity_block(r.home, ctx.home_team))
+    out.extend(_render_identity_block(r.away, ctx.away_team))
+    out.extend([
+        "",
+        f"- **Tempo:** {r.tempo}",
+        f"- **Forma del partido:** {r.game_shape}",
+        "",
+        "**Hacia qué mercado empuja el cruce:**",
+    ])
+    if r.market_leans:
+        for lean in r.market_leans:
+            out.append(f"- {lean}")
+    else:
+        out.append("- *(sin lean táctico claro — planteamientos flexibles)*")
+    if r.caveats:
+        out.append("")
+        out.append("**Cautelas:**")
+        for c in r.caveats:
+            out.append(f"- ⚠ {c}")
+    out.append("")
+    return out
+
+
 def _format_transfer_line(team: str, transfer_dict: dict) -> str:
     if not transfer_dict["has_signal"]:
         return f"- **{team}:** no signal"
@@ -130,6 +180,8 @@ def render_markdown(dossier: MatchDossier) -> str:
     ]
     out.extend(_render_tsv_block(ctx.home_tsv, ctx.home_team))
     out.extend(_render_tsv_block(ctx.away_tsv, ctx.away_team))
+
+    out.extend(_render_matchup_read(dossier))
 
     out.extend([
         "---",
@@ -209,7 +261,23 @@ def render_json(dossier: MatchDossier) -> str:
     def tsv_to_dict(tsv: TeamStyleVector | None) -> Any:
         return tsv.model_dump(mode="json") if tsv else None
 
+    def tid_to_dict(tid: Any) -> Any:
+        if tid is None:
+            return None
+        return {
+            "archetype": tid.archetype,
+            "confidence": tid.confidence,
+            "n_matches": tid.n_matches,
+            "press_intensity": tid.press_intensity,
+            "set_piece_reliance": tid.set_piece_reliance,
+            "finishing_profile": tid.finishing_profile,
+            "ppda": round(tid.ppda, 2),
+            "set_piece_xg_share": round(tid.set_piece_xg_share, 3),
+            "conversion_rate": round(tid.conversion_rate, 3),
+        }
+
     ctx = dossier.context
+    r = dossier.matchup_read
     payload = {
         "context": {
             "home_team": ctx.home_team,
@@ -218,6 +286,14 @@ def render_json(dossier: MatchDossier) -> str:
             "fixture_date": ctx.fixture_date.isoformat(),
             "home_tsv": tsv_to_dict(ctx.home_tsv),
             "away_tsv": tsv_to_dict(ctx.away_tsv),
+        },
+        "game_plan": None if r is None else {
+            "home_identity": tid_to_dict(r.home),
+            "away_identity": tid_to_dict(r.away),
+            "tempo": r.tempo,
+            "game_shape": r.game_shape,
+            "market_leans": r.market_leans,
+            "caveats": r.caveats,
         },
         "patterns": {
             "host_verdict": dossier.host_verdict,

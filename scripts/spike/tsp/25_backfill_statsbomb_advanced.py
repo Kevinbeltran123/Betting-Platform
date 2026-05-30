@@ -21,10 +21,10 @@ from bip.evaluation.tournaments.team_style_profiler.statsbomb_advanced import (
 )
 
 
-ROOT = Path(__file__).resolve().parents[4]
-MATCHES_DIR = ROOT / "betting-intelligence-platform" / "data" / "cache" / "statsbomb" / "matches"
-EVENTS_DIR = ROOT / "betting-intelligence-platform" / "data" / "cache" / "statsbomb" / "events"
-OUT_DIR = ROOT / "data" / "cache" / "tsp" / "profiles_statsbomb"
+PROJECT = Path(__file__).resolve().parents[3]
+MATCHES_DIR = PROJECT / "data" / "cache" / "statsbomb" / "matches"
+EVENTS_DIR = PROJECT / "data" / "cache" / "statsbomb" / "events"
+OUT_DIR = PROJECT / "data" / "cache" / "tsp" / "profiles_statsbomb"
 
 
 WC2026_TEAMS = [
