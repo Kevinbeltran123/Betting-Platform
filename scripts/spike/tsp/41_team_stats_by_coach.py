@@ -77,7 +77,7 @@ COACH_SINCE: dict[str, tuple[str, str]] = {
     "Qatar": ("Lopetegui", "2025-05-01"),
     "Uzbekistan": ("Cannavaro", "2025-10-01"),
     "Jordan": ("Sellami", "2024-06-01"),
-    "Iraq": ("Graham Arnold", "2026-01-01"),
+    "Iraq": ("Graham Arnold", "2025-05-09"),   # nombrado may-25, dirigió la quali
     "New Zealand": ("Bazeley", "2023-01-01"),
 }
 

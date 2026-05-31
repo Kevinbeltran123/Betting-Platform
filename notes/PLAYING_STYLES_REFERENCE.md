@@ -442,7 +442,7 @@ SELECCIÓN — DT
 | Catar (Lopetegui · 7) | 51.4 | 84.3 | **6.7/11.9** | 3.1/4.6 | — | **0.7/1.6** | ⚠⚠ **MATIZA: bajo Lopetegui los SUPERAN y no marcan** — el "mejor atacando" no se sostiene en su periodo |
 | Uzbekistán (Cannavaro · **2**) | 43.0 | 77.0 | 7.0/13.0 | 3.0/4.0 | — | 1.5/1.0 | ⚠ n=2; bloque bajo confirmado |
 | Jordania (Sellami · 15) | **35.7** | 77.0 | 12.1/10.6 | 4.6/4.6 | — | 1.5/0.9 | ✓✓ el menos posesión (36%), reactivo/contra |
-| Irak (Arnold) | — | — | — | — | — | — | *sin partidos con stats bajo DT nuevo — solo cualitativo* |
+| Irak (Arnold · 6) | 44.2 | 75.7 | 7.0/**12.8** | 3.0/5.0 | — | 0.8/0.7 | ✓ bloque defensivo, superado, low-scoring |
 | **OFC** |||||||| 
 | Nueva Zelanda (Bazeley · 15) | **46.1** | 80.8 | 9.0/**15.3** | 4.4/5.4 | — | **0.6/1.6** | ✓✓ defensa-primero, superado por técnicos, muy bajo de gol |
 
@@ -453,7 +453,9 @@ SELECCIÓN — DT
 - **Países Bajos / Haití:** marcan más de lo que su read sugiere (NED 2.5 GF; Haití 2.7 vs menores).
 - **Confirmaciones fuertes (✓✓):** Inglaterra, Senegal, Egipto, Ecuador, Paraguay, Jordania, Japón, Sudáfrica, Uruguay (crisis), Nueva Zelanda.
 
-**Sin datos bajo DT actual (3):** Chequia (Koubek dic-25), Túnez (Lamouchi ene-26), Irak (Arnold) — DTs muy recientes con amistosos sin cobertura de stats. Usar solo el read cualitativo de §6.5 (ya marcados alta-incertidumbre). n=1-2 (Marruecos, Ghana, Arabia, Suecia, Uzbekistán) = baja confianza.
+**Sin datos bajo DT actual (2):** Chequia (Koubek dic-25), Túnez (Lamouchi ene-26) — DTs muy recientes con amistosos sin cobertura de stats. Usar solo el read cualitativo de §6.5 (ya marcados alta-incertidumbre). n=1-2 (Marruecos, Ghana, Arabia, Suecia, Uzbekistán) = baja confianza.
+
+**Verificación de DT (2026-05-31):** los 48 DTs revalidados contra quién anunció el plantel de 26 en mayo-26. **Marruecos era el único error** (Regragui→Ouahbi, corregido). Ajuste de fecha: Irak/Arnold desde may-25 (no ene-26) → recuperó datos. Todos los demás 47 confirmados.
 
 ---
 
