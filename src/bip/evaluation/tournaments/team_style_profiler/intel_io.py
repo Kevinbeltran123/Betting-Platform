@@ -200,6 +200,13 @@ def fetch_live_injuries(team: str, today: date) -> tuple[list[Injury] | None, st
         return None, f"{team}: fallo Transfermarkt ({type(e).__name__}) — usando caché"
 
 
+# Display/corpus name -> the name API-Football resolves a national team by.
+# Verified against /teams?name= (2026-05-31). Add more as mismatches surface.
+_API_FOOTBALL_TEAM_ALIAS = {
+    "United States": "USA",
+}
+
+
 async def _confirmed_lineup_async(home: str, away: str, season: int):
     from bip.sports.football.client import ApiFootballClient
     key = _api_football_key()
@@ -207,7 +214,8 @@ async def _confirmed_lineup_async(home: str, away: str, season: int):
         return None
     async with ApiFootballClient(api_key=key) as c:
         async def team_id(name: str):
-            j = (await c._client.get("/teams", params={"name": name})).json().get("response", [])
+            q = _API_FOOTBALL_TEAM_ALIAS.get(name, name)
+            j = (await c._client.get("/teams", params={"name": q})).json().get("response", [])
             nat = [t for t in j if t.get("team", {}).get("national")]
             pick = nat[0] if nat else (j[0] if j else None)
             return pick["team"]["id"] if pick else None
@@ -216,11 +224,14 @@ async def _confirmed_lineup_async(home: str, away: str, season: int):
         if not hid or not aid:
             return None
         fx = (await c._client.get("/fixtures", params={"team": hid, "season": season})).json().get("response", [])
-        fid = next((f["fixture"]["id"] for f in fx
-                    if {f["teams"]["home"]["id"], f["teams"]["away"]["id"]} == {hid, aid}), None)
-        if fid is None:
+        match = next((f for f in fx
+                      if {f["teams"]["home"]["id"], f["teams"]["away"]["id"]} == {hid, aid}), None)
+        if match is None:
             return None
-        ln = (await c._client.get("/fixtures/lineups", params={"fixture": fid})).json().get("response", [])
+        # Referee comes free on the same fixture object (None until assigned).
+        referee = (match["fixture"].get("referee") or "").strip() or None
+        ln = (await c._client.get(
+            "/fixtures/lineups", params={"fixture": match["fixture"]["id"]})).json().get("response", [])
         home_xi, away_xi = [], []
         for t in ln:
             names = [p["player"]["name"] for p in (t.get("startXI") or []) if p.get("player")]
@@ -228,12 +239,17 @@ async def _confirmed_lineup_async(home: str, away: str, season: int):
                 home_xi = names
             elif t["team"]["id"] == aid:
                 away_xi = names
-        return (home_xi, away_xi) if (home_xi or away_xi) else None
+        if not (home_xi or away_xi or referee):
+            return None
+        return (home_xi, away_xi, referee)
 
 
-def fetch_confirmed_lineup(home: str, away: str, season: int) -> tuple[list[str], list[str]] | None:
-    """Confirmed XI from API-Football (lights up ~40' pre-KO / for played fixtures).
-    Returns (home_starters, away_starters) or None (pre-scheduled / no data / error)."""
+def fetch_confirmed_lineup(
+    home: str, away: str, season: int
+) -> tuple[list[str], list[str], str | None] | None:
+    """Confirmed XI + referee from API-Football (lights up ~40' pre-KO / for played
+    fixtures). Returns (home_starters, away_starters, referee_name) or None
+    (pre-scheduled / no data / error). Referee is None until FIFA assigns one."""
     try:
         return asyncio.run(_confirmed_lineup_async(home, away, season))
     except Exception:
@@ -270,7 +286,9 @@ def build_match_intel(
         hi, ai = load_cached_injuries(hs), load_cached_injuries(as_)
 
     lineup = fetch_confirmed_lineup(home, away, fixture_date.year)
-    home_xi, away_xi = lineup if lineup else (None, None)
+    home_xi, away_xi, ref_from_api = lineup if lineup else (None, None, None)
+    # Explicit --referee wins; else use the one API-Football assigned (if any).
+    referee = referee_by_name(referee_name or ref_from_api)
 
     intel = assemble_intel(
         dossier,
@@ -279,7 +297,7 @@ def build_match_intel(
         home_advanced=load_advanced(hs), away_advanced=load_advanced(as_),
         home_team_adv=load_team_advanced(hs, home), away_team_adv=load_team_advanced(as_, away),
         home_injuries=hi, away_injuries=ai,
-        referee=referee_by_name(referee_name),
+        referee=referee,
         home_lineup=home_xi, away_lineup=away_xi,
         home_press_resistance=load_press_resistance(home),
         away_press_resistance=load_press_resistance(away))
