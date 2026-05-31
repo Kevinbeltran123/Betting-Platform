@@ -384,6 +384,76 @@ SELECCIÓN — DT
 
 - **Nueva Zelanda — Bazeley (4-3-3/4-2-3-1).** **Directo/físico**; vertical a Wood, **uso intenso de BANDAS → centros**, caza córners/FK; amplitud genuina de banda (Cacace, wingers a Wood). Bloque medio compacto, presión selectiva. **DEFENSA-primero con ataque aéreo élite:** "juego aéreo de los más formidables del torneo"; gana por estructura+ABP, no posesión. Personal: **Chris Wood** (capitán, Forest, foco aéreo), Cacace, Stamenic. **Mercado: amenaza aérea/ABP fuerte + volumen de centros → córner-friendly; Under/low-scoring salvo que Wood convierta; BTTS por matchup.** *Directo, físico, de ABP-y-Wood, gana en el aire.* ⚠️ MEDIA — splits ABP/xG escasos (calidad OFC).
 
+### 6.6 — Corroboración estadística (API-Football, SOLO partidos del DT actual)
+
+> Promedios sobre los últimos ≤20 partidos **con el entrenador actual** (filtrado por fecha de
+> nombramiento). Fuente: API-Football `/fixtures/statistics` (xG no disponible en internacionales).
+> Genera `data/cache/tsp/api_team_stats_by_coach.json` vía `scripts/spike/tsp/41_team_stats_by_coach.py`.
+> **Pos%** = posesión · **Rem F/C** = remates a favor/en contra · **Córn F/C** = córners a favor/en
+> contra · **GF/GA** = goles/partido a favor/en contra. ✓ = el dato confirma §6.5; ⚠ = lo matiza.
+> Muestra chica (n<5) = baja confianza.
+
+| Equipo (DT · n) | Pos% | Pase% | Rem F/C | Córn F/C | Faltas | GF/GA | Lectura |
+|---|---|---|---|---|---|---|---|
+| **UEFA** |||||||| 
+| Inglaterra (Tuchel · 12) | **70.3** | 91.7 | 17.4/**5.9** | **7.6/1.9** | — | 2.2/**0.4** | ✓✓ posesión-dominio + defensa élite + dominio territorial |
+| Alemania (Nagelsmann · 20) | 64.5 | 89.3 | 17.3/8.5 | 6.2/3.8 | — | **2.5**/1.0 | ✓ ataca mucho, defensa ok |
+| Portugal (Martínez · 20) | 65.0 | 90.8 | 18.2/9.2 | 6.5/3.3 | — | 2.2/0.8 | ✓ posesión-overload, equilibrado |
+| Países Bajos (Koeman · 20) | 59.5 | 88.5 | 14.9/9.2 | 5.9/3.3 | — | **2.5**/0.9 | ⚠ marca más de lo que el read "portería-a-cero" sugiere |
+| Bélgica (Garcia · 12) | 64.1 | 87.2 | 19.2/7.2 | **8.8**/2.8 | — | **3.2**/1.1 | ✓ ataque front-loaded; defensa no tan sangrante en muestra |
+| Croacia (Dalić · 20) | 58.2 | 88.7 | 17.4/9.8 | 6.2/4.2 | — | 2.1/1.0 | ✓ control, vs grupo flojo golea |
+| Suiza (Yakin · 20) | 58.3 | 87.8 | 12.2/9.8 | 4.9/4.1 | — | 2.0/1.2 | ✓ low-event, ataque funcional |
+| Austria (Rangnick · 20) | 62.6 | 84.7 | 14.9/8.6 | 4.7/3.1 | — | 2.4/0.8 | ✓ intenso, output alto |
+| Noruega (Solbakken · 20) | 55.4 | 87.7 | 15.8/8.7 | 5.3/2.5 | — | **3.0**/0.9 | ✓ finalizadores élite (3 GF), defiende-para-atacar |
+| Escocia (Clarke · 20) | **50.0** | 83.8 | 10.8/**14.4** | 4.5/**5.4** | — | 1.5/1.2 | ✓ dominado, absorbe y contra; bajo de gol |
+| Suecia (Potter · **4**) | 41.8 | 80.5 | 9.0/12.8 | 3.5/7.2 | — | 2.0/2.0 | ⚠ n=4; superados pero los 9 marcan (BTTS) |
+| Turquía (Montella · 18) | 55.8 | — | 15.4/11.1 | 5.7/— | — | 2.0/1.2 | ✓ atacante Y permeable (BTTS+Over) |
+| Bosnia (Barbarez · 17) | 43.9 | — | 10.8/**13.6** | 3.1/— | — | 1.2/1.6 | ✓ no-posesión, superados; modesto |
+| Chequia (Koubek) | — | — | — | — | — | — | *sin partidos con stats bajo DT nuevo — solo cualitativo* |
+| **CONMEBOL** |||||||| 
+| Uruguay (Bielsa · 20) | 54.6 | 82.5 | **9.8/12.1** | 4.7/4.3 | — | **0.8/0.8** | ✓✓ crisis confirmada: ataque roto, superados en remates |
+| Colombia (Lorenzo · 20) | 56.2 | 85.4 | 12.7/9.9 | 4.2/3.5 | — | 1.9/1.1 | ✓ equilibrado con pólvora |
+| Ecuador (Beccacece · 19) | 55.2 | 84.6 | 11.1/9.1 | 4.2/3.6 | — | **0.9/0.4** | ✓✓ defensa élite (0.4 GA), ataque romo (0.9 GF) |
+| Paraguay (Alfaro · 17) | **36.6** | **71.6** | 9.9/9.2 | 3.9/4.4 | — | 1.1/0.9 | ✓✓ el más directo (36% pos), low-scoring |
+| **CONCACAF** |||||||| 
+| México (Aguirre · 20) | 56.9 | 86.2 | 11.8/7.5 | 4.5/3.1 | — | 1.2/0.7 | ✓ controla, pero bajo de gol vs su fama |
+| EE.UU. (Pochettino · 20) | 58.0 | 87.0 | 11.1/8.8 | 4.4/4.5 | — | 1.9/**1.4** | ✓ posesión pero permeable (1.4 GA) |
+| Canadá (Marsch · 20) | 50.5 | 79.5 | 11.6/6.5 | 5.5/2.6 | — | 1.6/0.7 | ✓ no-posesión, defiende bien, bajo de gol abierto |
+| Panamá (Christiansen · 20) | 53.5 | 82.3 | 12.3/10.6 | 4.2/4.0 | — | 1.7/1.1 | ✓ equilibrado, sólido |
+| Curaçao (Advocaat · 20) | 55.2 | 79.2 | 13.8/10.7 | 4.4/3.6 | — | 2.3/0.8 | ✓ tacaño atrás, pica de contra |
+| Haití (Migné · 19) | 57.2 | 83.3 | 16.3/9.6 | 5.4/2.8 | — | **2.7**/1.2 | ⚠ más vistoso/goleador de lo que "leaky" sugiere (vs OFC/CONCACAF menores) |
+| **CAF** |||||||| 
+| Marruecos (Regragui · 19) | **62.4** | 86.7 | 15.1/**4.8** | **6.8/1.6** | — | 1.8/**0.3** | ✓✓ posesión + dominio territorial + defensa élite |
+| Senegal (Thiaw · 13) | 58.7 | 87.6 | 14.0/7.5 | 5.8/4.4 | — | 2.3/0.6 | ✓ posesión-capaz, defensa fuerte |
+| Egipto (H. Hassan · 12) | **40.8** | 80.9 | 10.4/**13.4** | 3.0/5.7 | — | 1.4/**0.4** | ✓✓ directo/no-posesión, bloque absorbe (0.4 GA pese a superado) |
+| Argelia (Petković · 11) | 50.1 | 85.1 | 9.9/9.5 | 5.1/4.1 | — | 1.8/1.0 | ⚠ menos dominante de lo que "atacante" sugiere |
+| Costa de Marfil (Faé · 16) | 54.9 | 87.8 | 15.5/9.0 | 6.1/3.5 | — | 2.0/0.8 | ✓ controla, defensa sólida |
+| Ghana (Queiroz · **1**) | 41.0 | 88.0 | 7.0/16.0 | 3.0/9.0 | — | **0.0/2.0** | ⚠ n=1; superado total (datos mínimos) |
+| Cabo Verde (Bubista · 11) | 50.8 | 79.6 | 10.4/**14.4** | 3.8/4.8 | — | 1.6/1.3 | ✓ underdog, superado pero pica |
+| Sudáfrica (Broos · 19) | 60.1 | 84.9 | 13.5/7.0 | 4.9/2.9 | — | 1.6/0.9 | ✓✓ posesión alta + problema de gol (1.6 GF) |
+| RD Congo (Desabre · 16) | **45.7** | 79.3 | 13.6/8.2 | 4.8/3.5 | — | 1.1/0.6 | ✓ no-posesión, sólido atrás |
+| Túnez (Lamouchi) | — | — | — | — | — | — | *sin partidos con stats bajo DT nuevo — solo cualitativo* |
+| **AFC** |||||||| 
+| Japón (Moriyasu · 20) | 57.9 | 86.3 | 12.6/6.8 | 5.2/2.0 | — | **2.4**/0.5 | ✓ ataca, domina, defensa élite (0.5 GA) |
+| Corea Sur (Hong · 19) | 63.3 | 87.2 | 12.0/8.6 | 5.7/2.7 | — | 1.8/1.0 | ✓ posesión, pero defensa permeable a su talento |
+| Irán (Ghalenoei · 20) | 54.9 | 80.2 | 15.6/9.1 | 4.5/3.0 | — | 2.0/0.9 | ⚠ atacan más de lo que "defensa-primero" sugiere |
+| Australia (Popovic · 17) | **45.2** | 80.6 | 8.6/10.1 | 3.5/4.6 | — | 1.3/0.9 | ✓ no-posesión, defensivo, bajo de gol |
+| Arabia Saudí (Donis · **1**) | 58.0 | 83.0 | 12.0/11.0 | 2.0/2.0 | — | 1.0/2.0 | ⚠ n=1; inestable (datos mínimos) |
+| Catar (Lopetegui · 7) | 51.4 | 84.3 | **6.7/11.9** | 3.1/4.6 | — | **0.7/1.6** | ⚠⚠ **MATIZA: bajo Lopetegui los SUPERAN y no marcan** — el "mejor atacando" no se sostiene en su periodo |
+| Uzbekistán (Cannavaro · **2**) | 43.0 | 77.0 | 7.0/13.0 | 3.0/4.0 | — | 1.5/1.0 | ⚠ n=2; bloque bajo confirmado |
+| Jordania (Sellami · 15) | **35.7** | 77.0 | 12.1/10.6 | 4.6/4.6 | — | 1.5/0.9 | ✓✓ el menos posesión (36%), reactivo/contra |
+| Irak (Arnold) | — | — | — | — | — | — | *sin partidos con stats bajo DT nuevo — solo cualitativo* |
+| **OFC** |||||||| 
+| Nueva Zelanda (Bazeley · 15) | **46.1** | 80.8 | 9.0/**15.3** | 4.4/5.4 | — | **0.6/1.6** | ✓✓ defensa-primero, superado por técnicos, muy bajo de gol |
+
+**Lecturas que el dato MATIZA (importante):**
+- **Catar:** el read web ("mejor atacando") es de antes; **bajo Lopetegui (n=7) los superan 6.7-11.9 en remates y marcan 0.7/p** → NO atacan en su periodo. El filtro por DT actual lo destapa.
+- **Irán / Argelia:** "defensa-primero" / "atacante" matizados — Irán remata más (15.6) de lo que su etiqueta sugiere; Argelia menos dominante (9.9 remates).
+- **Países Bajos / Haití:** marcan más de lo que su read sugiere (NED 2.5 GF; Haití 2.7 vs menores).
+- **Confirmaciones fuertes (✓✓):** Inglaterra, Marruecos, Senegal, Egipto, Ecuador, Paraguay, Jordania, Japón, Sudáfrica, Uruguay (crisis), Nueva Zelanda.
+
+**Sin datos bajo DT actual (3):** Chequia (Koubek dic-25), Túnez (Lamouchi ene-26), Irak (Arnold) — DTs muy recientes con amistosos sin cobertura de stats. Usar solo el read cualitativo de §6.5 (ya marcados alta-incertidumbre). n=1-2 (Ghana, Arabia, Suecia, Uzbekistán) = baja confianza.
+
 ---
 
 ## 7. Fuentes

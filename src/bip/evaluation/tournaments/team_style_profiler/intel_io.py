@@ -209,6 +209,8 @@ _API_FOOTBALL_TEAM_ALIAS = {
     "Côte d'Ivoire": "Ivory Coast",
     "Cape Verde": "Cape Verde Islands",
     "DR Congo": "Congo DR",
+    "Turkey": "Türkiye",
+    "Bosnia and Herzegovina": "Bosnia & Herzegovina",
 }
 
 
