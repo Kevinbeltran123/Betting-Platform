@@ -36,6 +36,7 @@ from bip.evaluation.tournaments.team_style_profiler.player_props import (
 from bip.evaluation.tournaments.team_style_profiler.referee_tendencies import (
     RefereeTendency,
     apply_referee_to_board,
+    referee_match_note,
 )
 from bip.evaluation.tournaments.team_style_profiler.set_piece_intel import (
     SetPieceIntel,
@@ -418,6 +419,8 @@ def assemble_intel(
 
     if referee is None:
         notes.append("Árbitro no asignado (FIFA designa por ronda) — board sin tilt de tarjetas")
+    else:
+        notes.append(referee_match_note(referee))
 
     duels = duel_matchups(wl, ctx.home_team, ctx.away_team,
                           home_props, away_props, home_advanced, away_advanced)
