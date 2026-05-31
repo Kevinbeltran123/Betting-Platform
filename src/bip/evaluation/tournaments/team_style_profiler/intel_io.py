@@ -201,9 +201,14 @@ def fetch_live_injuries(team: str, today: date) -> tuple[list[Injury] | None, st
 
 
 # Display/corpus name -> the name API-Football resolves a national team by.
-# Verified against /teams?name= (2026-05-31). Add more as mismatches surface.
+# Verified live against /teams?name= (2026-05-31): without these the search
+# returns nothing → no fixture → no XI/referee. (Mexico/Panama/Jordan resolve
+# fine via the j[0] fallback despite API's national:false quirk — not aliased.)
 _API_FOOTBALL_TEAM_ALIAS = {
     "United States": "USA",
+    "Côte d'Ivoire": "Ivory Coast",
+    "Cape Verde": "Cape Verde Islands",
+    "DR Congo": "Congo DR",
 }
 
 
