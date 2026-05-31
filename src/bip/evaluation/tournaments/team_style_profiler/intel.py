@@ -33,6 +33,10 @@ from bip.evaluation.tournaments.team_style_profiler.player_props import (
     PropCandidate,
     prop_board,
 )
+from bip.evaluation.tournaments.team_style_profiler.press_resistance import (
+    PressResistance,
+    press_resistance_note,
+)
 from bip.evaluation.tournaments.team_style_profiler.referee_tendencies import (
     RefereeTendency,
     apply_referee_to_board,
@@ -173,6 +177,7 @@ class MatchIntel:
     duels: list[DuelMatchup] = field(default_factory=list)  # threat × weak-link cross
     game_script: GameScript | None = None                   # projected game-state trajectory
     regression_notes: list[str] = field(default_factory=list)  # finishing mean-reversion
+    press_notes: list[str] = field(default_factory=list)       # press × build-up resistance
 
 
 def _game_state_label(p: AdvancedTeamProfile) -> str:
@@ -389,6 +394,8 @@ def assemble_intel(
     away_props_recent: list[PlayerPropProfile] | None = None,
     home_lineup: list[str] | None = None,
     away_lineup: list[str] | None = None,
+    home_press_resistance: PressResistance | None = None,
+    away_press_resistance: PressResistance | None = None,
 ) -> MatchIntel:
     ctx = dossier.context
     home_props = home_props or []
@@ -430,6 +437,16 @@ def assemble_intel(
                      ctx.home_tid, ctx.away_tid)
     regression = [n for tid in (ctx.home_tid, ctx.away_tid) if tid is not None
                   for n in (finishing_regression(tid),) if n is not None]
+    # Press × build-up: home presses → away builds, and vice-versa.
+    press_notes: list[str] = []
+    if ctx.home_tid is not None:
+        n = press_resistance_note(ctx.home_tid.press_intensity, away_press_resistance)
+        if n is not None:
+            press_notes.append(n)
+    if ctx.away_tid is not None:
+        n = press_resistance_note(ctx.away_tid.press_intensity, home_press_resistance)
+        if n is not None:
+            press_notes.append(n)
 
     home_sp = set_piece_for(ctx.home_team)
     away_sp = set_piece_for(ctx.away_team)
@@ -445,6 +462,7 @@ def assemble_intel(
         home_recent_board=hrb, away_recent_board=arb,
         home_lineup=home_lineup or [], away_lineup=away_lineup or [],
         duels=duels, game_script=gs, regression_notes=regression,
+        press_notes=press_notes,
     )
 
 
@@ -479,14 +497,16 @@ def render_intel_markdown(intel: MatchIntel) -> str:
     head += ["", "---", ""]
 
     out = head + [render_markdown(intel.dossier), "", "---", ""]
-    if intel.game_script is not None or intel.regression_notes:
-        out += ["## §3b. Guion de partido + regresión (leans de goles)", ""]
+    if intel.game_script is not None or intel.regression_notes or intel.press_notes:
+        out += ["## §3b. Guion de partido + regresión + presión (leans de goles)", ""]
         if intel.game_script is not None:
             gs = intel.game_script
             out.append(f"- {gs.read}")
             for ln in gs.leans:
                 out.append(f"  - {ln}")
         for n in intel.regression_notes:
+            out.append(f"- {n}")
+        for n in intel.press_notes:
             out.append(f"- {n}")
         out += ["", "---", ""]
     out += ["## §4. Disponibilidad (Transfermarkt)", ""]

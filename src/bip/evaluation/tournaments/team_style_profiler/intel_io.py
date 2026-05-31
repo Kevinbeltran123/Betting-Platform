@@ -22,6 +22,7 @@ from bip.evaluation.tournaments.team_style_profiler.match_dossier import (
 )
 from bip.evaluation.tournaments.team_style_profiler.player_advanced import PlayerAdvancedProfile
 from bip.evaluation.tournaments.team_style_profiler.player_props import PlayerPropProfile
+from bip.evaluation.tournaments.team_style_profiler.press_resistance import PressResistance
 from bip.evaluation.tournaments.team_style_profiler.referee_tendencies import RefereeTendency
 from bip.evaluation.tournaments.team_style_profiler.statsbomb_advanced import TeamStatsBombProfile
 from bip.evaluation.tournaments.team_style_profiler.tactical_identity import tactical_identity_for
@@ -151,6 +152,24 @@ def referee_by_name(name: str | None) -> RefereeTendency | None:
         penalties_per_match=_ds(r["penalties_per_match"]))
 
 
+def load_press_resistance(team_name: str) -> PressResistance | None:
+    """Look up a team's press-resistance profile (fuzzy name match)."""
+    f = CACHE / "press_resistance.json"
+    if not f.exists():
+        return None
+    table = json.loads(f.read_text())
+    key = next((k for k in table
+                if team_name.lower() in k.lower() or k.lower() in team_name.lower()), None)
+    if key is None:
+        return None
+    r = table[key]
+    return PressResistance(
+        team=key, n_matches=r["n_matches"], confidence=r["confidence"],
+        passes_under_pressure_per_match=_ds(r["passes_up_per_match"]),
+        completion_under_pressure=_ds(r["completion_under_pressure"]),
+        resistance=r["resistance"])
+
+
 def fetch_live_injuries(team: str, today: date) -> tuple[list[Injury] | None, str | None]:
     """Live Transfermarkt pull. Returns (injuries, None) or (None, error-note)
     so the caller can fall back to cached availability without losing the team."""
@@ -261,6 +280,8 @@ def build_match_intel(
         home_team_adv=load_team_advanced(hs, home), away_team_adv=load_team_advanced(as_, away),
         home_injuries=hi, away_injuries=ai,
         referee=referee_by_name(referee_name),
-        home_lineup=home_xi, away_lineup=away_xi)
+        home_lineup=home_xi, away_lineup=away_xi,
+        home_press_resistance=load_press_resistance(home),
+        away_press_resistance=load_press_resistance(away))
     intel.provenance_notes.extend(n for n in extra_notes if n)
     return intel

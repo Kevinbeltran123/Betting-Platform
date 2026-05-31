@@ -283,3 +283,45 @@ def test_game_script_none_degrades_cleanly_in_assemble():
     # default dossier has no TSV → script is None, render must not crash
     intel = assemble_intel(_dossier())
     assert intel.game_script is None
+
+
+# ── Press-resistance wiring (Fase 5) ──
+
+
+def _tid(name, press):
+    from bip.evaluation.tournaments.team_style_profiler.tactical_identity import (
+        TacticalIdentity,
+        synthesize_archetype,
+    )
+    return TacticalIdentity(
+        team_name=name, n_matches=12, confidence="green", press_intensity=press,
+        set_piece_reliance="mixed", finishing_profile="neutral", ppda=12.0,
+        set_piece_xg_share=0.15, conversion_rate=1.0,
+        archetype=synthesize_archetype(press, "mixed", "neutral"), anchor=None)
+
+
+def _press(team, rate, res):
+    from bip.evaluation.tournaments.team_style_profiler.press_resistance import PressResistance
+    return PressResistance(
+        team=team, n_matches=10, confidence="green",
+        passes_under_pressure_per_match=_ds(70.0),
+        completion_under_pressure=_ds(rate), resistance=res)
+
+
+def _dossier_with_tids(home, away, home_press, away_press):
+    ctx = DossierContext(
+        home_team=home, away_team=away, home_tsv=None, away_tsv=None,
+        tournament_slug="world_cup_2026", fixture_date=date(2026, 6, 14),
+        home_tid=_tid(home, home_press), away_tid=_tid(away, away_press))
+    return generate_dossier(ctx)
+
+
+def test_press_note_high_press_vs_fragile_builder():
+    d = _dossier_with_tids("Spain", "Malta", "high_press", "low_block")
+    intel = assemble_intel(d, away_press_resistance=_press("Malta", 0.60, "press-fragile"))
+    assert intel.press_notes and any("frágil" in n and "Malta" in n for n in intel.press_notes)
+
+
+def test_press_note_absent_without_resistance_data():
+    d = _dossier_with_tids("Spain", "Malta", "high_press", "low_block")
+    assert assemble_intel(d).press_notes == []   # no data → no note, no crash
