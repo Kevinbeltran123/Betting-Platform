@@ -234,3 +234,52 @@ def test_duel_not_fabricated_without_threat():
         home_props=[_prof(1, "NoFouls", fouls_drawn=0.0)], away_props=[],
         home_advanced=None, away_advanced=None)
     assert duels == []
+
+
+# ── Game script (projected game-state from the strength gap) ──
+
+
+def _tsv(gf: float, ga: float, n: int = 12):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        goals_for_per_match=DistributionStat(mean=gf, ci_low=gf, ci_high=gf, n=n),
+        goals_against_per_match=DistributionStat(mean=ga, ci_low=ga, ci_high=ga, n=n))
+
+
+def test_game_script_calls_favorite_on_clear_gap():
+    from bip.evaluation.tournaments.team_style_profiler.intel import game_script
+    gs = game_script("Spain", "Malta", _tsv(2.2, 0.6), _tsv(0.7, 1.8), None, None)
+    assert gs is not None and gs.favorite == "Spain" and gs.gap > 0
+    assert any("córners" in ln.lower() for ln in gs.leans)
+
+
+def test_game_script_even_when_gap_small():
+    from bip.evaluation.tournaments.team_style_profiler.intel import game_script
+    gs = game_script("A", "B", _tsv(1.3, 1.3), _tsv(1.3, 1.3), None, None)
+    assert gs is not None and gs.favorite is None
+    assert "primer gol" in gs.read
+
+
+def test_game_script_none_without_tsv():
+    from bip.evaluation.tournaments.team_style_profiler.intel import game_script
+    assert game_script("A", "B", None, _tsv(1.3, 1.3), None, None) is None
+
+
+def test_game_script_none_when_tsv_unusable():
+    from bip.evaluation.tournaments.team_style_profiler.intel import game_script
+    assert game_script("A", "B", _tsv(2.0, 0.5, n=5), _tsv(0.7, 1.8, n=5), None, None) is None
+
+
+def test_game_script_low_block_underdog_adds_under_lean():
+    from types import SimpleNamespace
+
+    from bip.evaluation.tournaments.team_style_profiler.intel import game_script
+    dog_tid = SimpleNamespace(press_intensity="low_block")
+    gs = game_script("Spain", "Malta", _tsv(2.2, 0.6), _tsv(0.7, 1.8), None, dog_tid)
+    assert any("bloque bajo" in ln for ln in gs.leans)
+
+
+def test_game_script_none_degrades_cleanly_in_assemble():
+    # default dossier has no TSV → script is None, render must not crash
+    intel = assemble_intel(_dossier())
+    assert intel.game_script is None

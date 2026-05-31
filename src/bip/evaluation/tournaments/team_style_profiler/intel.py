@@ -41,6 +41,10 @@ from bip.evaluation.tournaments.team_style_profiler.set_piece_intel import (
     SetPieceIntel,
     set_piece_for,
 )
+from bip.evaluation.tournaments.team_style_profiler.tactical_identity import (
+    TacticalIdentity,
+)
+from bip.evaluation.tournaments.team_style_profiler.tsv_schema import TeamStyleVector
 
 
 # ── Conservative cross-source name matching (the "lose nothing" crux) ──
@@ -132,6 +136,20 @@ class AdvancedShape:
 
 
 @dataclass(frozen=True)
+class GameScript:
+    """Projected pre-match game-state trajectory from the strength gap.
+
+    The empirically-grounded corners signal: the team that ends up CHASING wins
+    corners. Pre-match we only project who is *likely* to chase; the live engine
+    confirms or flips it (an early goal by the underdog inverts the script)."""
+
+    favorite: str | None       # None when the gap is too small to call
+    gap: float                 # λ_home − λ_away (home perspective, from TSV goals)
+    read: str
+    leans: list[str]
+
+
+@dataclass(frozen=True)
 class MatchIntel:
     dossier: MatchDossier                       # existing picks + planteamiento + patterns
     home_injuries: list[Injury]
@@ -151,6 +169,7 @@ class MatchIntel:
     home_lineup: list[str] = field(default_factory=list)  # confirmed XI (API-Football)
     away_lineup: list[str] = field(default_factory=list)
     duels: list[DuelMatchup] = field(default_factory=list)  # threat × weak-link cross
+    game_script: GameScript | None = None                   # projected game-state trajectory
 
 
 def _game_state_label(p: AdvancedTeamProfile) -> str:
@@ -253,6 +272,50 @@ def _blind_spots(
             spots.append(f"{name}: props por tasa de goles (ESPN, sin xG) — "
                          f"anytime-scorer menos fiable; usar como guía, no como cierre.")
     return spots
+
+
+_SCRIPT_GAP = 0.35   # λ gap (≈ a third of a goal) to call a clear favorite
+
+
+def game_script(
+    home_team: str, away_team: str,
+    home_tsv: TeamStyleVector | None, away_tsv: TeamStyleVector | None,
+    home_tid: TacticalIdentity | None, away_tid: TacticalIdentity | None,
+) -> GameScript | None:
+    """Project the expected game-state trajectory from the TSV strength gap.
+
+    λ via the same attack×defense mix as the predictor, computed inline from
+    the TSV goal rates (no BettableProfile plumbing). Honest: missing/unusable
+    TSV → None (no fabricated favorite).
+    """
+    if home_tsv is None or away_tsv is None:
+        return None
+    if not (home_tsv.goals_for_per_match.is_usable and away_tsv.goals_for_per_match.is_usable):
+        return None
+    lam_h = (home_tsv.goals_for_per_match.mean + away_tsv.goals_against_per_match.mean) / 2.0
+    lam_a = (away_tsv.goals_for_per_match.mean + home_tsv.goals_against_per_match.mean) / 2.0
+    gap = lam_h - lam_a
+    if abs(gap) < _SCRIPT_GAP:
+        return GameScript(
+            favorite=None, gap=gap,
+            read=("Sin favorito claro (λ ≈ parejo): el guion lo define el primer gol. "
+                  "EN VIVO el primer gol invierte el favorito de córners — el que quede "
+                  "por detrás dominará territorio y córners."),
+            leans=["Córners: esperar al primer gol (el que persigue gana córners)",
+                   "Sin lean de territorio pre-partido"])
+    fav, dog = (home_team, away_team) if gap > 0 else (away_team, home_team)
+    dog_tid = away_tid if gap > 0 else home_tid
+    dog_low = dog_tid is not None and dog_tid.press_intensity == "low_block"
+    leans = [f"Córners {fav} temprano (domina territorio)",
+             f"Córners {dog} si va por detrás (el que persigue gana córners)"]
+    if dog_low:
+        leans.append(f"{dog} en bloque bajo → Under si {fav} no concreta + córners {fav}")
+    return GameScript(
+        favorite=fav, gap=gap,
+        read=(f"{fav} favorito (λ {abs(gap):+.2f}). Guion probable: {fav} domina territorio, "
+              f"{dog} persigue → córners de {dog} tarde si va por detrás. "
+              f"Si {dog} marca primero (upset), {fav} vuelca → BTTS/Over."),
+        leans=leans)
 
 
 def duel_matchups(
@@ -358,6 +421,8 @@ def assemble_intel(
 
     duels = duel_matchups(wl, ctx.home_team, ctx.away_team,
                           home_props, away_props, home_advanced, away_advanced)
+    gs = game_script(ctx.home_team, ctx.away_team, ctx.home_tsv, ctx.away_tsv,
+                     ctx.home_tid, ctx.away_tid)
 
     home_sp = set_piece_for(ctx.home_team)
     away_sp = set_piece_for(ctx.away_team)
@@ -372,7 +437,7 @@ def assemble_intel(
         home_set_piece=home_sp, away_set_piece=away_sp,
         home_recent_board=hrb, away_recent_board=arb,
         home_lineup=home_lineup or [], away_lineup=away_lineup or [],
-        duels=duels,
+        duels=duels, game_script=gs,
     )
 
 
@@ -406,8 +471,15 @@ def render_intel_markdown(intel: MatchIntel) -> str:
         head.append(f"- [ ] {s}")
     head += ["", "---", ""]
 
-    out = head + [render_markdown(intel.dossier), "", "---", "",
-                  "## §4. Disponibilidad (Transfermarkt)", ""]
+    out = head + [render_markdown(intel.dossier), "", "---", ""]
+    if intel.game_script is not None:
+        gs = intel.game_script
+        out += ["## §3b. Guion de partido (proyección de game-state)", "",
+                f"- {gs.read}"]
+        for ln in gs.leans:
+            out.append(f"  - {ln}")
+        out += ["", "---", ""]
+    out += ["## §4. Disponibilidad (Transfermarkt)", ""]
     for name, inj in ((ctx.home_team, intel.home_injuries), (ctx.away_team, intel.away_injuries)):
         if inj:
             out.append(f"**{name} — {len(inj)} baja(s):**")
