@@ -104,6 +104,23 @@ class Creator:
 
 
 @dataclass(frozen=True)
+class DuelMatchup:
+    """An attacking threat crossed against the opponent's matching weak-link.
+
+    Evidence, not verdict: the analyst confirms the two players actually meet in
+    the same zone before betting it (positions are coarse, sides not enforced)."""
+
+    attacker_team: str
+    attacker: str
+    defender_team: str
+    defender: str
+    defender_position: str
+    kind: str            # "pace/1v1" | "aerial"
+    market: str          # "faltas/tarjetas/penal" | "cabeza/córner"
+    read: str
+
+
+@dataclass(frozen=True)
 class AdvancedShape:
     team: str
     field_tilt: float
@@ -133,6 +150,7 @@ class MatchIntel:
     away_recent_board: list[PropCandidate] = field(default_factory=list)
     home_lineup: list[str] = field(default_factory=list)  # confirmed XI (API-Football)
     away_lineup: list[str] = field(default_factory=list)
+    duels: list[DuelMatchup] = field(default_factory=list)  # threat × weak-link cross
 
 
 def _game_state_label(p: AdvancedTeamProfile) -> str:
@@ -237,6 +255,58 @@ def _blind_spots(
     return spots
 
 
+def duel_matchups(
+    weak: list[WeakLinkNote], home_team: str, away_team: str,
+    home_props: list[PlayerPropProfile], away_props: list[PlayerPropProfile],
+    home_advanced: list[PlayerAdvancedProfile] | None,
+    away_advanced: list[PlayerAdvancedProfile] | None,
+) -> list[DuelMatchup]:
+    """Cross each weak-link with the OPPOSING team's top threat of matching kind.
+
+      pace/1v1 weak-link → opponent's top foul-drawer  → faltas/tarjetas/penal
+      aerial   weak-link → opponent's top aerial winner → cabeza/córner
+
+    Honest: no suitable threat (green/yellow, rate > 0) → no duel (never fabricated).
+    """
+    # A weak-link owned by the home team is exploited by the away attackers.
+    pools = {
+        home_team: (away_props, away_advanced or []),
+        away_team: (home_props, home_advanced or []),
+    }
+    out: list[DuelMatchup] = []
+    for w in weak:
+        if w.team not in pools:
+            continue
+        att_props, att_adv = pools[w.team]
+        att_team = away_team if w.team == home_team else home_team
+        if w.kind == "pace/1v1":
+            cands = [p for p in att_props
+                     if p.confidence in ("green", "yellow") and p.fouls_drawn_per90.mean > 0]
+            if not cands:
+                continue
+            a = max(cands, key=lambda p: p.fouls_drawn_per90.mean)
+            out.append(DuelMatchup(
+                attacker_team=att_team, attacker=a.player_name,
+                defender_team=w.team, defender=w.player, defender_position=w.position,
+                kind=w.kind, market="faltas/tarjetas/penal",
+                read=(f"{a.player_name} provoca {a.fouls_drawn_per90.mean:.1f} faltas/90 "
+                      f"vs {w.player} ({w.reason}) → faltas/tarjetas sobre {w.player}, "
+                      f"penal si es en área. Confirmar que coinciden en zona.")))
+        elif w.kind == "aerial":
+            cands = [p for p in att_adv
+                     if p.confidence in ("green", "yellow") and p.aerial_won_per90.mean > 0]
+            if not cands:
+                continue
+            a = max(cands, key=lambda p: p.aerial_won_per90.mean)
+            out.append(DuelMatchup(
+                attacker_team=att_team, attacker=a.player_name,
+                defender_team=w.team, defender=w.player, defender_position=w.position,
+                kind=w.kind, market="cabeza/córner",
+                read=(f"{a.player_name} gana {a.aerial_won_per90.mean:.1f} aéreos/90 "
+                      f"vs {w.player} ({w.reason}) → remate de cabeza / córner.")))
+    return out
+
+
 def assemble_intel(
     dossier: MatchDossier,
     *,
@@ -286,6 +356,9 @@ def assemble_intel(
     if referee is None:
         notes.append("Árbitro no asignado (FIFA designa por ronda) — board sin tilt de tarjetas")
 
+    duels = duel_matchups(wl, ctx.home_team, ctx.away_team,
+                          home_props, away_props, home_advanced, away_advanced)
+
     home_sp = set_piece_for(ctx.home_team)
     away_sp = set_piece_for(ctx.away_team)
     blind = _blind_spots(ctx, home_props, away_props, wl, home_sp, away_sp,
@@ -299,6 +372,7 @@ def assemble_intel(
         home_set_piece=home_sp, away_set_piece=away_sp,
         home_recent_board=hrb, away_recent_board=arb,
         home_lineup=home_lineup or [], away_lineup=away_lineup or [],
+        duels=duels,
     )
 
 
@@ -382,6 +456,11 @@ def render_intel_markdown(intel: MatchIntel) -> str:
         out += ["", "### Creadores (SCA/90)"]
         for c in intel.creators:
             out.append(f"- {c.team}: **{c.player}** {c.sca_per90:.1f} SCA, {c.prog_passes_per90:.0f} prog-pass")
+    if intel.duels:
+        out += ["", "### Duelos clave (amenaza × eslabón débil — confirmar zona)"]
+        for d in intel.duels:
+            out.append(f"- [{d.market}] **{d.attacker}** ({d.attacker_team}) → "
+                       f"{d.defender} ({d.defender_team}, {d.defender_position}): {d.read}")
 
     if intel.home_set_piece or intel.away_set_piece:
         out += ["", "---", "", "## §6b. Balón parado (catálogo curado)", ""]

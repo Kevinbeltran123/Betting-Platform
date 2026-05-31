@@ -4,13 +4,19 @@ from __future__ import annotations
 from datetime import date
 
 from bip.evaluation.tournaments.team_style_profiler.intel import (
+    DuelMatchup,
     Injury,
+    WeakLinkNote,
     assemble_intel,
+    duel_matchups,
     match_name,
 )
 from bip.evaluation.tournaments.team_style_profiler.match_dossier import (
     DossierContext,
     generate_dossier,
+)
+from bip.evaluation.tournaments.team_style_profiler.player_advanced import (
+    PlayerAdvancedProfile,
 )
 from bip.evaluation.tournaments.team_style_profiler.player_props import PlayerPropProfile
 from bip.evaluation.tournaments.team_style_profiler.tsv_schema import DistributionStat
@@ -51,15 +57,26 @@ def _ds(m: float) -> DistributionStat:
 
 
 def _prof(pid: int, name: str, team: str = "Argentina", fouls: float = 2.5,
-          source: str = "statsbomb") -> PlayerPropProfile:
+          source: str = "statsbomb", fouls_drawn: float = 0.5) -> PlayerPropProfile:
     return PlayerPropProfile(
         player_id=pid, player_name=name, team=team, position="Center Midfield",
         n_matches=8, minutes_total=720.0, confidence="green",
         shots_per90=_ds(1.0), shots_on_target_per90=_ds(0.5), xg_per90=_ds(0.1),
-        goals_per90=_ds(0.1), fouls_committed_per90=_ds(fouls), fouls_drawn_per90=_ds(0.5),
+        goals_per90=_ds(0.1), fouls_committed_per90=_ds(fouls), fouls_drawn_per90=_ds(fouls_drawn),
         yellow_cards_per90=_ds(0.4),
         key_passes_per90=_ds(0.5), assists_per90=_ds(0.1), penalties_taken=0,
         source=source)
+
+
+def _adv(name: str, team: str, aerial_won: float = 0.0,
+         conf: str = "green") -> PlayerAdvancedProfile:
+    z = _ds(0.0)
+    return PlayerAdvancedProfile(
+        player_id=abs(hash(name)) % 10000, player_name=name, team=team,
+        position="Center Forward", n_matches=8, confidence=conf,
+        prog_passes_per90=z, prog_carries_per90=z, sca_per90=z, gca_per90=z,
+        tackles_per90=z, interceptions_per90=z, clearances_per90=z, recoveries_per90=z,
+        dribbled_past_per90=z, aerial_won_per90=_ds(aerial_won), aerial_lost_per90=z)
 
 
 def _dossier(home="Argentina", away="Mexico"):
@@ -174,3 +191,46 @@ def test_recent_form_board_built_and_labeled():
     from bip.evaluation.tournaments.team_style_profiler.intel import render_intel_markdown
     out = render_intel_markdown(intel)
     assert "Forma actual (ESPN" in out          # labeled separately, provenance kept
+
+
+# ── Duel matchups (threat × weak-link cross) ──
+
+
+def test_duel_pace_pairs_foul_drawer_with_beaten_defender():
+    # Mexico (away) has a defender beaten 1v1; Argentina (home) foul-drawer punishes it.
+    weak = [WeakLinkNote(team="Mexico", player="Slow CB", position="Right Back",
+                         reason="beaten 2.0×/90 1v1", kind="pace/1v1")]
+    duels = duel_matchups(
+        weak, "Argentina", "Mexico",
+        home_props=[_prof(1, "Messi", fouls_drawn=2.4)], away_props=[],
+        home_advanced=None, away_advanced=None)
+    assert len(duels) == 1
+    d = duels[0]
+    assert d.attacker == "Messi" and d.attacker_team == "Argentina"
+    assert d.defender == "Slow CB" and d.defender_team == "Mexico"
+    assert d.market == "faltas/tarjetas/penal"
+
+
+def test_duel_aerial_pairs_aerial_winner_with_weak_header():
+    # Argentina (home) weak in the air; Mexico (away) aerial threat punishes it.
+    weak = [WeakLinkNote(team="Argentina", player="Small CB", position="Center Back",
+                         reason="aerial win rate 30%", kind="aerial")]
+    duels = duel_matchups(
+        weak, "Argentina", "Mexico",
+        home_props=[], away_props=[],
+        home_advanced=None, away_advanced=[_adv("Big Striker", "Mexico", aerial_won=3.0)])
+    assert len(duels) == 1
+    d = duels[0]
+    assert d.attacker == "Big Striker" and d.attacker_team == "Mexico"
+    assert d.market == "cabeza/córner"
+
+
+def test_duel_not_fabricated_without_threat():
+    # weak-link present but no foul-drawer on the attacking side → no duel.
+    weak = [WeakLinkNote(team="Mexico", player="Slow CB", position="Right Back",
+                         reason="beaten 2.0×/90 1v1", kind="pace/1v1")]
+    duels = duel_matchups(
+        weak, "Argentina", "Mexico",
+        home_props=[_prof(1, "NoFouls", fouls_drawn=0.0)], away_props=[],
+        home_advanced=None, away_advanced=None)
+    assert duels == []
