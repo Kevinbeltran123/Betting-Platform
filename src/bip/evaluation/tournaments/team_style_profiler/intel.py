@@ -44,6 +44,7 @@ from bip.evaluation.tournaments.team_style_profiler.set_piece_intel import (
 )
 from bip.evaluation.tournaments.team_style_profiler.tactical_identity import (
     TacticalIdentity,
+    finishing_regression,
 )
 from bip.evaluation.tournaments.team_style_profiler.tsv_schema import TeamStyleVector
 
@@ -171,6 +172,7 @@ class MatchIntel:
     away_lineup: list[str] = field(default_factory=list)
     duels: list[DuelMatchup] = field(default_factory=list)  # threat × weak-link cross
     game_script: GameScript | None = None                   # projected game-state trajectory
+    regression_notes: list[str] = field(default_factory=list)  # finishing mean-reversion
 
 
 def _game_state_label(p: AdvancedTeamProfile) -> str:
@@ -426,6 +428,8 @@ def assemble_intel(
                           home_props, away_props, home_advanced, away_advanced)
     gs = game_script(ctx.home_team, ctx.away_team, ctx.home_tsv, ctx.away_tsv,
                      ctx.home_tid, ctx.away_tid)
+    regression = [n for tid in (ctx.home_tid, ctx.away_tid) if tid is not None
+                  for n in (finishing_regression(tid),) if n is not None]
 
     home_sp = set_piece_for(ctx.home_team)
     away_sp = set_piece_for(ctx.away_team)
@@ -440,7 +444,7 @@ def assemble_intel(
         home_set_piece=home_sp, away_set_piece=away_sp,
         home_recent_board=hrb, away_recent_board=arb,
         home_lineup=home_lineup or [], away_lineup=away_lineup or [],
-        duels=duels, game_script=gs,
+        duels=duels, game_script=gs, regression_notes=regression,
     )
 
 
@@ -475,12 +479,15 @@ def render_intel_markdown(intel: MatchIntel) -> str:
     head += ["", "---", ""]
 
     out = head + [render_markdown(intel.dossier), "", "---", ""]
-    if intel.game_script is not None:
-        gs = intel.game_script
-        out += ["## §3b. Guion de partido (proyección de game-state)", "",
-                f"- {gs.read}"]
-        for ln in gs.leans:
-            out.append(f"  - {ln}")
+    if intel.game_script is not None or intel.regression_notes:
+        out += ["## §3b. Guion de partido + regresión (leans de goles)", ""]
+        if intel.game_script is not None:
+            gs = intel.game_script
+            out.append(f"- {gs.read}")
+            for ln in gs.leans:
+                out.append(f"  - {ln}")
+        for n in intel.regression_notes:
+            out.append(f"- {n}")
         out += ["", "---", ""]
     out += ["## §4. Disponibilidad (Transfermarkt)", ""]
     for name, inj in ((ctx.home_team, intel.home_injuries), (ctx.away_team, intel.away_injuries)):

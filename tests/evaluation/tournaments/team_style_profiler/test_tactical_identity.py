@@ -17,6 +17,7 @@ from bip.evaluation.tournaments.team_style_profiler.tactical_identity import (
     _press_intensity,
     _set_piece_reliance,
     derive_tactical_identity,
+    finishing_regression,
     read_matchup,
     synthesize_archetype,
     tactical_identity_for,
@@ -320,3 +321,29 @@ def test_cross_confirmation_caution_adds_flag_no_boost():
     out = _apply_tactical_confirmation([pick], read)
     assert out[0].score == 0.50
     assert any("Planteamiento" in f for f in out[0].risk_flags)
+
+
+# ── Finishing mean-reversion (regression signal) ──
+
+
+def test_finishing_regression_fades_overperformer():
+    note = finishing_regression(_identity("Spain", conv=1.30, n=12))
+    assert note is not None and "sobre-rinde" in note and "FADE" in note
+
+
+def test_finishing_regression_backs_underperformer():
+    note = finishing_regression(_identity("France", conv=0.70, n=12))
+    assert note is not None and "infra-rinde" in note and "BACK" in note
+
+
+def test_finishing_regression_none_when_neutral():
+    assert finishing_regression(_identity("X", conv=1.0, n=12)) is None
+
+
+def test_finishing_regression_gated_by_low_confidence():
+    # overperforming but only 3 matches (red) → too noisy, no signal
+    assert finishing_regression(_identity("Y", conv=1.40, n=3)) is None
+
+
+def test_finishing_regression_none_without_conversion():
+    assert finishing_regression(_identity("Z", conv=None, n=12)) is None

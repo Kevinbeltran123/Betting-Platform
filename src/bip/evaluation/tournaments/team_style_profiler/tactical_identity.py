@@ -310,6 +310,28 @@ def _proactivity(press: PressIntensity) -> int:
     return {"high_press": 1, "balanced_press": 0, "low_block": -1}[press]
 
 
+def finishing_regression(tid: TacticalIdentity) -> str | None:
+    """Mean-reversion read on finishing (the sharp counter-intuition): a team
+    over/under-performing its xG tends to REGRESS, so a high conversion rate is a
+    FADE signal on its scoring continuation — not a 'they're clinical, back them'.
+
+    Only for measured identities with enough sample (green/yellow). Weak with
+    small samples → surfaced as a statistical signal, not a certainty.
+    """
+    conv = tid.conversion_rate
+    if conv is None or tid.confidence not in ("green", "yellow"):
+        return None
+    if conv >= CONV_CLINICAL_MIN:
+        return (f"{tid.team_name}: sobre-rinde su xG (conv {conv:.2f}) → regresión a la "
+                f"baja probable; FADE su continuación goleadora (team-total/AH). "
+                f"Señal estadística (muestra {tid.confidence}), no certeza.")
+    if conv <= CONV_WASTEFUL_MAX:
+        return (f"{tid.team_name}: infra-rinde su xG (conv {conv:.2f}) → regresión al "
+                f"alza probable; BACK su team-total (los goles deberían llegar). "
+                f"Señal estadística (muestra {tid.confidence}), no certeza.")
+    return None
+
+
 def read_matchup(home: TacticalIdentity, away: TacticalIdentity) -> MatchupRead:
     """Cross two planteamientos into a game-plan read with structured leans."""
     ph, pa = _proactivity(home.press_intensity), _proactivity(away.press_intensity)
