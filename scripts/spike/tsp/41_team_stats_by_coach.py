@@ -59,7 +59,7 @@ COACH_SINCE: dict[str, tuple[str, str]] = {
     "Panama": ("Christiansen", "2020-08-01"),
     "Curaçao": ("Advocaat", "2024-03-01"),
     "Haiti": ("Migné", "2024-01-01"),
-    "Morocco": ("Regragui", "2022-08-01"),
+    "Morocco": ("Ouahbi", "2026-03-05"),   # Regragui depuesto tras final AFCON 2025
     "Senegal": ("Pape Thiaw", "2024-12-13"),
     "Egypt": ("Hossam Hassan", "2024-07-01"),
     "Algeria": ("Petković", "2024-02-01"),

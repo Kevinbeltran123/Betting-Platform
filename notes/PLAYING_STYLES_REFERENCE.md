@@ -357,7 +357,7 @@ SELECCIÓN — DT
 
 #### CAF (10)
 
-- **Marruecos — Regragui (4-1-4-1→back-3 con balón).** **Posesión dominante (~61%)**, proactivo; amplitud **banda con toque invertido** (Brahim entra, **Hakimi** da amplitud/overload der). Bloque medio-bajo MUY estrecho. **Giro a MEJOR ATACANDO/control** (Regragui lo declaró) pese al ADN defensivo 2022. Personal: **Hakimi**, Amrabat (pantalla), Brahim, En-Nesyri/El Kaabi. **Mercado: domina posesión/córner; low-scoring vs bloques bajos (no los rompe); peligro de cut-back derecho.** *Juggernaut de control con motor lateral-invertido; se atasca vs bus.* ⚠️ XI fluido; espacio a la espalda de Hakimi (lo explotó Senegal).
+- **Marruecos — 🔴 Ouahbi (4-1-4-1, DT desde 5-mar-26).** ⚠️ **CAMBIO DE DT:** Regragui depuesto tras perder la final de AFCON 2025; **Ouahbi** (ganó el Mundial Sub-20 2025) intenta un **giro más ofensivo/posesión** vs el bloque pragmático de Regragui — pero **solo ~3 amistosos** (Ecuador 1-1, Paraguay 2-1, Burundi 5-0), **sin asentar**. ADN base heredado: bloque medio-bajo estrecho + amplitud banda-invertida (Brahim entra, **Hakimi** overload der). Personal: **Hakimi (⚠️muscular)**, Amrabat, Brahim, **El Kaabi/Rahimi (En-Nesyri FUERA)**. **Mercado: NO modelar sobre la era Regragui (régimen nuevo, alta varianza); el "dominio territorial" era de Regragui vs rivales débiles, no de Ouahbi. Cautela en totales/team-style.** *Régimen de 3 meses sin probar que intenta ser más atacante que el equipo que perdió la final de AFCON.* ⚠️🔴 ALTA — <3mo, 3 amistosos; legado WC22/AFCON NO predictivo (re-baselinar).
 - **Senegal — Pape Thiaw (4-3-3→back-3 build).** Build con back-3, **vertical al recuperar**; amplitud **por BANDAS** (aísla pace), 8s de tercer hombre; der preferida. Olas de presión alta tras pérdida; back-5 para cerrar. **Equilibrado, mejor en TRANSICIÓN que en posesión** (campeón AFCON 2025, portería a cero en final). Personal: **Mané, Jackson, I. Ndiaye, Gueye×2**, É. Mendy. **Mercado: peligro de ABP (artillería al 2º palo); pace → goles en abierto; cagey vs bloque bajo.** *Pace-y-potencia de transición con martillo de ABP.* ⚠️ Rol/minutos de Mané; pareja de CBs (Koulibaly ya no automático).
 - **Egipto — Hossam Hassan (4-2-3-1, vs rivales 3-4-1-2).** **Directo/transición, NO posesión**; "organización primero, suelta a Salah/Marmoush"; amplitud por **calidad individual (Salah der)**, FBs cautos. Bloque compacto estrecho, defiende largo. **DEFENDER, claro:** **7 porterías a cero, 2 goles encajados en 10.** Salah-dependiente. Personal: **Salah** (RW/ABP/penales), **Marmoush**. **Mercado: portería-a-cero/Under/low-conceded fuerte; cagey, BTTS-No; Salah anytime/ABP.** *Counterpunchers de bloque alrededor de soltar a Salah, gana 1-0.* ⚠️ 3-4-1-2 por rival; carga de Salah.
 - **Argelia — Petković (4-3-3→4-2-3-1/3-5-2).** **Atacante, combinativo**; amplitud **por BANDAS** (Mahrez der, Atal); Bennacer controla. Presión alta (pero la **superaron físicamente** Nigeria). **MEJOR ATACANDO:** ~50 goles/20, Amoura 10 en quali; defensa el lado más flojo. Personal: **Mahrez** (creador), **Amoura** (pace), Gouiri, Bennacer. **Mercado: abierto/Over vs menores; Mahrez/Amoura scorer; BTTS más plausible que Egipto/Túnez.** *Presión de bandas liderada por Mahrez + pace de Amoura; divertido pero "bullyable".* ⚠️ QF AFCON fuera (físico/aéreo); portero sin asentar.
@@ -423,7 +423,7 @@ SELECCIÓN — DT
 | Curaçao (Advocaat · 20) | 55.2 | 79.2 | 13.8/10.7 | 4.4/3.6 | — | 2.3/0.8 | ✓ tacaño atrás, pica de contra |
 | Haití (Migné · 19) | 57.2 | 83.3 | 16.3/9.6 | 5.4/2.8 | — | **2.7**/1.2 | ⚠ más vistoso/goleador de lo que "leaky" sugiere (vs OFC/CONCACAF menores) |
 | **CAF** |||||||| 
-| Marruecos (Regragui · 19) | **62.4** | 86.7 | 15.1/**4.8** | **6.8/1.6** | — | 1.8/**0.3** | ✓✓ posesión + dominio territorial + defensa élite |
+| Marruecos (Ouahbi · **2**) | 57.5 | 88.5 | 9.0/9.5 | 1.5/2.0 | — | 1.5/1.0 | ⚠ n=2 (solo Ouahbi): igualado/superado en remates — NO el dominio territorial de la era Regragui |
 | Senegal (Thiaw · 13) | 58.7 | 87.6 | 14.0/7.5 | 5.8/4.4 | — | 2.3/0.6 | ✓ posesión-capaz, defensa fuerte |
 | Egipto (H. Hassan · 12) | **40.8** | 80.9 | 10.4/**13.4** | 3.0/5.7 | — | 1.4/**0.4** | ✓✓ directo/no-posesión, bloque absorbe (0.4 GA pese a superado) |
 | Argelia (Petković · 11) | 50.1 | 85.1 | 9.9/9.5 | 5.1/4.1 | — | 1.8/1.0 | ⚠ menos dominante de lo que "atacante" sugiere |
@@ -447,12 +447,13 @@ SELECCIÓN — DT
 | Nueva Zelanda (Bazeley · 15) | **46.1** | 80.8 | 9.0/**15.3** | 4.4/5.4 | — | **0.6/1.6** | ✓✓ defensa-primero, superado por técnicos, muy bajo de gol |
 
 **Lecturas que el dato MATIZA (importante):**
+- **🔴 Marruecos (caso ejemplar del filtro por DT):** la web daba Regragui (62% pos, dominio territorial 6.8-1.6 córners, GA 0.3). Pero **Regragui fue depuesto (mar-26); el DT actual es Ouahbi**. Bajo Ouahbi (n=2): 57.5% pos, **los superan 9-9.5 en remates, córners 1.5-2.0** → NO es el juggernaut de la era anterior. Régimen de 3 meses, legado WC22/AFCON no predictivo. Sin el filtro por DT, el sistema habría modelado al equipo equivocado.
 - **Catar:** el read web ("mejor atacando") es de antes; **bajo Lopetegui (n=7) los superan 6.7-11.9 en remates y marcan 0.7/p** → NO atacan en su periodo. El filtro por DT actual lo destapa.
 - **Irán / Argelia:** "defensa-primero" / "atacante" matizados — Irán remata más (15.6) de lo que su etiqueta sugiere; Argelia menos dominante (9.9 remates).
 - **Países Bajos / Haití:** marcan más de lo que su read sugiere (NED 2.5 GF; Haití 2.7 vs menores).
-- **Confirmaciones fuertes (✓✓):** Inglaterra, Marruecos, Senegal, Egipto, Ecuador, Paraguay, Jordania, Japón, Sudáfrica, Uruguay (crisis), Nueva Zelanda.
+- **Confirmaciones fuertes (✓✓):** Inglaterra, Senegal, Egipto, Ecuador, Paraguay, Jordania, Japón, Sudáfrica, Uruguay (crisis), Nueva Zelanda.
 
-**Sin datos bajo DT actual (3):** Chequia (Koubek dic-25), Túnez (Lamouchi ene-26), Irak (Arnold) — DTs muy recientes con amistosos sin cobertura de stats. Usar solo el read cualitativo de §6.5 (ya marcados alta-incertidumbre). n=1-2 (Ghana, Arabia, Suecia, Uzbekistán) = baja confianza.
+**Sin datos bajo DT actual (3):** Chequia (Koubek dic-25), Túnez (Lamouchi ene-26), Irak (Arnold) — DTs muy recientes con amistosos sin cobertura de stats. Usar solo el read cualitativo de §6.5 (ya marcados alta-incertidumbre). n=1-2 (Marruecos, Ghana, Arabia, Suecia, Uzbekistán) = baja confianza.
 
 ---
 
