@@ -86,6 +86,7 @@ def main() -> int:
                 "xg_per90": round(p.xg_per90.mean, 3),
                 "goals_per90": round(p.goals_per90.mean, 3),
                 "fouls_per90": round(p.fouls_committed_per90.mean, 2),
+                "fouls_drawn_per90": round(p.fouls_drawn_per90.mean, 2),
                 "yellows_per90": round(p.yellow_cards_per90.mean, 3),
                 "p_anytime_scorer": round(p.p_anytime_scorer, 3),
                 "penalties_taken": p.penalties_taken,

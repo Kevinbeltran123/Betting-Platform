@@ -40,6 +40,11 @@ def _foul(pid, team, minute, card=None):
             "player": {"id": pid}, "team": {"name": team}, "foul_committed": fc}
 
 
+def _foul_won(pid, team, minute):
+    return {"type": {"name": "Foul Won"}, "minute": minute,
+            "player": {"id": pid}, "team": {"name": team}, "foul_won": {}}
+
+
 def _sub(off_pid, on_pid, on_name, team, minute):
     return {"type": {"name": "Substitution"}, "minute": minute,
             "player": {"id": off_pid}, "team": {"name": team},
@@ -63,6 +68,7 @@ def _one_match() -> list[dict]:
         _shot(1, "Striker", "A", 55, 0.1, "Off T"),          # off target
         _foul(2, "A", 20, card="Yellow Card"),
         _foul(2, "A", 40),                                   # no card
+        _foul_won(1, "A", 25),                               # striker draws a foul
         {"type": {"name": "Pass"}, "minute": 9, "player": {"id": 2, "name": "Mid"},
          "team": {"name": "A"}, "pass": {"goal_assist": True}},
         _sub(2, 3, "Sub", "A", 60),                          # Mid off @60, Sub on @60
@@ -109,6 +115,12 @@ def test_counts_fouls_cards_assists():
     assert counts[2]["assists"] == 1           # goal_assist pass
     assert meta[1] == ("Striker", "A", "Center Forward")
     assert meta[3][0] == "Sub"                 # sub captured in meta
+
+
+def test_counts_fouls_won():
+    counts, _ = parse_player_counts(_one_match())
+    assert counts[1]["fouls_won"] == 1         # striker drew one foul
+    assert counts[2]["fouls_won"] == 0         # mid drew none
 
 
 # ── Bootstrap rate ──
@@ -196,3 +208,16 @@ def test_prop_board_anytime_scorer_present_for_scorer():
     board = prop_board(profiles)
     scorers = [c for c in board if c.market == "Anytime scorer"]
     assert any(c.player_name == "Striker" for c in scorers)
+
+
+def test_build_profiles_fouls_drawn_rate():
+    striker = {p.player_id: p for p in build_player_profiles(_n_matches(8))}[1]
+    # 1 foul won / 90' across identical full matches
+    assert math.isclose(striker.fouls_drawn_per90.mean, 1.0, rel_tol=1e-6)
+
+
+def test_prop_board_fouls_drawn_present_for_drawer():
+    board = prop_board(build_player_profiles(_n_matches(8)))
+    drawn = [c for c in board if c.market == "Faltas recibidas (over)"]
+    assert any(c.player_name == "Striker" for c in drawn)
+    assert all(c.softness == 1 for c in drawn)

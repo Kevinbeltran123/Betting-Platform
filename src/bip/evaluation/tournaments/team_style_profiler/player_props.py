@@ -7,7 +7,8 @@ Sibling of tactical_identity, one level down: from team style to the individual
 prop board. Computes per-90 rates (with bootstrap CIs + sample-size confidence)
 for the markets where edge actually lives, ranked softest-first:
 
-  fouls_committed, yellow_cards   <- SOFT markets (referee-driven, under-modeled)
+  fouls_committed, fouls_drawn,
+  yellow_cards                    <- SOFT markets (referee-driven, under-modeled)
   shots, shots_on_target          <- medium
   xg / anytime-scorer, assists    <- hardest (saturated, juiced)
 
@@ -59,6 +60,7 @@ class PlayerPropProfile:
     xg_per90: DistributionStat
     goals_per90: DistributionStat
     fouls_committed_per90: DistributionStat
+    fouls_drawn_per90: DistributionStat  # fouls suffered (StatsBomb "Foul Won")
     yellow_cards_per90: DistributionStat
     key_passes_per90: DistributionStat
     assists_per90: DistributionStat
@@ -161,6 +163,8 @@ def parse_player_counts(
             card = ((e.get("bad_behaviour") or {}).get("card") or {}).get("name")
             if card in _YELLOW_CARDS:
                 counts[pid]["yellows"] += 1
+        elif t == "Foul Won":
+            counts[pid]["fouls_won"] += 1
         elif t == "Pass":
             p = e.get("pass") or {}
             if p.get("shot_assist"):
@@ -196,7 +200,7 @@ def _bootstrap_rate(
     )
 
 
-_METRICS = ("shots", "sot", "xg", "goals", "fouls", "yellows", "key_passes", "assists")
+_METRICS = ("shots", "sot", "xg", "goals", "fouls", "fouls_won", "yellows", "key_passes", "assists")
 
 
 def build_player_profiles(
@@ -249,6 +253,7 @@ def build_player_profiles(
             xg_per90=_bootstrap_rate(metric_samples["xg"]),
             goals_per90=_bootstrap_rate(metric_samples["goals"]),
             fouls_committed_per90=_bootstrap_rate(metric_samples["fouls"]),
+            fouls_drawn_per90=_bootstrap_rate(metric_samples["fouls_won"]),
             yellow_cards_per90=_bootstrap_rate(metric_samples["yellows"]),
             key_passes_per90=_bootstrap_rate(metric_samples["key_passes"]),
             assists_per90=_bootstrap_rate(metric_samples["assists"]),
@@ -294,6 +299,15 @@ def prop_board(
         board.append(PropCandidate(
             "Faltas cometidas (over)", p.player_name, p.position,
             f"{p.fouls_committed_per90.mean:.1f} faltas/90 (n={p.n_matches})",
+            softness=1, confidence=p.confidence))
+    # 1 — fouls drawn (faltas recibidas): under-modeled, feeds opponent-cards
+    # and penalty markets (a high foul-drawer is fouled → rival yellows / pens).
+    for p in top(lambda x: x.fouls_drawn_per90.mean):
+        if p.fouls_drawn_per90.mean <= 0:
+            continue
+        board.append(PropCandidate(
+            "Faltas recibidas (over)", p.player_name, p.position,
+            f"{p.fouls_drawn_per90.mean:.1f} faltas recibidas/90 (n={p.n_matches})",
             softness=1, confidence=p.confidence))
     # 1 — cards: high foulers who also see yellows.
     for p in top(lambda x: x.yellow_cards_per90.mean):

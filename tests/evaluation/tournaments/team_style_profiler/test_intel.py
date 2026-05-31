@@ -56,7 +56,8 @@ def _prof(pid: int, name: str, team: str = "Argentina", fouls: float = 2.5,
         player_id=pid, player_name=name, team=team, position="Center Midfield",
         n_matches=8, minutes_total=720.0, confidence="green",
         shots_per90=_ds(1.0), shots_on_target_per90=_ds(0.5), xg_per90=_ds(0.1),
-        goals_per90=_ds(0.1), fouls_committed_per90=_ds(fouls), yellow_cards_per90=_ds(0.4),
+        goals_per90=_ds(0.1), fouls_committed_per90=_ds(fouls), fouls_drawn_per90=_ds(0.5),
+        yellow_cards_per90=_ds(0.4),
         key_passes_per90=_ds(0.5), assists_per90=_ds(0.1), penalties_taken=0,
         source=source)
 

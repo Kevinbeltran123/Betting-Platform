@@ -54,7 +54,8 @@ def _props(slug):
             n_matches=p["n_matches"], minutes_total=p["n_matches"] * 90.0, confidence=p["confidence"],
             shots_per90=_ds(p.get("shots_per90")), shots_on_target_per90=_ds(p.get("sot_per90")),
             xg_per90=_ds(p.get("xg_per90")), goals_per90=_ds(p.get("goals_per90")),
-            fouls_committed_per90=_ds(p.get("fouls_per90")), yellow_cards_per90=_ds(p.get("yellows_per90")),
+            fouls_committed_per90=_ds(p.get("fouls_per90")),
+            fouls_drawn_per90=_ds(p.get("fouls_drawn_per90")), yellow_cards_per90=_ds(p.get("yellows_per90")),
             key_passes_per90=_ds(0), assists_per90=_ds(p.get("assists_per90")),
             penalties_taken=p.get("penalties_taken", 0), source=src))
     return out
