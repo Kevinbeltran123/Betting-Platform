@@ -50,5 +50,8 @@ priorizar TA/p, no faltas, y cruzar siempre con el árbitro probable.
 
 - Cambios pre-existentes no relacionados (pyproject.toml, uv.lock, notes/MATCH_RESULTS_LOG.md,
   scripts/spike/corners_next10min.py) quedan fuera del commit.
-- Profundización **cualitativa** por equipo (lesiones/forma 2026/ABP/props) NO incluida — fue la
-  opción descartada en el AskUserQuestion; queda como siguiente paso si el operador lo pide.
+- Profundización **cualitativa** por equipo: inicialmente fuera de esta quick task, pero el operador
+  pidió después "ejecuta todo en orden" → se hizo como capa **§6.7** del mismo doc (las 48 selecciones,
+  por confederación, ~48 agentes en paralelo, fuentes 2024-26). Commits `1267df2` (UEFA), `7feec9c`
+  (CONMEBOL), `2d84e82` (CONCACAF), `7e59cb9` (CAF), `d44f779` (AFC+OFC). Capa fechada/perecedera:
+  convocatorias 26, lesiones jun-26, ejecutantes de ABP con nombres, correcciones al overlay/§6.6.
