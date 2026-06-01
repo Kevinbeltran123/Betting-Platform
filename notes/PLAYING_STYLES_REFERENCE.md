@@ -749,6 +749,37 @@ Over-córners de Chequia** en sus tres partidos (y, en los Chequia-fuera, los tr
 
 ---
 
+## 6.9 — Capa de jugador para props (jun-2026)
+
+> **Qué es.** Mejora B (Tier-1). Nombres concretos para los **mercados de props (los más blandos)**, en 3
+> categorías que complementan los penalty/FK/córner-takers de §6.7 y los mismatches de §6.8: **Aéreo**
+> (rematador de cabeza — el que ejecuta el mismatch aéreo), **Card-prone** (acumula amarillas — cruzar con
+> TA/p de §6.6 y árbitro #3), **Foul-drawer** (regateador al que le hacen faltas → genera FK/tarjeta rival).
+>
+> **Honestidad:** muchos campos son **cualitativos por rol** (las cifras exactas de faltas-recibidas/amarillas
+> por jugador 2025-26 no siempre se verifican → marcado "n/d", NO inventado). El cuello de botella de props
+> es la **CUOTA, no el dato** ([[project_player_props_and_data_research]]) → pedir cuotas reales, no recitar EV.
+
+#### UEFA
+- **Inglaterra** — Aéreo: **Kane** (+Bellingham llega de 2ª línea); sin Maguire, banquillo aéreo nulo. Card-prone: **Rice** (3 amarillas PL, pivote). Foul-drawer: **Saka, Madueke**.
+- **Francia** — Aéreo: **CBs Saliba/Upamecano/Konaté** (sin 9 aéreo; Mbappé NO). Card-prone: **Tchouaméni, Koné** (pivotes de corte). Foul-drawer: **Mbappé, Dembélé, Doué**.
+- **España** — Aéreo: **Merino** (remató 3, de cabeza, en el 6-0 a Turquía) + CBs. Card-prone: n/d. Foul-drawer: **Yamal** (líder de regates LaLiga ~5/p), **Nico Williams**, Pedri.
+- **Alemania** — Aéreo (clave por 28% ABP): **Tah, Rüdiger, Anton, Schlotterbeck** + Havertz al 1er palo. Card-prone: **Kimmich** (4 BL, time-wasting; tasa de falta baja). Foul-drawer: **Musiala** (si va), **Wirtz**.
+- **Portugal** — Aéreo: **Ronaldo** (41, sigue rematando), **Gonçalo Ramos**. Card-prone: **Palhinha** (5 PL), **Leão** (5 Serie A). Foul-drawer: **Leão** (34 faltas recibidas, 38 regates).
+- **Países Bajos** — Aéreo: **Van Dijk**, **Weghorst** (target si entra; sin De Ligt baja). Card-prone: n/d (perfil De Roon). Foul-drawer: **Gakpo, Malen**.
+- **Bélgica** — Aéreo: **Lukaku** (¿forma/minutos?), **De Ketelaere**. Card-prone: **Onana** (3 PL, pivote físico). Foul-drawer: **Doku** (líder de regates PL — el más fiable), Trossard.
+- **Croacia** — Aéreo: **Budimir** (17 goles LaLiga), Musa. Card-prone: **Brozović** (7), **Modrić** (4 Serie A). Foul-drawer: **Baturina**.
+- **Suiza** — Aéreo: **Embolo**, Akanji/Elvedi en ABP. Card-prone: **Xhaka** (líder de faltas/amarillas BL, juega al límite), Freuler. Foul-drawer: **Ndoye, Vargas**.
+- **Austria** — Aéreo: **Arnautović, Kalajdžić** (~2.00m), Gregoritsch. Card-prone: **Sabitzer, Laimer** (presión→falta táctica; cifra n/d). Foul-drawer: n/d.
+- **Noruega** — Aéreo (clave): **Sørloth** (195cm, 4 goles de cabeza 25-26) + **Haaland** (194cm). Card-prone: **Ryerson** (4 amarillas/8), Berge. Foul-drawer: **Nusa** (56 faltas recibidas BL).
+- **Escocia** — Aéreo (su edge ABP): **McTominay** (llega de 2ª línea), **Souttar/Hendry** (CBs), Adams, Shankland. Card-prone: **McGinn** (5 PL). Foul-drawer: **Doak**.
+- **Chequia** — Aéreo (MUY clave, ataque ABP nº1 Europa): **Schick, Souček, Krejčí** (CB, anotó ABP en playoffs), Hložek. Card-prone: **Souček, Krejčí** (físicos). Foul-drawer: n/d (plantel vertical).
+- **Suecia** — Aéreo: **Gyökeres**, **Lagerbielke** (CB, cabeceó vs Polonia), Isak si entra. Card-prone: n/d. Foul-drawer: **Gyökeres, Elanga**.
+- **Turquía** — Aéreo: **Demiral** (CB, 2 goles ABP en 2025), Akaydın. Card-prone (clave, TA 2.6): **Yüksek, Çalhanoğlu, Çelik** (amonestados en el playoff físico vs Kosovo). Foul-drawer: **Güler, Yıldız**.
+- **Bosnia** — Aéreo: **Demirović** (30 duelos ganados, 12 goles), Džeko si parte. Card-prone (clave, faltas 14.8/TA 2.3): **Kolašinac** (3 TA Serie A), Tahirović, Demirović (5 BL). Foul-drawer: **Demirović** (34 faltas recibidas).
+
+---
+
 ## 7. Fuentes
 
 **Tier 1 — educadores de entrenadores / cuerpos técnicos:**
