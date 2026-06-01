@@ -778,6 +778,21 @@ Over-córners de Chequia** en sus tres partidos (y, en los Chequia-fuera, los tr
 - **Turquía** — Aéreo: **Demiral** (CB, 2 goles ABP en 2025), Akaydın. Card-prone (clave, TA 2.6): **Yüksek, Çalhanoğlu, Çelik** (amonestados en el playoff físico vs Kosovo). Foul-drawer: **Güler, Yıldız**.
 - **Bosnia** — Aéreo: **Demirović** (30 duelos ganados, 12 goles), Džeko si parte. Card-prone (clave, faltas 14.8/TA 2.3): **Kolašinac** (3 TA Serie A), Tahirović, Demirović (5 BL). Foul-drawer: **Demirović** (34 faltas recibidas).
 
+#### CONMEBOL
+- **Argentina** — Aéreo: **Otamendi** (73.7% duelos aéreos en Mundial de Clubes); **⚠️ Romero duda (rodilla, fuera resto 25-26)** — era el otro CB aéreo. Card-prone: **Romero** (10 TA + 2 rojas PL → top card-prop **si llega**); De Paul moderado. Foul-drawer: **Nico Paz**; Messi n/d.
+- **Brasil** — Aéreo: **Marquinhos, Gabriel Magalhães** + Igor Thiago (área). Card-prone: **Casemiro** (9 TA + 1 roja PL 25-26 + entradas temerarias con Brasil). Foul-drawer: **Vinícius, Raphinha** (Rodrygo FUERA; Neymar dudas de fitness).
+- **Uruguay** — Aéreo: **Araújo, Giménez** (élite) + Núñez/Valverde (llega). Card-prone (TA 2.3): **Ugarte, Bentancur** (pivotes), Araújo (última línea agresiva). Foul-drawer: **Pellistri, Núñez**.
+- **Colombia** — Aéreo (clave, deliverer): **Davinson Sánchez, Yerry Mina** (~4.2 aéreos/90), Córdoba (9). Card-prone (faltas 13.1): **Lerma** (7 TA, 29 faltas/34 en Palace). Foul-drawer: **Luis Díaz, Jhon Arias**.
+- **Ecuador** — Aéreo: **Hincapié, Pacho, Félix Torres** + E. Valencia. Card-prone (faltas 12.7): **Caicedo** (líder del equipo: 3A+1R en quali, 2.1 faltas/90). Foul-drawer: **Kendry Páez, Plata**.
+- **Paraguay** — Aéreo (clave, deliverer): **Gustavo Gómez, Alderete, Balbuena**; cabeza recientes **Alderete** (vs ARG), **Galarza** (vs URU). Card-prone (TA 2.2): **Cubas** (7 TA en 2025 + 5 en 864' de 2026 = ritmo muy alto), J. Alonso (4). Foul-drawer: **Almirón** (Enciso ya es FK/penal).
+#### CONCACAF
+- **México** — Aéreo: **Johan Vásquez** (53% duelos aéreos Serie A), Montes. Card-prone: **Edson Álvarez** (4 TA/12 Süper Lig, 2.58 faltas/90) si va. Foul-drawer: **Vega, César Huerta** (cifra n/d).
+- **EE.UU.** — Aéreo: **Ream, McKenzie** + Balogun/Pepi. Card-prone: **Tyler Adams** (8 TA PL Bournemouth), **McKennie** (suspensión por amarillas en Juve). Foul-drawer: **Pulisic, Weah, Tillman**.
+- **Canadá** — Aéreo: **Larin, Bombito** (CB). Card-prone (equipo físico, 14.0/TA 2.2): **Koné** (3 TA + 1 roja, expulsado en debut Sassuolo), Eustáquio. Foul-drawer: **Ahmed, Buchanan, Shaffelburg**; Davies si juega.
+- **Panamá** — Aéreo: **Andrade, Cedeño** (llegada); CB-header n/d firme (Córdoba marcó pese a aéreo flojo). Card-prone: **Godoy** (físico, amarilla vs RSA). Foul-drawer: **J.L. Rodríguez, Cristian Martínez** (15 faltas recibidas) — Carrasquilla excluido (FK).
+- **Curaçao** — Aéreo: **Janga** (9); CBs n/d. Card-prone: **Leandro Bacuna** (4 TA en 1.Lig). Foul-drawer: **Chong**.
+- **Haití** — Aéreo: **Isidor** (Wilson, Sunderland), Pierrot; CBs **Duverne/Delcroix** (⚠️ "Lacroix" es carrilero, no CB). Card-prone: **Duverne** (4 TA Pro League). Foul-drawer: **Étienne Jr.** (Bellegarde excluido, FK).
+
 ---
 
 ## 7. Fuentes
