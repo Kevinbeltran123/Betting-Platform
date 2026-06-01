@@ -288,8 +288,47 @@ def synthesis(sig: list[dict]) -> list[str]:
             srcs = "; ".join(f"{x['src']} [{x['mech']}·{x['conf']}]" for x in ss)
             out.append(f"  - {label}: **{len(mechs)} mec. indep.**{tag} — {srcs}")
     out.append("> N viñetas ≠ N señales: las que comparten mecanismo cuentan como UNA; lados opuestos = "
-               "ruido, no confianza. El entorno-local (host-fade ↔ ventaja local/altitud/descanso) se "
-               "reconcilia en un neto con signo — pendiente #4.")
+               "ruido, no confianza. El cluster entorno-local se resuelve en 'Entorno-local (neto)' abajo (#4).")
+    return out
+
+
+def env_local_net(h: str, a: str, mh: dict, ma: dict, ven: dict | None, tr: dict | None) -> list[str]:
+    """Reconciliación #4: resuelve el cluster entorno-local (host-fade ↔ ventaja de
+    altitud/aclimatación/descanso) en UN read con signo y eje de mercado, en vez de tres
+    viñetas que el ojo suma. No inventa un pp combinado (sería falsa precisión): da
+    dirección + qué eje de mercado pesa."""
+    hosts = [t for t, m in ((h, mh), (a, ma)) if m.get("host")]
+    alt = bool(ven and ven.get("altitude_m", 0) >= 1500)
+    rest = (tr or {}).get("rest_edge")
+    rested = rest.split(" +")[0] if (rest and rest != "igual") else None
+    if not hosts and not alt and not rested:
+        return []
+    out = ["\n## Entorno-local (neto) — reconciliación #4"]
+    if len(hosts) == 2:
+        out.append("- Ambos anfitriones → el host-fade se cancela en el eje de resultado; mira solo físico.")
+        hosts = []
+    host = hosts[0] if hosts else None
+    if host:
+        plus = []
+        if alt:
+            plus.append("ventaja física de altitud/aclimatación")
+        if rested == host:
+            plus.append(f"ventaja de descanso ({rest})")
+        if plus:
+            out.append(f"- **{host}** (anfitrión): host-fade (−, sobre todo resultado/outright; prior débil "
+                       f"n-pequeño WC-32) vs {' + '.join(plus)} (+).")
+            out.append(f"  → **NETO ≈ neutro-a-leve A FAVOR de {host} en TOTALES/hándicap; el fade pesa en "
+                       f"RESULTADO/outright. NO apiles fade y ventaja como dos señales** (es un solo eje).")
+        else:
+            out.append(f"- **{host}** (anfitrión): host-fade en pie (sin altitud/descanso que lo compense) → "
+                       f"leve CONTRA {host} en resultado; recuerda que es prior débil.")
+    elif alt or rested:
+        bits = []
+        if alt:
+            bits.append("altitud (lado aclimatado + ritmo/Over)")
+        if rested:
+            bits.append(f"descanso a favor de {rested}")
+        out.append(f"- Sin anfitrión; físico: {', '.join(bits)} → leve a favor del lado mejor adaptado/descansado.")
     return out
 
 
@@ -419,6 +458,9 @@ def main() -> None:
 
     # 5c. Síntesis ponderada (mejora #3) — descuenta correlación entre las señales de arriba
     L.extend(synthesis(SIG))
+
+    # 5d. Entorno-local neto (mejora #4) — resuelve el cluster host-fade/altitud/descanso
+    L.extend(env_local_net(h, a, mh, ma, ven, tr))
 
     # 6. Profundización (leer prosa)
     L.append("\n## Profundización — LEER prosa")
