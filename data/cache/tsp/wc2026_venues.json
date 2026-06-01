@@ -1,0 +1,19 @@
+{
+  "_note": "Keyed por el string 'city' del CSV martj42. heat: controlado|templado|alto|MAX. Derivado de notes/WC2026_VENUES_ENVIRONMENT.md.",
+  "Mexico City":     {"stadium": "Azteca/Banorte", "altitude_m": 2200, "roof": "none", "ac": false, "heat": "templado", "altitude_note": "FUERTE (~2200m)", "cluster": "Centro", "tz": "Central"},
+  "Zapopan":         {"stadium": "Akron (Guadalajara)", "altitude_m": 1566, "roof": "none", "ac": false, "heat": "alto", "altitude_note": "moderada (~1566m)", "cluster": "Oeste", "tz": "Central"},
+  "Guadalupe":       {"stadium": "BBVA (Monterrey)", "altitude_m": 500, "roof": "none", "ac": false, "heat": "MAX", "altitude_note": "despreciable", "cluster": "Centro", "tz": "Central"},
+  "Arlington":       {"stadium": "AT&T (Dallas)", "altitude_m": 180, "roof": "retractable", "ac": true, "heat": "controlado", "altitude_note": "no", "cluster": "Centro", "tz": "Central"},
+  "Atlanta":         {"stadium": "Mercedes-Benz", "altitude_m": 320, "roof": "retractable", "ac": true, "heat": "controlado", "altitude_note": "no", "cluster": "Centro", "tz": "Eastern"},
+  "Houston":         {"stadium": "NRG", "altitude_m": 15, "roof": "retractable", "ac": true, "heat": "controlado", "altitude_note": "no", "cluster": "Centro", "tz": "Central"},
+  "Vancouver":       {"stadium": "BC Place", "altitude_m": 5, "roof": "retractable", "ac": true, "heat": "controlado", "altitude_note": "no", "cluster": "Oeste", "tz": "Pacific"},
+  "Inglewood":       {"stadium": "SoFi (Los Ángeles)", "altitude_m": 30, "roof": "fixed-canopy", "ac": false, "heat": "templado", "altitude_note": "no", "cluster": "Oeste", "tz": "Pacific"},
+  "Miami Gardens":   {"stadium": "Hard Rock (Miami)", "altitude_m": 2, "roof": "canopy", "ac": false, "heat": "alto", "altitude_note": "no", "humidity": "muy alta", "cluster": "Este", "tz": "Eastern"},
+  "Kansas City":     {"stadium": "Arrowhead", "altitude_m": 270, "roof": "none", "ac": false, "heat": "alto", "altitude_note": "no", "cluster": "Centro", "tz": "Central"},
+  "Philadelphia":    {"stadium": "Lincoln Financial", "altitude_m": 10, "roof": "none", "ac": false, "heat": "alto", "altitude_note": "no", "cluster": "Este", "tz": "Eastern"},
+  "East Rutherford": {"stadium": "MetLife (FINAL)", "altitude_m": 5, "roof": "none", "ac": false, "heat": "templado", "altitude_note": "no", "cluster": "Este", "tz": "Eastern"},
+  "Foxborough":      {"stadium": "Gillette (Boston)", "altitude_m": 90, "roof": "none", "ac": false, "heat": "templado", "altitude_note": "no", "cluster": "Este", "tz": "Eastern"},
+  "Santa Clara":     {"stadium": "Levi's (SF Bay)", "altitude_m": 5, "roof": "none", "ac": false, "heat": "templado", "altitude_note": "no", "cluster": "Oeste", "tz": "Pacific"},
+  "Seattle":         {"stadium": "Lumen", "altitude_m": 5, "roof": "canopy", "ac": false, "heat": "templado", "altitude_note": "no", "cluster": "Oeste", "tz": "Pacific"},
+  "Toronto":         {"stadium": "BMO", "altitude_m": 80, "roof": "none", "ac": false, "heat": "templado", "altitude_note": "no", "cluster": "Este", "tz": "Eastern"}
+}
