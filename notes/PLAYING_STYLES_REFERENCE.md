@@ -616,6 +616,15 @@ SELECCIÓN — DT
 - **Turquía 🟡.** Fragilidad defensiva **general** confirmada (0-6 España) pero ese fue **transición**, no ABP estática; mecanismo histórico de **mal marcaje/posición en el área** (Euro 2024) → sufre ante targetman aéreo. CBs Demiral/Bardakcı; Çakır GK sólido.
 - **Bosnia 🟡.** **🔴 CORRIGE §6.7: el 26 final NO lleva a Ahmedhodžić ni Bišćan** → CBs reales **Katić (Schalke) + Muharemović (Sassuolo)**, Kolašinac de LI. Físicos compiten el aire, pero **Vasilj flojo saliendo** (su error regaló el 1-0 a Italia) y caen por **fatiga/edad** en bandas.
 
+#### CONMEBOL (la más sólida en el aire; el vector suele ser el PORTERO, no el CB)
+
+- **Argentina 🟢.** Marca **individual disciplinada**; **Romero/Otamendi dominan el aire** (Otamendi cede ritmo, no el duelo). **Dibu se queda en línea** → la 6 yardas la cubren los CBs. ~1 GA en sus últimos 5; vector de córner-en-contra **bajo**. Riesgo = transición, no ABP.
+- **Brasil 🟢.** **Marquinhos (1.83 pero 65% de duelos aéreos) + Gabriel Magalhães** sólidos; **Alisson sale bien** a centros. El 4-1 vs Argentina fue **juego abierto/error**, no ABP. Sin Militão NO agrava el aire. Riesgo de Brasil-contra = laterales/transición.
+- **Uruguay 🟢.** **Araújo + Giménez = eje aéreo élite**; 0 goles de ABP en los amistosos pre-WC. Único matiz: **Muslera cumple 40 durante el torneo y su titularidad no está garantizada** (Rochet, titular de la quali, también va); salida a centros por confirmar.
+- **Colombia 🟡** (→ 🔴 vs especialista de córner). CBs **Davinson + Lucumí** grandes ganan el duelo directo, **pero el agujero es el portero**: **Camilo Vargas no domina su área** → Matanović cabeceó un **córner de Pašalić** para el 2-1 de Croacia (mar-26). Vector = GK en centros; re-verificar si juega Ospina.
+- **Ecuador 🟢** (matiz 🟡 micro-ABP). **Pacho + Hincapié** élite, sin grieta aérea estructural. PERO **su único gol reciente encajado fue de ABP** (vs Marruecos; el capitán-CB Pacho lo admitió: "hay que corregir") y **Galíndez (38) no domina alto** → micro-edge en córner-rival/scorer-de-ABP, no en juego abierto.
+- **Paraguay 🟢.** **Fortaleza aérea pura: Gustavo Gómez + Alderete** (colosos) dominan ambas áreas; 10 GA en 18, sin goles de córner/FK recientes (los 2 vs Marruecos fueron de jugada). **Atacarlos por ABP = ir a su mejor terreno** → ángulo es contra-córner / under, NO header rival.
+
 ---
 
 ## 7. Fuentes
