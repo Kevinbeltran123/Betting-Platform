@@ -647,6 +647,46 @@ SELECCIÓN — DT
 - **Cabo Verde 🟢.** La **defensa fue su ARMA** (5/5 en casa sin encajar en quali); el 2-4 vs Chile fue **juego abierto + 45' con uno menos** (no ABP); CBs "fuerza aérea + posición", **Logan Costa** referencia, Vozinha firme. Sin debilidad ABP conocida. Caveat: el salto de nivel del Grupo H (España/Uruguay) es presión general, no grieta ABP.
 - **RD Congo 🟢.** Bloque compacto top, **Mpasi (GK) sale bien al área**, **Mbemba ancla**; AFCON 1 gol en fase de grupos, repechaje 0 GA, **0.4 GA** últimos 5. Sin fragilidad ABP demostrable → atacarlo por balón parado no tiene valor; mercado defensivo (Under/portería-a-cero/BTTS-No) lo respalda.
 
+#### AFC + OFC
+
+- **Corea del Sur 🔴.** **Back-3 EXPONE** (prensa pide back-4); en el colapso **0-4 vs Costa de Marfil encajó tras córner** (rebote, GK no despeja). Solo **Kim Min-jae** es ancla aérea confirmada; los otros 2 CB y el GK (disputa Kim Seung-gyu/Jo) **sin confirmar**. Edge claro para **córner/header en contra** con buen servicio + rematador alto.
+- **Catar 🔴.** **Poca estatura, sin CB mandón en el área**; **Barsham (GK) no domina centros**. Evidencia fresca: **Irlanda 1-0 (28-may) = córner + cabezazo de Collins al min 5**. Laterales "workmanlike" expuestos. → córner/cabezazo-en-contra y **team-total rival al alza**.
+- **Japón 🟡.** **Relativamente bajo** (concern aéreo que NED/SWE apuntarán con tamaño), PERO **Zion Suzuki (1.90) domina su área** y la organización zonal es élite (**3 GA en 16**). Atacable solo con **servicio de calidad + 9 alto**, no sistémico.
+- **Arabia Saudí 🟡.** El fallo dominante es **transición** (línea alta batida: 0-4 Egipto, 1-2 Serbia), no ABP; única señal ABP = header de córner de **Porozo vs Ecuador**. CBs (Al-Tambakti/Lajami) físicos. Inestable por DT nuevo (Donis), sin portería a cero en 6.
+- **Jordania 🟡.** Bloque bajo sólido (**2 GA en 5 del Arab Cup**) pero **concedió el gol decisivo de ABP en la final vs Marruecos** (chilena de Saadane tras set-piece). **Abu Laila (GK) no domina el área**. Set-piece es su grieta real bajo presión sostenida (Grupo J: ARG/ALG/AUT).
+- **Irak 🟡.** **Marca al hombre + CBs altos (1.96-1.97)** mitigan, pero **Jalal Hassan (GK) no domina el área** y **Haquin casi empata de córner vs Bolivia** (aviso). Vulnerabilidad real no probada vs el servicio del Grupo I (FRA/SEN/NOR).
+- **Nueva Zelanda 🟡.** Dominan el aire en **ATAQUE** (Wood) pero **no lo trasladan a defensa** (encaje ABP por desorganización vs Finlandia); **Crocombe no transmite dominio de área**. **🔴 CORRIGE §6.7: Tuiloma FUERA** → CBs reales Bindon/Boxall/Pijnaker/Surman/Smith (eje joven). Encajes recientes más de juego abierto → 🟡 no 🔴.
+- **Irán 🟢.** **Alto/físico**, **Beiranvand domina el área** y sale a centros; sin ABP encajado en 2025-26 (los 2 de Nigeria fueron jugada). **🔴 CORRIGE §6.7: CBs = Khalilzadeh + Kanaanizadegan** (no Pouraliganji/Mohammadhosseini). ABP-en-contra es de sus rutas MENOS productivas.
+- **Australia 🟢.** **La ABP defensiva es FORTALEZA, no debilidad:** **Souttar/Burgess/Circati = torres** que dominan ambas áreas; 2ª ronda quali **6/6 sin encajar**. El edge es **ofensivo** (Souttar a balón parado a favor), NO atacar su área.
+- **Uzbekistán 🟢.** **🔴 CORRIGE §6.7 ("Khusanov corto de ritmo"): el pace de Khusanov es FORTALEZA** (la duda es fitness, no ritmo); zaga física **defiende bien el aire** y su dominio aéreo es arma ofensiva. El hueco real es **espacio a la espalda de laterales**, no ABP. 7 GA en quali.
+
+### Síntesis #4 — roster de ratings + mismatches (aéreo × vulnerable)
+
+**Vulnerables 🔴 (atacar por córner/FK; cabezazo-en-contra, Over-córners rival, BTTS-Sí):**
+Suecia · México · Curaçao · Corea del Sur · Catar · Sudáfrica. **Condicionales (🟡→🔴 vs especialista):**
+Panamá (Córdoba+Mosquera) · Argelia (bullyable+L.Zidane) · Colombia (Vargas en córners).
+
+**Medio 🟡:** Inglaterra, Francia, Portugal, Países Bajos, Bélgica, Noruega, Escocia, Chequia, Turquía, Bosnia,
+EE.UU., Canadá, Haití, Marruecos, Senegal, Ghana, Jordania, Irak, Japón, Arabia Saudí, Nueva Zelanda.
+
+**Fuertes 🟢 (NO atacar por aire; respaldan Under/portería-a-cero rival):** España, Alemania, Croacia, Suiza,
+Austria, Argentina, Brasil, Uruguay, Ecuador, **Paraguay** (su mejor terreno), Egipto, Túnez, Cabo Verde,
+RD Congo, Irán, **Australia**, Uzbekistán.
+
+**Equipos-deliverer (ataque aéreo/ABP fuerte = el lado que explota un 🔴):** Chequia (más goles ABP de Europa;
+Schick/Souček/Krejčí) · Alemania (28% de goles de ABP) · Inglaterra (pizarra, aunque sin Maguire) · Noruega
+(Haaland aéreo) · Australia (Souttar/Burgess) · Costa de Marfil (Kessié) · Paraguay (Gómez/Alderete) · Colombia
+(Davinson/Mina) · Senegal (artillería al 2º palo, si Koulibaji llega) · Escocia (McTominay).
+
+**🎯 MISMATCH PRIME (pareo confirmado por grupo): GRUPO A.** Las **tres** rivales de Chequia son 🔴 a balón
+parado — **México 🔴, Sudáfrica 🔴, Corea del Sur 🔴** — y **Chequia es el ataque #1 de ABP de Europa**. Es el
+cruce aéreo-vs-vulnerable más limpio del torneo: priorizar **córner→gol / cabezazo de Schick-Souček-Krejčí /
+Over-córners de Chequia** en sus tres partidos (y, en los Chequia-fuera, los tres 🔴 también se castigan entre sí).
+
+> Recordatorio: rating cualitativo (no hay xGA-ABP público de selecciones). Cruzar SIEMPRE con (a) el XI/GK del
+> día — varios vectores son el **portero** (Vargas, Galíndez, Mosquera, Barsham, Hassan, Crocombe, Williams) — y
+> (b) el árbitro (mejora #3, pendiente) para el componente de córners concedidos.
+
 ---
 
 ## 7. Fuentes
