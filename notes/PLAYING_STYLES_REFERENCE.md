@@ -497,6 +497,66 @@ SELECCIÓN — DT
 
 ---
 
+## 6.6-bis — Fuerza de calendario (SoS): ajuste de las stats crudas (mejora #5)
+
+> **Qué resuelve.** Los promedios de §6.6 son **CRUDOS** → inflados/deflactados por la calidad del rival.
+> Esta capa computa un **Elo** (estilo World-Football-Elo: peso por torneo + margen + ventaja de local) para
+> TODAS las selecciones desde `data/cache/martj42_international_results.csv` (CC0), y para cada equipo promedia
+> el **Elo actual de sus rivales** en sus últimos ≤20 partidos bajo el DT actual = **SoS**. Script:
+> `scripts/spike/tsp/42_strength_of_schedule.py` (offline, JSON gitignored).
+>
+> **Honestidad:** el CSV corta en **2026-03-31** (amistosos de abril-junio no incluidos) → ventana ligeramente
+> distinta a la de §6.6 (partidos con stats de API-Football), pero captura la **misma era**. **Ghana y Arabia
+> quedan sin SoS** (DT desde abril, sin partidos jugados en el snapshot) → usar su §6.6 crudo con cautela.
+> `cal`: **DURO** = Δ≥+80 sobre la media (1732), **FLOJO** = Δ≤−80. **Elo propio** = power-ranking interno.
+
+| Equipo (DT·n) | Elo propio | SoS (avg opp Elo) | cal | Stat cruda que se RE-INTERPRETA |
+|---|---|---|---|---|
+| **CALENDARIO DURO** (stats DEFLACTADAS → el equipo es MEJOR que el número crudo) ||||| 
+| Colombia (20) | 2050 | 1934 | DURO | 1.7 GF / 1.1 GA es sólido vs rivales fuertes |
+| Paraguay (18) | 1910 | 1936 | DURO | 1.1 GF NO es romo: vino vs los más duros |
+| Ecuador (18) | 2016 | 1912 | DURO | **0.3 GA = defensa élite REAL** (la más fiable) |
+| Brasil (10) | 2059 | 1910 | DURO | 1.8 GF/0.8 GA honestos vs CONMEBOL |
+| España (20) | **2222** | 1892 | DURO | **2.6 GF NO inflado** (output élite vs duro) |
+| Uruguay (20) | 1970 | 1869 | DURO | 0.8 GF refleja crisis real (no rival débil) |
+| Suiza (20) | 1941 | 1867 | DURO | 1.9 GF decente vs duro |
+| Francia (20) | 2137 | 1861 | DURO | leak 1.1 GA es real vs buenos rivales |
+| EE.UU. (20) | 1822 | 1856 | DURO | 1.4 GA permeable confirmado vs duro |
+| México (20) | 1961 | 1839 | DURO | 1.3 GF bajo pese a rival fuerte (ojo ataque) |
+| Portugal (20) | 2040 | 1835 | DURO | 0.9 GA decente vs duro |
+| Argentina (20) | 2180 | 1822 | DURO | **0.5 GA élite REAL** vs CONMEBOL |
+| **MEDIO** (Δ entre ±80) ||||| 
+| Alemania 1985·1805 · Túnez* 1741·1796 · Escocia 1821·1793 · Canadá 1893·1773 · P.Bajos 2014·1760 · Croacia 1982·1743 · Turquía 1955·1742 · Corea 1869·1725 · Uzbekistán 1820·1714 · Australia 1889·1713 · Jordania 1763·1706 · N.Zelanda 1742·1702 · Japón 1980·1700 · Bosnia 1641·1692 · Noruega 1964·1689 ||| medio | (Noruega 3.0 GF ya roza inflado, Δ−43) |
+| **CALENDARIO FLOJO** (stats INFLADAS → el equipo es PEOR que el número crudo) ||||| 
+| Panamá (20) | 1864 | 1660 | FLOJO | 0.6 GA window halagado |
+| Catar (11) | 1586 | 1648 | FLOJO | el Elo más bajo del torneo |
+| Senegal (19) | 1928 | 1642 | FLOJO | 0.6 GA inflado (rival CAF flojo) |
+| Irak (13) | 1746 | 1641 | FLOJO | low-scoring vs flojos |
+| Austria (20) | 1875 | 1634 | FLOJO | **2.4 GF / 0.8 GA inflados** (10-0 San Marino) |
+| **Inglaterra (12)** | 2079 | 1633 | FLOJO | **0.4 GA MUY inflado → regresa vs élite** |
+| Egipto (20) | 1813 | 1621 | FLOJO | **0.7 GA halagado** (no es muro vs WC) |
+| Irán (20) | 1880 | 1613 | FLOJO | 0.7 GA inflado |
+| **Bélgica (12)** | 1915 | 1592 | FLOJO | **3.2 GF MUY inflado** (ataque sobrevalorado) |
+| Argelia (20) | 1849 | 1580 | FLOJO | 0.6 GA inflado (y aéreo frágil, §6.8) |
+| **C. de Marfil (20)** | 1793 | 1568 | FLOJO | **0.5 GA inflado** ("0 encajados" halagado) |
+| RD Congo (20) | 1764 | 1558 | FLOJO | 0.6 GA inflado |
+| Cabo Verde (20) | 1652 | 1550 | FLOJO | 1.2 GF/0.9 GA de debutante vs flojos |
+| Sudáfrica (20) | 1658 | 1530 | FLOJO | 0.8 GA inflado (+ ABP frágil, §6.8) |
+| Haití (19) | 1698 | 1513 | FLOJO | 2.5 GF MUY inflado vs CONCACAF menor |
+| **Curaçao (20)** | 1622 | 1485 | FLOJO | **el SoS más bajo**; todo halagado |
+
+\* Túnez/Marruecos/Suecia/Chequia con n=2-4 (baja confianza).
+
+**Lecturas ajustadas clave (lo que el SoS cambia):**
+- **Inglaterra:** Elo propio élite (2079) PERO **0 GA / 0.4 GA logrado vs el calendario MÁS flojo de los grandes** (SoS 1633) → la solidez defensiva **regresa fuerte vs élite**; no comprar "muro" a precio caro. Cuantifica el ⚠️ de §6.7.
+- **Bélgica:** **3.2 GF es un espejismo de calendario flojo** + defensa leaky → el ataque está sobrevalorado por el número; el lean BTTS/Over se sostiene por la defensa, no por una pólvora élite real.
+- **Côte d'Ivoire / Egipto / Argelia / DR Congo / Sudáfrica:** sus GA bajísimos (0.5-0.8) están **inflados por calendario CAF flojo** → NO sobreponderar "portería a cero" vs rivales WC fuertes; en Argelia/Sudáfrica además choca con la fragilidad aérea de §6.8.
+- **CONMEBOL (deflactado):** **Ecuador 0.3 GA y Argentina 0.5 GA vs SoS DURO = las defensas más fiables del torneo** (números logrados vs rivales fuertes). Paraguay/Colombia: su GF modesto NO es debilidad ofensiva — vino vs los más duros; no fadear su ataque a ciegas.
+- **España:** 2.6 GF con SoS DURO + Elo 2222 (el más alto) = **output élite genuino, no inflado** → el lean team-over/dominio es el más limpio.
+- **Power-ranking (Elo propio):** top = España 2222, Argentina 2180, Francia 2137, **Inglaterra 2079**, Brasil 2059, Colombia 2050, Portugal 2040; fondo = Catar 1586, Curaçao 1622, Bosnia 1641, Cabo Verde 1652, Sudáfrica 1658.
+
+---
+
 ## 6.7 — Profundización pre-WC por selección (jun-2026)
 
 > **Qué es.** Capa **fechada y perecedera** (convocatorias de 26, lesiones, ejecutantes de balón
