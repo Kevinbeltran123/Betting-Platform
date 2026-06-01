@@ -29,6 +29,8 @@ C = PROJECT / "data" / "cache"
 STATS = json.loads((C / "tsp" / "api_team_stats_by_coach.json").read_text())
 SOS = json.loads((C / "tsp" / "strength_of_schedule.json").read_text())
 VENUES = json.loads((C / "tsp" / "wc2026_venues.json").read_text())
+_TR = C / "tsp" / "travel_rest.json"
+TRAVEL = json.loads(_TR.read_text()) if _TR.exists() else {}
 CSV = C / "martj42_international_results.csv"
 
 # Derivado de §6.8 (rating ABP DEFENSIVA) + síntesis. Actualizar si §6.8 cambia.
@@ -210,6 +212,21 @@ def main() -> None:
         L.append(f"- Cluster {ven['cluster']} / huso {ven['tz']}.")
     else:
         L.append("- Sede no mapeada (pasar ciudad del CSV o revisar venues.json).")
+
+    # 2b. Viaje / descanso (mejora C)
+    tr = TRAVEL.get(f"{h} vs {a}")
+    if tr:
+        L.append("\n## Viaje / descanso")
+        def leg_txt(side):
+            x = tr[side]
+            if x["rest_days"] is None:
+                return "debut (MD1, sin asimetría de descanso previa)"
+            jet = f" · **jet-lag +{x['tz_shift']}h**" if x["tz_shift"] else ""
+            return f"{x['rest_days']}d descanso · viaje: {x['travel']}{jet}"
+        L.append(f"- {h}: {leg_txt('home')}")
+        L.append(f"- {a}: {leg_txt('away')}")
+        if tr["rest_edge"] and tr["rest_edge"] != "igual":
+            L.append(f"- ⚠️ **Ventaja de descanso: {tr['rest_edge']}** (tilt fatiga → Under/favorito-frena del lado cansado).")
 
     # 3. Fuerza ajustada (SoS) + stats
     L.append("\n## Fuerza (SoS-ajustada) y stats DT")
