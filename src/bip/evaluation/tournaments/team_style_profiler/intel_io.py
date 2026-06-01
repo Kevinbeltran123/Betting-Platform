@@ -57,7 +57,10 @@ def _load(sub: str, slug: str) -> dict | None:
 def _props_from(d: dict | None) -> list[PlayerPropProfile]:
     if not d:
         return []
-    src = "espn" if "espn" in d.get("source", "statsbomb") else "statsbomb"
+    raw = d.get("source", "statsbomb")
+    src = ("espn" if "espn" in raw
+           else "api_football" if "api_football" in raw
+           else "statsbomb")
     out = []
     for i, p in enumerate(d["players"]):
         out.append(PlayerPropProfile(
@@ -74,7 +77,8 @@ def _props_from(d: dict | None) -> list[PlayerPropProfile]:
 
 
 def load_props(slug: str) -> list[PlayerPropProfile]:
-    return _props_from(_load("player_props", slug))
+    # Prefiere props de API-Football (selección actual, #2) sobre StatsBomb-torneo.
+    return _props_from(_load("player_props_af", slug) or _load("player_props", slug))
 
 
 def load_recent_props(slug: str) -> list[PlayerPropProfile]:

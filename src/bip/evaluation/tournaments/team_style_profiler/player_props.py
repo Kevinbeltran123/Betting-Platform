@@ -36,7 +36,7 @@ N_YELLOW_MIN = 4
 MIN_MINUTES_FOR_RATE = 20.0
 
 PropConfidence = Literal["green", "yellow", "red"]
-PropSource = Literal["statsbomb", "espn"]
+PropSource = Literal["statsbomb", "espn", "api_football"]
 
 _RED_CARDS = {"Red Card", "Second Yellow"}
 _YELLOW_CARDS = {"Yellow Card", "Second Yellow"}
