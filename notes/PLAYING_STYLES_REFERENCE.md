@@ -792,6 +792,17 @@ Over-córners de Chequia** en sus tres partidos (y, en los Chequia-fuera, los tr
 - **Panamá** — Aéreo: **Andrade, Cedeño** (llegada); CB-header n/d firme (Córdoba marcó pese a aéreo flojo). Card-prone: **Godoy** (físico, amarilla vs RSA). Foul-drawer: **J.L. Rodríguez, Cristian Martínez** (15 faltas recibidas) — Carrasquilla excluido (FK).
 - **Curaçao** — Aéreo: **Janga** (9); CBs n/d. Card-prone: **Leandro Bacuna** (4 TA en 1.Lig). Foul-drawer: **Chong**.
 - **Haití** — Aéreo: **Isidor** (Wilson, Sunderland), Pierrot; CBs **Duverne/Delcroix** (⚠️ "Lacroix" es carrilero, no CB). Card-prone: **Duverne** (4 TA Pro League). Foul-drawer: **Étienne Jr.** (Bellegarde excluido, FK).
+#### CAF
+- **Marruecos** — Aéreo: **El Kaabi** (9), Aguerd (CB). Card-prone: **Amrabat** (pivote físico), Ounahi. Foul-drawer: **Hakimi, Brahim Díaz**.
+- **Senegal** — Aéreo (clave, deliverer): **Niakhaté**, Koulibaly (si va), **N. Jackson**, P.M. Sarr (llega). Card-prone (físico "limpio": faltas 14.5 / TA 1.6): **Gana Gueye, Pape Gueye** (pivotes). Foul-drawer: **Ismaïla Sarr, Mané, I. Ndiaye**.
+- **Egipto** — Aéreo: **Abdelmonem** (post-ACL), Yasser Ibrahim, Marmoush. Card-prone: **Trezeguet** (4 TA/21, 1.44 faltas/90), Abdelmagid. Foul-drawer: **Trezeguet**.
+- **Argelia** — Aéreo: **Mandi**, Gouiri, Bensebaïni (córner). Card-prone (TA 2.1): **Zerrouki, Bentaleb** (pivotes), Bensebaïni (Bennacer FUERA). Foul-drawer: **Amoura, Chaïbi** (Mahrez excl., FK).
+- **Túnez** — Aéreo: **Talbi** (CB, 71% duelos aéreos), Bronn. Card-prone: **Skhiri** (1 TA + 1 roja BL). Foul-drawer: **Hannibal Mejbri** (2º mejor regateador AFCON 2025).
+- **Costa de Marfil** — Aéreo: **N'Dicka, Diomandé** (CBs), Guessand (9). Card-prone (faltas 14.4): **Kessié** (perfil físico; cifra exacta n/d), Seri. Foul-drawer: **Amad Diallo, Pépé**.
+- **Ghana** — Aéreo: **Djiku, Mumin** (CBs); **⚠️ Iñaki Williams débil aéreo (46.9%)** → mejor como foul-drawer. Card-prone: **Djiku** (5 TA + 1 roja 25-26; **⚠️ Partey LIMPIO, 1 TA/21 — NO es él**). Foul-drawer: **Semenyo** (52 regates), **Iñaki Williams** (23 faltas recibidas).
+- **Cabo Verde** — Aéreo: **Logan Costa** (CB, **⚠️ post-LCA, ritmo en duda**), R. Lopes, Livramento (9). Card-prone: **Kevin Pina** ("destroyer"; cifra n/d). Foul-drawer: **Garry Rodrigues, Jovane Cabral**.
+- **Sudáfrica** — Aéreo: **Ngezana, Mbokazi, Sibisi** (CBs; **⚠️ NO Mvala/Mbatha — Mbatha es MC**), Foster (9). Card-prone: **Mokoena** (pivote, amonestado vs Egipto + historial). Foul-drawer: **Mofokeng, Appollis** (jóvenes de banda).
+- **RD Congo** — Aéreo: **Mbemba** (CB), Bakambu (9). Card-prone: **Wan-Bissaka** (2 TA PL, lateral físico), Mbemba. Foul-drawer: **Wissa, Mbuku**.
 
 ---
 
