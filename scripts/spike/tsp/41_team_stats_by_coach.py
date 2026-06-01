@@ -132,9 +132,10 @@ async def _aggregate(c, name: str, tid: int, since: str) -> dict | None:
         rows.append({
             "poss": m.get("Ball Possession"), "pass_pct": m.get("Passes %"),
             "shots_f": m.get("Total Shots"), "sot_f": m.get("Shots on Goal"),
-            "shots_a": o.get("Total Shots"),
+            "shots_a": o.get("Total Shots"), "sot_a": o.get("Shots on Goal"),
             "corn_f": m.get("Corner Kicks"), "corn_a": o.get("Corner Kicks"),
-            "fouls": m.get("Fouls"), "gf": gf, "ga": ga,
+            "fouls": m.get("Fouls"), "yellow": m.get("Yellow Cards"),
+            "red": m.get("Red Cards"), "gf": gf, "ga": ga,
         })
         if len(rows) >= MAX_MATCHES:
             break
@@ -148,9 +149,11 @@ async def _aggregate(c, name: str, tid: int, since: str) -> dict | None:
     return {
         "coach": COACH_SINCE[name][0], "since": since, "n_matches": len(rows),
         "possession": avg("poss"), "pass_pct": avg("pass_pct"),
-        "shots_for": avg("shots_f"), "sot_for": avg("sot_f"), "shots_against": avg("shots_a"),
+        "shots_for": avg("shots_f"), "sot_for": avg("sot_f"),
+        "shots_against": avg("shots_a"), "sot_against": avg("sot_a"),
         "corners_for": avg("corn_f"), "corners_against": avg("corn_a"),
-        "fouls": avg("fouls"), "goals_for": avg("gf"), "goals_against": avg("ga"),
+        "fouls": avg("fouls"), "yellow_cards": avg("yellow"), "red_cards": avg("red"),
+        "goals_for": avg("gf"), "goals_against": avg("ga"),
     }
 
 
@@ -176,6 +179,7 @@ async def main() -> None:
                   f"pos={agg['possession']} pass%={agg['pass_pct']} "
                   f"sh {agg['shots_for']}/{agg['shots_against']} "
                   f"corn {agg['corners_for']}/{agg['corners_against']} "
+                  f"fls {agg['fouls']} yc {agg['yellow_cards']} "
                   f"GF/GA {agg['goals_for']}/{agg['goals_against']}")
     OUT.write_text(json.dumps(out, indent=2, ensure_ascii=False))
     print(f"\n-> {len(out)} teams -> {OUT}")
