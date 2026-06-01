@@ -803,6 +803,34 @@ Over-córners de Chequia** en sus tres partidos (y, en los Chequia-fuera, los tr
 - **Cabo Verde** — Aéreo: **Logan Costa** (CB, **⚠️ post-LCA, ritmo en duda**), R. Lopes, Livramento (9). Card-prone: **Kevin Pina** ("destroyer"; cifra n/d). Foul-drawer: **Garry Rodrigues, Jovane Cabral**.
 - **Sudáfrica** — Aéreo: **Ngezana, Mbokazi, Sibisi** (CBs; **⚠️ NO Mvala/Mbatha — Mbatha es MC**), Foster (9). Card-prone: **Mokoena** (pivote, amonestado vs Egipto + historial). Foul-drawer: **Mofokeng, Appollis** (jóvenes de banda).
 - **RD Congo** — Aéreo: **Mbemba** (CB), Bakambu (9). Card-prone: **Wan-Bissaka** (2 TA PL, lateral físico), Mbemba. Foul-drawer: **Wissa, Mbuku**.
+#### AFC + OFC
+- **Japón** — Aéreo: **Ueda** (target Feyenoord); CBs Itakura/Tomiyasu (equipo **bajo** → aéreo nicho). Card-prone: Endo/Morita/Tanaka (pivotes) **pero TA 0.9 → over-cards individual FLOJO** (el equipo más disciplinado). Foul-drawer: **Kubo** (regateador ref. sin Mitoma), Doan, Ito.
+- **Corea del Sur** — Aéreo: **Kim Min-jae** (~1.8 aéreos/p, dominante), Cho Gue-sung (9 alto). Card-prone: **Hwang Hee-chan** (5 TA PL; **⚠️ In-beom NO: solo 2 TA**). Foul-drawer: **Lee Kang-in, Hwang Hee-chan**.
+- **Irán** — Aéreo: **Taremi** (58% duelos aéreos), **Ezatolahi** (1.90m). Card-prone: **Ezatolahi** (4 TA + 1 roja/13, 2.21 faltas/90), Sayyadmanesh (5 TA). Foul-drawer: **Taremi** (26 faltas recibidas). (⚠️ Hosseini es portero, no CB.)
+- **Australia** — Aéreo (clave, deliverer): **Souttar** (header-anytime real), Burgess, Circati (torres). Card-prone: **n/d** (⚠️ Irvine NO: 0 TA/1 roja en 22). Foul-drawer: **Irankunda** (Boyle/Goodwin FUERA).
+- **Arabia Saudí** — Aéreo: **Al-Tambakti, Al-Amri** (CBs), Al-Buraikan (9). Card-prone: **n/d** (Kanno solo 2 TA/30). Foul-drawer: **n/d** (Al-Dawsari excl., FK).
+- **Catar** — Aéreo: **Khoukhi, Lucas Mendes**, Almoez (equipo **bajo** → aéreo bajo). Card-prone: **n/d**. Foul-drawer: **Hatem, Madibo** (Afif excl., FK).
+- **Uzbekistán** — Aéreo: **Khusanov** (~50% aéreos), Shomurodov. Card-prone: **n/d** (Khusanov solo 2 TA, 0.93 faltas/90). Foul-drawer: **Fayzullaev**.
+- **Jordania** — Aéreo: **Yazan Al-Arab, Nasib** (CBs), **Olwan** (9, tras la baja de Al-Naimat). Card-prone: **n/d**. Foul-drawer: **Al-Tamari** (apto, único desborde).
+- **Irak** — Aéreo: **Sulaka, Doski** (CBs altos), **Aymen Hussein**, Al-Hamadi. Card-prone: **n/d** (Al-Ammari excl., 1 TA). Foul-drawer: **Zidane Iqbal, Al-Hamadi**.
+- **Nueva Zelanda** — Aéreo (clave, deliverer): **Wood** (foco + goleador), Boxall/Bindon (CBs). Card-prone: **Stamenić** (12 TA en Championship 25-26 + suspensión), Boxall. Foul-drawer: **Cacace**.
+
+### Síntesis #B — shopping list de props (las 48)
+
+**Rematadores de cabeza (ejecutan el mismatch aéreo de §6.8 vs zaga 🔴/GK-débil):** Schick·Souček·Krejčí (Chequia),
+**Wood** (NZ), **Souttar** (Australia), **Sørloth+Haaland** (Noruega), Gómez·Alderete (Paraguay), Davinson·Mina (Colombia),
+Niakhaté·N.Jackson (Senegal), Demiral (Turquía), Merino (España), Tah·Rüdiger (Alemania), McTominay·Souttar (Escocia), Budimir (Croacia).
+
+**Card-prone con CIFRA dura (player-cards-over, cruzar con árbitro #3):** **Stamenić 12** (NZ) · **Romero 10+2R** (Arg, si juega) ·
+**Casemiro 9+1R** (Bra) · **Adams 8** (USA) · **Cubas 7+5** (Par) · **Lerma 7** (Col) · **Brozović 7** (Cro) · **Hwang Hee-chan 5 · McGinn 5 · Palhinha 5 · Sayyadmanesh 5** ·
+**Djiku 5+1R · Ezatolahi 4+1R · Edson 4 · Trezeguet 4 · Duverne 4 · L.Bacuna 4** · Kolašinac/Onana/Koné/Wan-Bissaka 3. (Xhaka, Souček, Kessié = perfil sin cifra limpia.)
+
+**Foul-drawers (generan FK/tarjeta rival):** **Doku** (Bel) · **Nusa 56** (Nor) · **Leão 34 · Demirović 34** · **Yamal** (Esp) · Mbappé·Dembélé (Fra) ·
+**Al-Tamari** (Jor) · **Kubo** (Jpn) · **Semenyo·Iñaki 23** (Gha) · Vinícius·Raphinha (Bra) · C.Martínez 15 (Pan) · Pellistri (Uru).
+
+> **Honestidad:** muchas cifras son de **club 2025-26** (proxy de tendencia, no de selección); varios equipos = **n/d**
+> (Arabia, Catar, Jordania, Irak — no fabricado). El cuello de botella sigue siendo la **CUOTA** ([[project_player_props_and_data_research]]).
+> Japón: aunque tiene pivotes, su **TA 0.9** hace flojo cualquier over-cards individual. Re-verificar XI/lesiones del día.
 
 ---
 
