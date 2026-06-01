@@ -625,6 +625,15 @@ SELECCIÓN — DT
 - **Ecuador 🟢** (matiz 🟡 micro-ABP). **Pacho + Hincapié** élite, sin grieta aérea estructural. PERO **su único gol reciente encajado fue de ABP** (vs Marruecos; el capitán-CB Pacho lo admitió: "hay que corregir") y **Galíndez (38) no domina alto** → micro-edge en córner-rival/scorer-de-ABP, no en juego abierto.
 - **Paraguay 🟢.** **Fortaleza aérea pura: Gustavo Gómez + Alderete** (colosos) dominan ambas áreas; 10 GA en 18, sin goles de córner/FK recientes (los 2 vs Marruecos fueron de jugada). **Atacarlos por ABP = ir a su mejor terreno** → ángulo es contra-córner / under, NO header rival.
 
+#### CONCACAF (anfitriones frágiles; vector frecuente = portero pasivo + segundas jugadas)
+
+- **México 🔴.** **🔴 CORRIGE §6.7: Malagón LESIONADO y FUERA → titular Raúl "Tala" Rangel (Chivas)** (Ochoa relevo); Araujo no convocado. Evidencia dura: en el **0-4 vs Colombia, 2 de 4 goles fueron de ABP** (Lucumí de cabeza con el GK clavado bajo el arco + Lerma de set-piece) → marca individual perdida + portero pasivo a centros. **Rangel sin rodaje en este escenario** = incógnita. Salida-desde-atrás explotable agrava.
+- **EE.UU. 🟡.** Sin **Richards** (su mejor defensor aéreo de ABP, duda tobillo) baja el techo. Pareja **McKenzie + Ream (37)** lenta, pero la fragilidad PROBADA es **en transición** (los 7 goles recientes y el doblete de Mané fueron de pérdidas/jugada, no córner). Riesgo aéreo latente, no edge demostrado en ABP.
+- **Canadá 🟡.** Bloque sólido (**solo 2 goles de ABP en 15**) PERO cede **42.5% de córners-en-contra convertidos en remate** (señal reactiva) y **St. Clair fue batido de cabeza** (Rubín, Gold Cup); portero no dominante en el aire → ventana de segunda jugada. CBs (Vitória/Cornelius/Bombito) no señalados como débiles.
+- **Panamá 🟡** (→ 🔴 vs élite aérea). **Córdoba (CB ancla): los duelos aéreos son su DEBILIDAD per scouting**; **Mosquera (GK) errático** (regaló penal vs Brasil). En el 6-2 vs Brasil: cabezazo libre de Casemiro + desvío de FK + penal del GK. Sólido vs pares CONCACAF, explotable por córner/FK ante calidad aérea (Inglaterra/Croacia, su grupo).
+- **Curaçao 🔴.** Zaga neerlando-caribeña **modesta, sin gigante aéreo**; **Eloy Room (37) no domina el área**. Cedió **cabezazos vs Australia (1-5)** y **set-piece ensayado vs Escocia (1-4)** en sus 2 últimos (ojo: vs Escocia jugó 52' con 10). El "5 GA" de la quali está **caducado** → córner/header-anytime del rival + team-total rival.
+- **Haití 🟡.** Defensa globalmente porosa (**13 GA en quali**) pero CBs (Lacroix/Delcroix) **físicos y capaces en el aire**; concesión ABP concreta = **córner de Ugalde al 92' vs Costa Rica** (3-3). Portero **Placide (38)** sin dato de salidas (la edad invita cautela). No 🔴 sin más muestra de patrón aéreo.
+
 ---
 
 ## 7. Fuentes
