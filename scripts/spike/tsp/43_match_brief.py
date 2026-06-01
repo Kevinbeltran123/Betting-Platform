@@ -32,6 +32,7 @@ VENUES = json.loads((C / "tsp" / "wc2026_venues.json").read_text())
 _TR = C / "tsp" / "travel_rest.json"
 TRAVEL = json.loads(_TR.read_text()) if _TR.exists() else {}
 CSV = C / "martj42_international_results.csv"
+ODDS = C / "tsp" / "odds"   # caché de cuotas (mejora #1, escrita por 45_match_odds.py)
 
 # Derivado de §6.8 (rating ABP DEFENSIVA) + síntesis. Actualizar si §6.8 cambia.
 # r=rating defensa-ABP, dlv=ataque-ABP fuerte (deliverer), gk=portero débil saliendo, host=anfitrión.
@@ -159,6 +160,99 @@ def aerial_flag(att: str, dfn: str) -> str | None:
     return None
 
 
+def _slug(n: str) -> str:
+    return n.replace(" ", "_").replace("'", "").replace("ô", "o").lower()
+
+
+def load_odds(h: str, a: str) -> dict | None:
+    f = ODDS / f"{_slug(h)}_vs_{_slug(a)}.json"
+    return json.loads(f.read_text()) if f.exists() else None
+
+
+def _exp_corners(h: str, a: str) -> float | None:
+    """Total de córners esperado (crudo, no SoS-aj): mezcla F propio con C del rival."""
+    sh, sa = STATS.get(h), STATS.get(a)
+    if not sh or not sa:
+        return None
+    vals = (sh.get("corners_for"), sh.get("corners_against"),
+            sa.get("corners_for"), sa.get("corners_against"))
+    if any(v is None for v in vals):
+        return None
+    cfh, cah, cfa, caa = vals
+    return round((cfh + caa) / 2 + (cfa + cah) / 2, 1)
+
+
+def _exp_cards(h: str, a: str) -> float | None:
+    """Amarillas combinadas esperadas (proxy: TA propia de cada lado, sin árbitro)."""
+    sh, sa = STATS.get(h), STATS.get(a)
+    if not sh or not sa:
+        return None
+    yh, ya = sh.get("yellow_cards"), sa.get("yellow_cards")
+    if yh is None or ya is None:
+        return None
+    return round(yh + ya, 1)
+
+
+def price_section(h: str, a: str, eh: float | None, ea: float | None) -> list[str]:
+    """Puente evidencia<->mercado. AUTO = API-Football (de-vig Pinnacle); MANUAL = pegado."""
+    out = ["\n## Precio y línea"]
+    odds = load_odds(h, a)
+    if not odds:
+        out.append(f"- Sin caché de cuotas. Corre `45_match_odds.py \"{h}\" \"{a}\"` cerca del KO "
+                   "(ventana ~7-14d) y/o pega líneas blandas en data/cache/tsp/manual_odds/.")
+        return out
+    auto = odds.get("auto") or {}
+    manual = odds.get("manual") or {}
+
+    mw = auto.get("match_winner")
+    if mw and mw.get("fair_pinnacle"):
+        fp, bet = mw["fair_pinnacle"], (mw.get("betano") or {})
+        out.append(f"- [AUTO] 1X2 justo (Pinnacle de-vig): {h} {fp['home']:.0%} / X {fp['draw']:.0%} / {a} {fp['away']:.0%}"
+                   + (f" · Betano {bet.get('home')}/{bet.get('draw')}/{bet.get('away')}" if bet else ""))
+        if eh and ea:
+            mkt_fav = h if fp["home"] > fp["away"] else a
+            elo_fav = h if eh > ea else a
+            if mkt_fav != elo_fav:
+                out.append(f"  · ⚠️ Elo favorece a **{elo_fav}** pero el mercado a **{mkt_fav}** → discrepancia, investiga.")
+    ou = auto.get("over_under") or []
+    if ou and ou[0].get("fair_pinnacle_over") is not None:
+        r, bet = ou[0], (ou[0].get("betano") or {})
+        out.append(f"- [AUTO] Totales O/U {r['line']}: justo Over {r['fair_pinnacle_over']:.0%}"
+                   + (f" · Betano {bet.get('over')}/{bet.get('under')}" if bet else ""))
+    btts = auto.get("btts")
+    if btts and btts.get("fair_pinnacle_yes") is not None:
+        out.append(f"- [AUTO] BTTS: justo Sí {btts['fair_pinnacle_yes']:.0%}.")
+    ah = auto.get("asian_handicap") or []
+    if ah and ah[0].get("fair_pinnacle_home") is not None:
+        r, bet = ah[0], (ah[0].get("betano") or {})
+        out.append(f"- [AUTO] AH {h} {r['line']}: justo {r['fair_pinnacle_home']:.0%}"
+                   + (f" · Betano {bet.get('home')}/{bet.get('away')}" if bet else ""))
+    if not auto.get("books"):
+        out.append(f"- [AUTO] {auto.get('note', 'sin cuotas API todavía')}.")
+
+    co = manual.get("corners_ou")
+    if co:
+        exp, tag = _exp_corners(h, a), ""
+        if exp is not None:
+            d = exp - co["line"]
+            soft = " — parece BLANDA" if abs(d) >= 1.0 else ""
+            tag = f" · rate combinado ~{exp}/p (crudo, no SoS-aj) → lean {'Over' if d > 0 else 'Under'} {d:+.1f}{soft}"
+        out.append(f"- [MANUAL] Córners O/U {co['line']} ({co.get('book','?')} {co.get('over')}/{co.get('under')}){tag}")
+    ca = manual.get("cards_ou")
+    if ca:
+        exp, tag = _exp_cards(h, a), ""
+        if exp is not None:
+            d = exp - ca["line"]
+            tag = f" · TA combinadas ~{exp}/p (proxy, sin árbitro #3) → lean {'Over' if d > 0 else 'Under'} {d:+.1f}"
+        out.append(f"- [MANUAL] Tarjetas O/U {ca['line']} ({ca.get('book','?')} {ca.get('over')}/{ca.get('under')}){tag}")
+    for pp in manual.get("player_props", []):
+        out.append(f"- [MANUAL] Prop {pp.get('player')}: {pp.get('market')} {pp.get('line')} "
+                   f"({pp.get('book','?')} {pp.get('over') or pp.get('odd')})")
+    out.append("> AUTO = API-Football (justo = Pinnacle de-vig). MANUAL = línea que pegaste tú. "
+               "Evidencia vs línea — NO es EV ni pick.")
+    return out
+
+
 def main() -> None:
     if len(sys.argv) < 3:
         print("uso: 43_match_brief.py <local> <visitante>")
@@ -260,6 +354,9 @@ def main() -> None:
     if fh and fa:
         L.append(f"- Faltas {h} {fh['fouls']} / {a} {fa['fouls']} · TA {h} {fh['yellow_cards']} / {a} {fa['yellow_cards']}.")
     L.append("- Recordar: **faltas ≠ tarjetas** (priorizar TA/p alto, no volumen de faltas). Árbitro = co-driver (pendiente #3).")
+
+    # 5b. Precio y línea (mejora #1) — puente evidencia<->mercado
+    L.extend(price_section(h, a, eh, ea))
 
     # 6. Profundización (leer prosa)
     L.append("\n## Profundización — LEER prosa")

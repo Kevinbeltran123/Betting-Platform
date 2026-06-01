@@ -1,0 +1,9 @@
+{
+  "_README": "Plantilla de cuotas MANUALES para mercados que API-Football no puebla (córners, tarjetas, props de jugador). Copia este archivo a data/cache/tsp/manual_odds/{home_slug}_vs_{away_slug}.json (ese dir está gitignored), pega las líneas REALES que ves en Betano, y 45_match_odds.py lo mergea al cache que lee el brief. slug = nombre en minúsculas, espacios->_, sin apóstrofes (p.ej. mexico_vs_south_africa.json). Todo opcional: incluye solo los mercados que tengas.",
+  "corners_ou": {"line": 9.5, "over": 1.90, "under": 1.90, "book": "Betano"},
+  "cards_ou": {"line": 4.5, "over": 2.00, "under": 1.80, "book": "Betano"},
+  "player_props": [
+    {"player": "Hirving Lozano", "market": "remates a puerta O/U", "line": 0.5, "over": 1.80, "book": "Betano"},
+    {"player": "Yellow-prone CB", "market": "tarjeta jugador", "line": null, "odd": 3.20, "book": "Betano"}
+  ]
+}
