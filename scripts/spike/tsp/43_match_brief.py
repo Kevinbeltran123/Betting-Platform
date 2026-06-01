@@ -253,6 +253,46 @@ def price_section(h: str, a: str, eh: float | None, ea: float | None) -> list[st
     return out
 
 
+def synthesis(sig: list[dict]) -> list[str]:
+    """Descuenta correlación: N viñetas != N señales. Cuenta MECANISMOS independientes
+    por mercado/dirección, marca el mismo mecanismo repetido (cuenta como 1) y los lados
+    opuestos (conflicto = incertidumbre, no edge). Mejora #3."""
+    out = ["\n## Síntesis ponderada (descontando correlación)"]
+    if not sig:
+        out.append("- Sin señales direccionales que sintetizar (solo datos crudos arriba).")
+        return out
+    markets: dict[str, list[dict]] = {}
+    for s in sig:
+        markets.setdefault(s["market"], []).append(s)
+    for market, items in markets.items():
+        dirs: dict[str, list[dict]] = {}
+        for s in items:
+            dirs.setdefault(s["dir"], []).append(s)
+        conflict = (market == "Totales" and "Over" in dirs and "Under" in dirs)
+        if market == "Lado":
+            plus = {d[1:] for d in dirs if d.startswith("+")}
+            minus = {d[1:] for d in dirs if d.startswith("-")}
+            conflict = bool(plus & minus)
+        out.append(f"- **{market}**" + ("  — ⚠️ EN CONFLICTO (incertidumbre, NO edge)" if conflict else ""))
+        for d, ss in dirs.items():
+            mechs = {x["mech"] for x in ss}
+            dup = [m for m in mechs if sum(1 for x in ss if x["mech"] == m) > 1]
+            if market == "Lado":
+                label = (f"a favor {d[1:]}" if d.startswith("+")
+                         else f"contra {d[1:]} (fade)" if d.startswith("-") else d)
+            elif market == "Córners":
+                label = f"córners de {d}"
+            else:
+                label = d
+            tag = (f"  ⚠️ mecanismo repetido ({', '.join(dup)}) → cuenta como {len(mechs)}" if dup else "")
+            srcs = "; ".join(f"{x['src']} [{x['mech']}·{x['conf']}]" for x in ss)
+            out.append(f"  - {label}: **{len(mechs)} mec. indep.**{tag} — {srcs}")
+    out.append("> N viñetas ≠ N señales: las que comparten mecanismo cuentan como UNA; lados opuestos = "
+               "ruido, no confianza. El entorno-local (host-fade ↔ ventaja local/altitud/descanso) se "
+               "reconcilia en un neto con signo — pendiente #4.")
+    return out
+
+
 def main() -> None:
     if len(sys.argv) < 3:
         print("uso: 43_match_brief.py <local> <visitante>")
@@ -272,6 +312,7 @@ def main() -> None:
     mh, ma = TEAM_META[h], TEAM_META[a]
 
     L = []
+    SIG: list[dict] = []   # señales direccionales para la síntesis (#3)
     L.append(f"# BRIEF PRE-PARTIDO — {h} vs {a}")
     loc = f"{ven['stadium']} ({city})" if ven else (city or "sede n/d")
     L.append(f"{loc} · {date or 'fecha n/d'} · {tourn or ''} · {matchday(date) if date else ''}".strip(" ·"))
@@ -284,13 +325,16 @@ def main() -> None:
              + (f" — {matchday(date)}" if date else ""))
     if date and matchday(date) == "J3":
         L.append("- **J3: formato 48 → sin dead-rubbers, terceros persiguen goles → sesgo OVER/ataque** (no cagey).")
+        SIG.append({"market": "Totales", "dir": "Over", "mech": "formato-MD3", "src": "J3 sin dead-rubbers", "conf": "baja"})
     for t, m in ((h, mh), (a, ma)):
         if m.get("host"):
             L.append(f"- ⚠️ **{t} ANFITRIÓN** → recordar host-fade histórico (-12-18pp).")
+            SIG.append({"market": "Lado", "dir": f"-{t}", "mech": "entorno-local", "src": f"{t} host-fade", "conf": "baja"})
     if mh["cf"] != ma["cf"]:
         for t, m in ((h, mh), (a, ma)):
             if m["cf"] in CONF_EDGE:
                 L.append(f"- Confederación {t} ({m['cf']}): {CONF_EDGE[m['cf']]}.")
+                SIG.append({"market": "Lado", "dir": f"+{t}", "mech": "confederación", "src": f"{t} {m['cf']}", "conf": "baja"})
 
     # 2. Entorno de sede
     L.append("\n## Entorno (sede)")
@@ -299,10 +343,13 @@ def main() -> None:
             L.append(f"- Techo {ven['roof']}+AC → **calor NEUTRALIZADO**; tratar como neutro.")
         elif ven["heat"] in ("alto", "MAX"):
             L.append(f"- **Calor {ven['heat']}** (sede abierta) → si franja de día, lean **Under/ritmo↓ 2ª parte**. Cruzar con pronóstico real.")
+            SIG.append({"market": "Totales", "dir": "Under", "mech": "físico-calor", "src": f"calor {ven['heat']} sede abierta", "conf": "baja"})
         else:
             L.append(f"- Clima templado ({ven['stadium']}).")
         if ven["altitude_m"] >= 1500:
             L.append(f"- **Altitud {ven['altitude_note']}** → ritmo/Over + ventaja del aclimatado.")
+            SIG.append({"market": "Totales", "dir": "Over", "mech": "físico-altitud", "src": f"altitud {ven['altitude_note']}", "conf": "baja"})
+            SIG.append({"market": "Lado", "dir": f"+{h}", "mech": "entorno-local", "src": "altitud: ventaja del aclimatado (local)", "conf": "baja"})
         L.append(f"- Cluster {ven['cluster']} / huso {ven['tz']}.")
     else:
         L.append("- Sede no mapeada (pasar ciudad del CSV o revisar venues.json).")
@@ -321,6 +368,9 @@ def main() -> None:
         L.append(f"- {a}: {leg_txt('away')}")
         if tr["rest_edge"] and tr["rest_edge"] != "igual":
             L.append(f"- ⚠️ **Ventaja de descanso: {tr['rest_edge']}** (tilt fatiga → Under/favorito-frena del lado cansado).")
+            rested = tr["rest_edge"].split(" +")[0]
+            SIG.append({"market": "Lado", "dir": f"+{rested}", "mech": "físico-fatiga", "src": tr["rest_edge"], "conf": "media"})
+            SIG.append({"market": "Totales", "dir": "Under", "mech": "físico-fatiga", "src": "lado cansado frena", "conf": "baja"})
 
     # 3. Fuerza ajustada (SoS) + stats
     L.append("\n## Fuerza (SoS-ajustada) y stats DT")
@@ -332,7 +382,10 @@ def main() -> None:
     L.append(f"  · {stat_line(a)}")
     if eh and ea:
         fav = h if eh > ea else a
-        L.append(f"- Edge de Elo: **{fav}** (+{abs(eh-ea):.0f}).")
+        delta = abs(eh - ea)
+        L.append(f"- Edge de Elo: **{fav}** (+{delta:.0f}).")
+        SIG.append({"market": "Lado", "dir": f"+{fav}", "mech": "fuerza-Elo",
+                    "src": f"Elo +{delta:.0f}", "conf": "alta" if delta >= 80 else "media"})
     for t, cal in ((h, calh), (a, cala)):
         if cal == "FLOJO":
             L.append(f"- ⚠️ Stats de {t} **INFLADAS** (calendario flojo) → descontar GA/GF bajos vs este rival.")
@@ -342,7 +395,13 @@ def main() -> None:
     # 4. Mismatches ABP (el valor)
     L.append("\n## Mismatches a balón parado (§6.8)")
     L.append(f"- ABP defensiva: {h} {mh['r']} · {a} {ma['r']}")
-    flags = [f for f in (aerial_flag(h, a), aerial_flag(a, h)) if f]
+    flags = []
+    for att, dfn in ((h, a), (a, h)):
+        f = aerial_flag(att, dfn)
+        if f:
+            flags.append(f)
+            SIG.append({"market": "Córners", "dir": att, "mech": "balón-parado",
+                        "src": f"ABP fuerte {att} × zaga frágil {dfn}", "conf": "media"})
     if flags:
         L.extend(f"- {f}" for f in flags)
     else:
@@ -357,6 +416,9 @@ def main() -> None:
 
     # 5b. Precio y línea (mejora #1) — puente evidencia<->mercado
     L.extend(price_section(h, a, eh, ea))
+
+    # 5c. Síntesis ponderada (mejora #3) — descuenta correlación entre las señales de arriba
+    L.extend(synthesis(SIG))
 
     # 6. Profundización (leer prosa)
     L.append("\n## Profundización — LEER prosa")
