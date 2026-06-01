@@ -585,6 +585,39 @@ SELECCIÓN — DT
 
 ---
 
+## 6.8 — Vulnerabilidad DEFENSIVA a balón parado (jun-2026)
+
+> **Qué es.** Mejora #4 del roadmap ([[project_wc2026_analysis_gaps_roadmap]]). §6.7 dio los **ejecutantes**
+> de ABP (ofensiva); esta capa da el **otro lado: quién es FRÁGIL defendiendo córners/FK** (esquema de marca,
+> eslabón aéreo débil, mando de área del portero), con datos ACTUALES 2025-26 (pareja de centrales de junio).
+> El edge = **mismatch** equipo-aéreo (§6.7 takers + rematadores altos) × zaga vulnerable → córner/header en contra.
+>
+> **Honestidad (importante):** NO existe **xGA de balón parado público para selecciones** → estas notas son
+> **cualitativas** (esquema de marca + eslabón débil + evidencia de goles concretos encajados), no una métrica.
+> Rating: **🔴 vulnerable · 🟡 medio · 🟢 fuerte en el aire**. Hilo recurrente que destapó la investigación: en
+> varias selecciones el agujero es el **portero saliendo a centros**, no el central. Re-verificar el XI del día.
+
+#### UEFA
+
+- **Inglaterra 🟡.** **Guéhi** frágil en el aire (duelos aéreos pobres) y **sin Maguire/Konsa en el 26 → cero plan-B aéreo de banquillo**; mitiga que **Pickford SÍ comanda centros**. 0 GA en quali pero vs grupo flojo (no predictivo). Marca híbrida (no detallada).
+- **Francia 🟡.** CBs **élite aéreos** (Saliba/Upamecano/Konaté) NO son el agujero → el riesgo es **Maignan dudoso saliendo a centros en partidos grandes** + el leak 2025 (Islandia 2-2, gol de **FK mal defendido**).
+- **España 🟢.** Corrige la premisa "zonal puro": marca **individual + 2 zonales** (efectiva, 2 GA en quali). Riesgo real = **línea alta a la espalda**, NO el córner; **Huijsen (1.95) aporta peso aéreo** si entra; Simón sale poco.
+- **Alemania 🟢** (matiz 🟡). **Tah/Rüdiger** fuertes por arriba, **Neuer** mantiene autoridad de área (CL 25-26); los goles encajados fueron de **juego abierto**, no ABP. Esquema defensivo no público.
+- **Portugal 🟡** (→ alto sin Rúben Dias). **Diogo Costa SALE pero con juicio errático**: falló el puño en córner vs Hungría (14-oct) → gol de Szalai (≥1/7 GA de córner). **Sin Dias**, Inácio/Veiga no dominan el aire → vector real. Ver CB titular el 17-jun.
+- **Países Bajos 🟡** (🔴 si arranca Aké+Hato). **Sin De Ligt ni De Vrij** se erosiona el aéreo; Van Dijk queda **solo bien acompañado**; **Verbruggen pasivo en su área**. Pero los goles vs Polonia fueron de **jugada**, no ABP → riesgo estructural/teórico, no demostrado aún.
+- **Bélgica 🟡.** Zaga joven **De Winter/Theate sin probar** + lapsus de concentración; **Courtois mitiga el córner directo** (domina área). 5 goles vs Gales (frágil también vs bloque). Lean Over/BTTS sigue.
+- **Croacia 🟢.** **4 GA en quali (mejor del grupo)**; las concesiones recientes fueron **transición / FK directo de Olise**, NO aéreo. Riesgo = **ritmo/arranque oxidado** (Gvardiol/Kovačić de lesión), no córner.
+- **Suiza 🟢.** **Elvedi domina el aire**, **Kobel #1** (Sommer retirado), back-3, **2 GA en quali**. Sin Schär resta experiencia, no solidez aérea. Sin evidencia de fuga por ABP.
+- **Austria 🟢.** **Danso/Lienhart** buen porte aéreo, **4 GA élite** en quali. Sube a 🟡 **solo si Alaba arranca** (falta de ritmo). GK Schlager sin dato de salidas. Sin edge demostrable en córner en contra.
+- **Noruega 🟡** (datos insuficientes). CBs jun-2026 = **Ajer + Heggem** (no Østigård/Ryerson del overlay; Ryerson es lateral). Fragilidad documentada = **línea alta/transición**, no aérea; equipo físicamente alto; 5 GA pero vs grupo flojo (solo Italia fue test).
+- **Escocia 🟡.** Frágil ante **centros y segundas jugadas** (Souttar —es de Escocia, Rangers— errático; **Gunn no domina el área**), 9 GA en quali. Goles puros de córner/FK **no confirmados** → la fuga es por banda/abierto; bloque compacto mitiga.
+- **Chequia 🟡.** **5-3-2 con marca AL HOMBRE** → expone en 1v1 (los arrastra fuera de posición). Paradoja: **élite atacando ABP, no defendiéndolo**; Croacia le hizo 5 (cabezazo + gol de córner de Modrić), **17 GA en quali**. **Jaroš lesionado → Staněk**. Krejčí (CB) decente aéreo.
+- **Suecia 🔴.** **12-13 GA en quali, 0 porterías a cero**; prensa cita explícitamente **"defensa de balón parado ineficaz"** + fallo de marca al **segundo palo** (2-0 de Świderski); **Nordfeldt cuestionado**. Muestra chica bajo Potter, pero el historial es de hemorragia. El más vulnerable de UEFA.
+- **Turquía 🟡.** Fragilidad defensiva **general** confirmada (0-6 España) pero ese fue **transición**, no ABP estática; mecanismo histórico de **mal marcaje/posición en el área** (Euro 2024) → sufre ante targetman aéreo. CBs Demiral/Bardakcı; Çakır GK sólido.
+- **Bosnia 🟡.** **🔴 CORRIGE §6.7: el 26 final NO lleva a Ahmedhodžić ni Bišćan** → CBs reales **Katić (Schalke) + Muharemović (Sassuolo)**, Kolašinac de LI. Físicos compiten el aire, pero **Vasilj flojo saliendo** (su error regaló el 1-0 a Italia) y caen por **fatiga/edad** en bandas.
+
+---
+
 ## 7. Fuentes
 
 **Tier 1 — educadores de entrenadores / cuerpos técnicos:**
