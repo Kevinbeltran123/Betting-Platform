@@ -95,8 +95,10 @@ ALIASES = {  # input cómodo -> nombre lock
     "türkiye": "Turkey", "turkey": "Turkey", "curacao": "Curaçao",
 }
 
-# Señales de confederación (project_wc2026_operational_signals)
-CONF_EDGE = {"CONMEBOL": "+5% vs UEFA (histórico)", "CAF": "CAF×AFC edge ×1.40 si enfrenta AFC"}
+# Señales de confederación (project_wc2026_operational_signals). #8: PRIOR DÉBIL —
+# muestra chica de WCs de 32 equipos; se da DIRECCIÓN, no magnitud (sin +5%/×1.40 a ciegas).
+CONF_EDGE = {"CONMEBOL": "leve edge vs UEFA (PRIOR débil, WCs pasados — dirección, no magnitud)",
+             "CAF": "edge si enfrenta AFC (PRIOR débil, muestra chica — dirección, no magnitud)"}
 
 
 def resolve(name: str) -> str | None:
@@ -387,11 +389,13 @@ def main() -> None:
     L.append(f"- Competición: {'**WC2026 (torneo)**' if is_wc else (tourn or 'amistoso/n/d')}"
              + (f" — {matchday(date)}" if date else ""))
     if date and matchday(date) == "J3":
-        L.append("- **J3: formato 48 → sin dead-rubbers, terceros persiguen goles → sesgo OVER/ataque** (no cagey).")
-        SIG.append({"market": "Totales", "dir": "Over", "mech": "formato-MD3", "src": "J3 sin dead-rubbers", "conf": "baja"})
+        L.append("- **J3: formato 48 → sin dead-rubbers, terceros persiguen goles → sesgo OVER/ataque** (no cagey)."
+                 " PRIOR NO TESTEADO (ningún WC de 48 previo) — dirección, no magnitud.")
+        SIG.append({"market": "Totales", "dir": "Over", "mech": "formato-MD3", "src": "J3 sin dead-rubbers (prior no testeado)", "conf": "baja"})
     for t, m in ((h, mh), (a, ma)):
         if m.get("host"):
-            L.append(f"- ⚠️ **{t} ANFITRIÓN** → recordar host-fade histórico (-12-18pp).")
+            L.append(f"- ⚠️ **{t} ANFITRIÓN** → host-fade (PRIOR DÉBIL: n-pequeño de WCs de 32, formato 48 "
+                     f"sin precedente; dirección leve CONTRA el anfitrión, NO una magnitud fija).")
             SIG.append({"market": "Lado", "dir": f"-{t}", "mech": "entorno-local", "src": f"{t} host-fade", "conf": "baja"})
     if mh["cf"] != ma["cf"]:
         for t, m in ((h, mh), (a, ma)):
