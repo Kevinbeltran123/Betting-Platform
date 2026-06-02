@@ -5,6 +5,13 @@ de evidencia ordenada para análisis HUMANO. NO puntúa ni emite picks
 (respeta feedback_analyst_approach): calcula los cruces mecánicos + señala dónde leer
 la prosa de notes/PLAYING_STYLES_REFERENCE.md.
 
+CANÓNICO (#9): ESTE es el artefacto analista de cabecera (lean, determinista, sin
+auto-pick). 39_analyze.py / build_match_intel es el auto-dossier completo (props,
+árbitro, arquetipo); se conserva como capa de datos pero NO se fusiona aquí a propósito
+(el auto-emit es justo lo que feedback_analyst_approach pidió evitar). TEAM_META es la
+única codificación estructurada de §6.8 (su fuente de verdad es la prosa; mantener en
+sync a mano). Guard de confederación abajo evita drift silencioso del campo cf.
+
 Uso:
     uv run python scripts/spike/tsp/43_match_brief.py "Mexico" "South Africa"
     uv run python scripts/spike/tsp/43_match_brief.py "Czech Republic" "South Africa"
@@ -86,6 +93,11 @@ TEAM_META: dict[str, dict] = {
     "Iraq": {"r": "🟡", "dlv": False, "gk": True, "cf": "AFC"},
     "New Zealand": {"r": "🟡", "dlv": True, "gk": True, "cf": "OFC"},
 }
+
+_KNOWN_CF = {"UEFA", "CONMEBOL", "CONCACAF", "CAF", "AFC", "OFC"}
+# #9: guard fail-loud — un cf con typo/drift en TEAM_META se cae aquí, no en silencio.
+assert all(m["cf"] in _KNOWN_CF for m in TEAM_META.values()), \
+    "TEAM_META: confederación desconocida (revisar §6.8)"
 
 ALIASES = {  # input cómodo -> nombre lock
     "usa": "United States", "us": "United States", "czechia": "Czech Republic",
@@ -486,7 +498,9 @@ def main() -> None:
     fh, fa = STATS.get(h, {}), STATS.get(a, {})
     if fh and fa:
         L.append(f"- Faltas {h} {fh['fouls']} / {a} {fa['fouls']} · TA {h} {fh['yellow_cards']} / {a} {fa['yellow_cards']}.")
-    L.append("- Recordar: **faltas ≠ tarjetas** (priorizar TA/p alto, no volumen de faltas). Árbitro = co-driver (pendiente #3).")
+    L.append("- Recordar: **faltas ≠ tarjetas** (priorizar TA/p alto, no volumen de faltas). "
+             "Árbitro = co-driver: cruza con la tabla de árbitros (#7, referee_tendencies_af) cuando FIFA lo asigne; "
+             "39_analyze lo aplica al board automáticamente.")
 
     # 5b. Precio y línea (mejora #1) — puente evidencia<->mercado
     L.extend(price_section(h, a, eh, ea))

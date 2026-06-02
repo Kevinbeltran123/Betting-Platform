@@ -7,6 +7,12 @@
 Pulls fresh injuries (Transfermarkt), looks up the referee if given, loads every
 cached layer + ESPN current form, assembles the Match Intel and writes/prints it.
 Read §0 (Investigar tú) first — it is a briefing, not a verdict.
+
+CANÓNICO (#9): este es el AUTO-DOSSIER completo (props/árbitro/arquetipo, capa de datos).
+Para el análisis de cabecera usa 43_match_brief.py (lean, determinista, con síntesis
+ponderada + entorno-local neto + precio); los dos NO se fusionan a propósito
+(feedback_analyst_approach evita el auto-emit). load_props/referee_by_name ya prefieren
+las fuentes API-Football (#2/#7).
 """
 from __future__ import annotations
 
