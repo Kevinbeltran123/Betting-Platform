@@ -140,11 +140,24 @@ def load_tid(slug: str, team: str):
 def referee_by_name(name: str | None) -> RefereeTendency | None:
     if not name:
         return None
-    f = CACHE / "referee_tendencies.json"
-    if not f.exists():
+    # #7: prefiere la tabla de API-Football (n grande, mismo formato de nombre que el
+    # fixture WC) y cae a la de StatsBomb por árbitro.
+    af = CACHE / "referee_tendencies_af.json"
+    sb = CACHE / "referee_tendencies.json"
+    af_tbl = json.loads(af.read_text()) if af.exists() else {}
+    sb_tbl = json.loads(sb.read_text()) if sb.exists() else {}
+    if not af_tbl and not sb_tbl:
         return None
-    table = json.loads(f.read_text())
-    key = next((k for k in table if name.lower() in k.lower() or k.lower() in name.lower()), None)
+
+    def _hit(tbl: dict) -> str | None:
+        return next((k for k in tbl
+                     if name.lower() in k.lower() or k.lower() in name.lower()), None)
+
+    key = _hit(af_tbl)
+    table = af_tbl
+    if key is None:
+        key = _hit(sb_tbl)
+        table = sb_tbl
     if key is None:
         return None
     r = table[key]
