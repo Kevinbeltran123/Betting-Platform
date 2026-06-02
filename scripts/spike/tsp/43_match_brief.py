@@ -135,9 +135,14 @@ def stat_line(name: str) -> str:
     s = STATS.get(name)
     if not s:
         return "(sin §6.6 — DT muy reciente)"
-    return (f"pos {s['possession']}% · SOT {s['sot_for']}/{s.get('sot_against','?')} · "
+    base = (f"pos {s['possession']}% · SOT {s['sot_for']}/{s.get('sot_against','?')} · "
             f"córn {s['corners_for']}/{s['corners_against']} · faltas {s['fouls']} · "
             f"TA {s['yellow_cards']} · GF/GA {s['goals_for']}/{s['goals_against']} (n={s['n_matches']})")
+    if s.get("n_friendly") is not None:  # régimen (#5)
+        base += f" · {s['n_competitive']}c/{s['n_friendly']}a"
+        if s.get("goals_for_comp") is not None:
+            base += f" · GF/GA solo-comp {s['goals_for_comp']}/{s['goals_against_comp']}"
+    return base
 
 
 def sos_line(name: str) -> tuple[str, float | None, str | None]:
@@ -148,6 +153,24 @@ def sos_line(name: str) -> tuple[str, float | None, str | None]:
             v["own_elo"], v["schedule"])
 
 
+def _abp_ga_coherence(dfn: str) -> str:
+    """#6: cruza el rating ABP cualitativo con la GA real para no emitir un flag que la
+    stat desmiente. Prefiere GA solo-competitivo (#5) sobre la cruda."""
+    s = STATS.get(dfn)
+    if not s:
+        return ""
+    ga = s.get("goals_against_comp")
+    if ga is None:
+        ga = s.get("goals_against")
+    if ga is None:
+        return ""
+    if ga <= 1.0:
+        return f" · ⚠️ pero GA {ga} (baja) → rating ABP en CONFLICTO con resultados; confirmar el porqué"
+    if ga >= 1.4:
+        return f" · corroborado por GA {ga} (alta)"
+    return f" · GA {ga} (media)"
+
+
 def aerial_flag(att: str, dfn: str) -> str | None:
     a, d = TEAM_META[att], TEAM_META[dfn]
     if a["dlv"] and (d["r"] == "🔴" or d["gk"]):
@@ -156,7 +179,8 @@ def aerial_flag(att: str, dfn: str) -> str | None:
             why.append("zaga 🔴")
         if d["gk"]:
             why.append("portero débil saliendo")
-        return f"🎯 {att} (ataque ABP fuerte) × {dfn} ({', '.join(why)}) → córner/header de {att}"
+        return (f"🎯 {att} (ataque ABP fuerte) × {dfn} ({', '.join(why)}) "
+                f"→ córner/header de {att}{_abp_ga_coherence(dfn)}")
     return None
 
 
@@ -430,6 +454,13 @@ def main() -> None:
             L.append(f"- ⚠️ Stats de {t} **INFLADAS** (calendario flojo) → descontar GA/GF bajos vs este rival.")
         elif cal == "DURO":
             L.append(f"- {t}: stats **deflactadas** (calendario duro) → mejor de lo que el crudo sugiere.")
+    for t in (h, a):  # régimen amistoso (#5): no transfiere — ofensiva inflada / defensa deflactada
+        s = STATS.get(t)
+        if s and s.get("n_friendly") and (s["n_friendly"] + s["n_competitive"]):
+            tot = s["n_friendly"] + s["n_competitive"]
+            if s["n_friendly"] / tot >= 0.5:
+                L.append(f"- ⚠️ {t}: **{s['n_friendly']}/{tot} amistosos** → ofensiva inflada / defensa deflactada "
+                         f"(no transfiere a WC). Preferir GF/GA solo-comp.")
 
     # 4. Mismatches ABP (el valor)
     L.append("\n## Mismatches a balón parado (§6.8)")

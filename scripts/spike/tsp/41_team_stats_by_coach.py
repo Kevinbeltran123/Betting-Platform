@@ -128,6 +128,7 @@ async def _aggregate(c, name: str, tid: int, since: str) -> dict | None:
         is_home = f["teams"]["home"]["id"] == tid
         gf = f["goals"]["home"] if is_home else f["goals"]["away"]
         ga = f["goals"]["away"] if is_home else f["goals"]["home"]
+        lg = (f.get("league") or {}).get("name", "")
         m, o = _by_type(mine["statistics"]), _by_type(opp["statistics"])
         rows.append({
             "poss": m.get("Ball Possession"), "pass_pct": m.get("Passes %"),
@@ -136,6 +137,7 @@ async def _aggregate(c, name: str, tid: int, since: str) -> dict | None:
             "corn_f": m.get("Corner Kicks"), "corn_a": o.get("Corner Kicks"),
             "fouls": m.get("Fouls"), "yellow": m.get("Yellow Cards"),
             "red": m.get("Red Cards"), "gf": gf, "ga": ga,
+            "friendly": "friendl" in lg.lower(),  # régimen amistoso vs competitivo (#5)
         })
         if len(rows) >= MAX_MATCHES:
             break
@@ -146,6 +148,14 @@ async def _aggregate(c, name: str, tid: int, since: str) -> dict | None:
         vals = [r[k] for r in rows if r[k] is not None]
         return round(sum(vals) / len(vals), 1) if vals else None
 
+    # Régimen (#5): los amistosos inflan ofensiva y deflactan defensa (hallazgo de
+    # transferencia) → exponer el split y GF/GA SOLO de partidos competitivos.
+    comp = [r for r in rows if not r["friendly"]]
+
+    def avg_c(k):
+        vals = [r[k] for r in comp if r[k] is not None]
+        return round(sum(vals) / len(vals), 1) if vals else None
+
     return {
         "coach": COACH_SINCE[name][0], "since": since, "n_matches": len(rows),
         "possession": avg("poss"), "pass_pct": avg("pass_pct"),
@@ -154,6 +164,8 @@ async def _aggregate(c, name: str, tid: int, since: str) -> dict | None:
         "corners_for": avg("corn_f"), "corners_against": avg("corn_a"),
         "fouls": avg("fouls"), "yellow_cards": avg("yellow"), "red_cards": avg("red"),
         "goals_for": avg("gf"), "goals_against": avg("ga"),
+        "n_friendly": len(rows) - len(comp), "n_competitive": len(comp),
+        "goals_for_comp": avg_c("gf"), "goals_against_comp": avg_c("ga"),
     }
 
 
